@@ -2,7 +2,7 @@
 
 - **Last updated:** 2026-11-10
 - **Project:** curved
-- **Phase:** agent identity and the claim fence complete (`LAS-145`). Toolchain, Postgres 18, migrations, the projects resource, the issues resource (atomic keys, append-only events), comment events with the full timeline read path, the transition graph with its actor matrix, and token-authenticated agents with the one-active-issue fence are live.
+- **Phase:** block and unblock complete (`LAS-146`). Toolchain, Postgres 18, migrations, the projects resource, the issues resource (atomic keys, append-only events), comment events with the full timeline read path, the transition graph with its actor matrix, token-authenticated agents with the one-active-issue fence, and agent block with human unblock are live.
 
 ## Current verified state
 
@@ -13,7 +13,7 @@
   `--no-install` skips only install; the database step still runs.
 - End-of-session gate: `./scripts/clean-state.sh`
 - Baseline: green. `npm run typecheck` covers server and web configs; `npm test`
-  runs 58 tests on the Node test runner.
+  runs 102 tests on the Node test runner.
 - Database: `docker compose up` starts `postgres:18-alpine` on host port 55432
   (user/password/db all `curved`, named volume mounted at `/var/lib/postgresql`).
   `scripts/db.sh` waits for readiness, then runs `node src/migrate.ts`.
@@ -65,11 +65,13 @@
   `duplicate`. `authenticateAgent` hashes the presented token and resolves by
   `token_hash`; blank and unknown tokens both fail `not_authenticated`.
 - CLI: `agent add <name> [--json]`, `ready [PROJECT] [--human]`, `claim [PROJECT]`,
-  `review <KEY> <summary...>`, `release <KEY>`. `ready` without `--human`, plus
-  `claim`, `review`, and `release`, read `CURVED_AGENT_TOKEN`; an absent or invalid
-  token fails `not_authenticated` and never falls back to the human actor. `ready`
+  `review <KEY> <summary...>`, `release <KEY>`, and `issue block <KEY> <reason...>`.
+  `ready` without `--human`, plus `claim`, `review`, `release`, and `issue block`,
+  read `CURVED_AGENT_TOKEN`; an absent or invalid token fails
+  `not_authenticated` and never falls back to the human actor. `ready`
   JSON is `{ ready, busy }`; human output lists
   `<key>\t<priority>\t<status>\t<title>` then `busy: <key>` or `busy: -`.
+  `issue list` prints a fifth column: the blocked reason or `-`.
   `issue comment` accepts `--agent <name>`; `issue move --agent` now requires a
   registered agent name.
 - Ready queue: `listReady` returns `todo` issues with no blocked reason, optionally
@@ -89,18 +91,31 @@
   `in_progress`, returns the issue to `todo`, clears `claimed_by`, and writes one
   `release` event. Both reject non-owners with `forbidden_transition` and wrong
   statuses with `illegal_transition`.
+- Blocking: `blockIssue` requires the agent's own `in_progress` issue, trims a 1..2000
+  character reason, sets status `todo`, clears `claimed_by`, stores `blocked_reason`,
+  and appends one `blocked` event (`in_progress -> todo`, body = reason). Wrong status
+  is `illegal_transition`, another agent's or an unclaimed issue is
+  `forbidden_transition`, and an empty or too-long reason is `validation`.
+  `unblockIssue` is human only (`forbidden_transition` for every other actor),
+  requires a non-null `blocked_reason` (`validation` otherwise), clears it, and
+  appends one `unblocked` event without touching status or claim. `issue unblock`
+  accepts `--actor`/`--agent` so the rejection is reachable from the CLI, but
+  defaults to human. Blocked issues are absent from `listReady` and `claimNext`
+  (`no_ready_issue`) and reappear after unblock.
 - Comment ownership: an agent cannot comment on an issue claimed by another agent
   (`forbidden_transition`); the owner, humans, and comments on unclaimed issues are
   allowed. An agent actor requires a registered identity (`validation` when absent,
   `not_found` when unknown).
-- `EVENT_KINDS` now includes `review_submitted`; the database check constraint
-  mirrors it. `moveIssue` still writes kind `status`; the queue tools write `claim`,
-  `review_submitted`, and `release`.
+- `EVENT_KINDS` includes `review_submitted`, `blocked`, and `unblocked`; the database
+  check constraint mirrors it. `moveIssue` still writes kind `status`; the queue
+  tools write `claim`, `review_submitted`, and `release`; `blockIssue` and
+  `unblockIssue` write `blocked` and `unblocked`.
 - Tests: isolated database from `TEST_DATABASE_URL` (name must start with
   `curved_test`), created and migrated by `test/helpers/db.ts`; its reset truncates
   `projects` and `agents` with cascade. The development database is never touched.
-  `npm test` runs 92 tests, including 22 agent/queue tests in `test/agents.test.ts`,
-  the transition suite, comment ownership tests, and the CLI sequence.
+  `npm test` runs 102 tests, including 22 agent/queue tests in `test/agents.test.ts`,
+  the blocking suite in `test/blocking.test.ts`, the transition suite, comment
+  ownership tests, and the CLI sequence.
 - Git repository on branch `main`, remote `origin`
   (`https://github.com/DietKyle956/Curved.git`), public on GitHub.
 - Index: `.codegraph/` initialized, gitignored.
@@ -137,6 +152,10 @@
   token. Tokens are minted once and only hashed at rest.
 - `review_submitted` is a distinct event kind from `status`: the queue tools record
   the tool-level action, while `issue move` remains the generic status path.
+- Blocking is a reason plus `todo`, not a sixth status (`LAS-146`). `blocked` and
+  `unblocked` are distinct event kinds like `review_submitted`: `blocked` records the
+  status move (`in_progress -> todo`) plus the reason, `unblocked` records no status
+  change. Claim ownership gates blocking; the human actor gates unblocking.
 - The transition rules remain in `src/shared/status.ts` (`LAS-144`).
 - Foundation sequence: shared contract modules (`config`, `db`, `errors`) land first,
   then disjoint slices for database, services/CLI, tests, and baseline/docs.
@@ -155,7 +174,7 @@
 
 ## Next best step
 
-Execute `LAS-146` (block and unblock), unblocked by `LAS-145`.
+Execute `LAS-147` (MCP server over stdio), unblocked by `LAS-146`.
 
 ## Tracker
 
@@ -170,7 +189,7 @@ Execute `LAS-146` (block and unblock), unblocked by `LAS-145`.
   - `LAS-143` comments and timeline read path (142) (done 2026-11-10)
   - `LAS-144` status machine and actor matrix (142) (done 2026-11-10)
   - `LAS-145` agent identity and claim fence (144) (done 2026-11-10)
-  - `LAS-146` block and unblock (145)
+  - `LAS-146` block and unblock (145) (done 2026-11-10)
   - `LAS-147` MCP server over stdio (146)
   - `LAS-148` HTTP API and auth boundary (146)
   - `LAS-149` labels, relations, dependency-aware ready (148)
@@ -382,3 +401,36 @@ Execute `LAS-146` (block and unblock), unblocked by `LAS-145`.
   projects, by design.
 - Next best step: execute `LAS-146`.
 - Commits: 1 commit, `Add agent identities and the one-active-issue claim fence`.
+
+### Session 010
+
+- Date: 2026-11-10
+- Goal: execute `LAS-146` (block and unblock).
+- Completed: `src/services/blocking.ts` with `blockIssue` (agent-owned
+  `in_progress` only, trimmed 1..2000 character reason, status `todo`, cleared
+  claim, stored `blocked_reason`, one `blocked` event) and `unblockIssue` (human
+  only, non-null blocked reason required, clears it, one `unblocked` event,
+  status/claim untouched); CLI `issue block <KEY> <reason...>` authenticated by
+  `CURVED_AGENT_TOKEN`, `issue unblock <KEY> [--actor <type>] [--agent <name>]`,
+  the fifth `issue list` column for the blocked reason, and usage text; new
+  `test/blocking.test.ts` plus CLI blocking tests in `test/cli.test.ts`; README,
+  AGENTS, and MEMORY state.
+- Verification run: `npm run typecheck` green; `npm test` (102 pass, 0 fail); CLI
+  smoke on throwaway `curved_test_smoke146` covering migrate, project/issue/agent
+  create, claim, block (trimmed reason, Todo, cleared claim, blocked event), list
+  fifth column, show reason, ready exclusion, unclaimable `no_ready_issue`,
+  human unblock, ready reappearance, agent unblock rejected, missing token,
+  block in `in_review` rejected, and blank reason rejected; smoke database dropped;
+  `./scripts/init.sh`; `./scripts/clean-state.sh`.
+- Evidence captured: `SMK-1\ttodo\t3\tBlock smoke target\twaiting on design`
+  from `issue list`; timeline `created, claim, blocked, unblocked` in ascending
+  order; blocked event body `waiting on design`, `in_progress -> todo`; ready
+  printed only `busy: -` while blocked; `forbidden_transition` for agent unblock;
+  `illegal_transition` for block in `in_review`; `validation` for blank reason.
+- Coordination: five parallel slices (service, CLI, service tests, CLI tests,
+  docs) in one wave; no fix-up pass was needed.
+- Known risk: `unblockIssue` treats "not blocked" as `validation`, since the ticket
+  does not pin a code for that case. Blocking uses the existing row lock and the
+  existing `issues.blocked_reason` constraint, so no migration was required.
+- Next best step: execute `LAS-147`.
+- Commits: 1 commit, `Add agent block and human unblock`.

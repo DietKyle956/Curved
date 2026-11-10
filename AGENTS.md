@@ -42,7 +42,10 @@ command, and `allowedTransitions` on every issue payload. LAS-145 is live: an
 `agents` table with hashed tokens, token-authenticated `ready`, `claim`, `review`,
 and `release` commands, `claim` and `review_submitted` events, and the partial
 unique claim fence (`issues_one_active_claim_per_agent`) that allows one active
-issue per agent globally. Next frontier: LAS-146.
+issue per agent globally. LAS-146 is live: `issue block` records a 1..2000 character
+reason, returns the issue to Todo, clears the claim, and appends a `blocked` event;
+`issue unblock` is human only, clears the reason, and appends `unblocked`; blocked
+issues are absent from `ready` and unclaimable. Next frontier: LAS-147.
 
 ## Directory page
 

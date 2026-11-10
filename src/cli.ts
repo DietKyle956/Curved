@@ -5,6 +5,7 @@ import { createDatabase } from "./db.ts";
 import { ServiceError } from "./errors.ts";
 import { runMigrations } from "./migrate.ts";
 import { authenticateAgent, createAgent } from "./services/agents.ts";
+import { blockIssue, unblockIssue } from "./services/blocking.ts";
 import { commentOnIssue } from "./services/comments.ts";
 import {
   createIssue,
@@ -31,6 +32,10 @@ Commands:
   issue list [PROJECT]        List issues ordered by project and number
   issue comment <KEY> <body...> [--actor <agent|human|git|system>] [--agent <name>]
                               Append a comment event to an issue
+  issue block <KEY> <reason...>
+                              Block a claimed issue with a reason
+  issue unblock <KEY> [--actor <agent|human|git|system>] [--agent <name>]
+                              Clear a blocked issue's reason
   issue show <KEY>            Show one issue with its event timeline
   issue move <KEY> <status> [--body <text>] [--actor <agent|human|git|system>] [--agent <name>]
                               Move an issue to a new status
@@ -41,8 +46,8 @@ Commands:
   release <KEY>               Return a claimed issue to the ready backlog
   help                        Show this help
 
-Agent commands (ready, claim, review, release) read the agent token from
-CURVED_AGENT_TOKEN.
+Agent commands (ready, claim, review, release, issue block) read the agent
+token from CURVED_AGENT_TOKEN.
 
 Options:
   --json    Print machine-readable JSON on stdout
@@ -258,6 +263,57 @@ function parseIssueMoveArgs(rest: readonly string[]): {
   return { positionals, body, actor, agent };
 }
 
+function parseIssueBlockArgs(rest: readonly string[]): {
+  positionals: string[];
+} {
+  const positionals: string[] = [];
+
+  for (const arg of rest) {
+    if (arg.startsWith("--")) {
+      throw new UsageError(`unknown option "${arg}"`);
+    }
+    positionals.push(arg);
+  }
+
+  return { positionals };
+}
+
+function parseIssueUnblockArgs(rest: readonly string[]): {
+  positionals: string[];
+  actor: string | undefined;
+  agent: string | undefined;
+} {
+  const positionals: string[] = [];
+  let actor: string | undefined;
+  let agent: string | undefined;
+
+  for (let index = 0; index < rest.length; index += 1) {
+    const arg = rest[index];
+    if (arg === undefined) {
+      continue;
+    }
+    if (arg === "--actor" || arg === "--agent") {
+      const value = rest[index + 1];
+      if (value === undefined) {
+        throw new UsageError(`${arg} requires a value`);
+      }
+      index += 1;
+      if (arg === "--actor") {
+        actor = value;
+      } else {
+        agent = value;
+      }
+      continue;
+    }
+    if (arg.startsWith("--")) {
+      throw new UsageError(`unknown option "${arg}"`);
+    }
+    positionals.push(arg);
+  }
+
+  return { positionals, actor, agent };
+}
+
 async function runIssueCommand(
   subcommand: string | undefined,
   rest: readonly string[],
@@ -300,7 +356,10 @@ async function runIssueCommand(
     } else {
       process.stdout.write(
         issues
-          .map((issue) => `${issue.key}\t${issue.status}\t${issue.priority}\t${issue.title}\n`)
+          .map(
+            (issue) =>
+              `${issue.key}\t${issue.status}\t${issue.priority}\t${issue.title}\t${issue.blockedReason ?? "-"}\n`,
+          )
           .join(""),
       );
     }
@@ -324,6 +383,49 @@ async function runIssueCommand(
       printJson(event);
     } else {
       process.stdout.write(`commented on ${key} as ${event.actorType}\n`);
+    }
+    return;
+  }
+
+  if (subcommand === "block") {
+    const { positionals } = parseIssueBlockArgs(rest);
+    const [key, ...words] = positionals;
+    if (key === undefined) {
+      throw new UsageError("issue block requires <KEY> <reason...>");
+    }
+    if (words.length === 0) {
+      throw new UsageError("issue block requires a reason");
+    }
+    const reason = words.join(" ");
+    const issue = await withDatabase((db, config) =>
+      withAgent(db, config, (agent) =>
+        blockIssue(db, { key, agent, reason }),
+      ),
+    );
+    if (json) {
+      printJson(issue);
+    } else {
+      process.stdout.write(`blocked ${issue.key}\n`);
+    }
+    return;
+  }
+
+  if (subcommand === "unblock") {
+    const { positionals, actor, agent } = parseIssueUnblockArgs(rest);
+    const [key, ...extra] = positionals;
+    if (key === undefined) {
+      throw new UsageError("issue unblock requires <KEY>");
+    }
+    if (extra.length > 0) {
+      throw new UsageError("issue unblock accepts exactly one KEY argument");
+    }
+    const issue = await withDatabase((db) =>
+      unblockIssue(db, { key, actor, agent }),
+    );
+    if (json) {
+      printJson(issue);
+    } else {
+      process.stdout.write(`unblocked ${issue.key}\n`);
     }
     return;
   }
@@ -388,7 +490,7 @@ async function runIssueCommand(
 
   throw new UsageError(
     subcommand === undefined
-      ? "issue requires a subcommand (add, list, comment, show, move)"
+      ? "issue requires a subcommand (add, list, comment, block, unblock, show, move)"
       : `unknown issue subcommand "${subcommand}"`,
   );
 }

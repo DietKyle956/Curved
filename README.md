@@ -67,16 +67,28 @@ or `in_review`) per agent globally, across projects, and the service maps a
 violation to `agent_busy`. Another agent's claimed issue is off limits for
 transitions and comments.
 
+Blocking is a reason plus `todo`, not a sixth status. The owning agent blocks a
+claimed issue with a reason of 1 to 2000 characters; blocking returns the issue
+to `todo`, clears the claim, stores the reason in `blocked_reason`, and appends a
+`blocked` event to the timeline. Only a human may unblock: that clears the reason
+and appends an `unblocked` event, leaving status and claim untouched. A blocked
+issue is absent from `ready` and cannot be claimed until it is unblocked.
+
 - `node src/cli.ts issue add <PROJECT> <title...>` - create an issue; keys are
   assigned atomically.
 - `node src/cli.ts issue list [PROJECT]` - list issues, optionally scoped to one
-  project.
+  project; the fifth column is the blocked reason or `-`.
 - `node src/cli.ts issue show <KEY>` - print the issue and its timeline in ascending
   event order.
 - `node src/cli.ts issue comment <KEY> <body...> [--actor <type>]
   [--agent <name>]` - append a comment event to the timeline.
 - `node src/cli.ts issue move <KEY> <status> [--body <text>] [--actor <type>]
   [--agent <name>]` - move an issue along a legal edge for the given actor.
+- `node src/cli.ts issue block <KEY> <reason...>` - block a claimed issue with a
+  reason; returns it to `todo`, clears the claim, and appends a `blocked` event;
+  requires `CURVED_AGENT_TOKEN`.
+- `node src/cli.ts issue unblock <KEY> [--actor <type>] [--agent <name>]` - clear
+  a blocked issue's reason and append an `unblocked` event; humans only.
 - `node src/cli.ts agent add <name>` - create an agent; prints its `crv_` token
   once, and only the SHA-256 hash is stored.
 - `node src/cli.ts ready [PROJECT] [--human]` - list unblocked `todo` issues by

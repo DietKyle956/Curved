@@ -284,7 +284,7 @@ test("issue add, list, and show print the pinned human formats", async () => {
 
   const listed = await runCli(["issue", "list", "TAC"]);
   assert.equal(listed.code, 0, listed.stderr);
-  assert.equal(listed.stdout, "TAC-1\tbacklog\t3\tFix the flux capacitor\n");
+  assert.equal(listed.stdout, "TAC-1\tbacklog\t3\tFix the flux capacitor\t-\n");
 
   const json = await runCli(["issue", "show", "TAC-1", "--json"]);
   assert.equal(json.code, 0, json.stderr);
@@ -952,4 +952,168 @@ test("issue comment requires a registered agent for the agent actor", async () =
   assert.equal(unknown.code, 1);
   assert.match(unknown.stderr, /^not_found: /);
   assert.equal(unknown.stdout, "");
+});
+
+test("blocking an issue records a reason and unblocking restores readiness", async () => {
+  const project = await runCli(["project", "add", "BLK", "Blocking", "--json"]);
+  assert.equal(project.code, 0, project.stderr);
+  const created = await runCli([
+    "issue",
+    "add",
+    "BLK",
+    "Blocking target",
+    "--status",
+    "todo",
+    "--json",
+  ]);
+  assert.equal(created.code, 0, created.stderr);
+  const added = await runCli(["agent", "add", "alpha", "--json"]);
+  assert.equal(added.code, 0, added.stderr);
+  const { token } = JSON.parse(added.stdout) as { token: string };
+  const env = { CURVED_AGENT_TOKEN: token };
+
+  const claimed = await runCli(["claim", "BLK"], env);
+  assert.equal(claimed.code, 0, claimed.stderr);
+  assert.equal(claimed.stdout, "claimed BLK-1\n");
+
+  const blocked = await runCli(
+    ["issue", "block", "BLK-1", "waiting", "on", "design", "--json"],
+    env,
+  );
+  assert.equal(blocked.code, 0, blocked.stderr);
+  const blockedIssue = JSON.parse(blocked.stdout) as {
+    key: string;
+    status: string;
+    blockedReason: string | null;
+    claimedBy: string | null;
+  };
+  assert.equal(blockedIssue.key, "BLK-1");
+  assert.equal(blockedIssue.status, "todo");
+  assert.equal(blockedIssue.blockedReason, "waiting on design");
+  assert.equal(blockedIssue.claimedBy, null);
+
+  const timeline = await runCli(["issue", "show", "BLK-1", "--json"]);
+  assert.equal(timeline.code, 0, timeline.stderr);
+  const events = (JSON.parse(timeline.stdout) as ShowPayload).events;
+  const blockEvent = events.at(-1);
+  assert.ok(blockEvent, "expected a blocked event in the timeline");
+  assert.equal(blockEvent.kind, "blocked");
+  assert.equal(blockEvent.actorType, "agent");
+  assert.equal(blockEvent.body, "waiting on design");
+  assert.equal(blockEvent.fromStatus, "in_progress");
+  assert.equal(blockEvent.toStatus, "todo");
+
+  const listed = await runCli(["issue", "list", "BLK"]);
+  assert.equal(listed.code, 0, listed.stderr);
+  assert.equal(
+    listed.stdout,
+    "BLK-1\ttodo\t3\tBlocking target\twaiting on design\n",
+  );
+
+  const shown = await runCli(["issue", "show", "BLK-1"]);
+  assert.equal(shown.code, 0, shown.stderr);
+  assert.ok(
+    shown.stdout.includes("blocked_reason: waiting on design"),
+    `unexpected stdout: ${JSON.stringify(shown.stdout)}`,
+  );
+
+  const readyWhileBlocked = await runCli(["ready", "BLK"], env);
+  assert.equal(readyWhileBlocked.code, 0, readyWhileBlocked.stderr);
+  assert.equal(readyWhileBlocked.stdout, "busy: -\n");
+
+  const claimWhileBlocked = await runCli(["claim", "BLK"], env);
+  assert.equal(claimWhileBlocked.code, 1);
+  assert.match(claimWhileBlocked.stderr, /^no_ready_issue: /);
+  assert.equal(claimWhileBlocked.stdout, "");
+
+  const unblocked = await runCli(["issue", "unblock", "BLK-1", "--json"]);
+  assert.equal(unblocked.code, 0, unblocked.stderr);
+  const unblockedIssue = JSON.parse(unblocked.stdout) as {
+    status: string;
+    blockedReason: string | null;
+  };
+  assert.equal(unblockedIssue.status, "todo");
+  assert.equal(unblockedIssue.blockedReason, null);
+
+  const readyAgain = await runCli(["ready", "BLK"], env);
+  assert.equal(readyAgain.code, 0, readyAgain.stderr);
+  assert.equal(readyAgain.stdout, "BLK-1\t3\ttodo\tBlocking target\nbusy: -\n");
+});
+
+test("block and unblock reject missing credentials, wrong actors, wrong status, and blank reasons", async () => {
+  const added = await runCli(["agent", "add", "alpha", "--json"]);
+  assert.equal(added.code, 0, added.stderr);
+  const { token } = JSON.parse(added.stdout) as { token: string };
+  const env = { CURVED_AGENT_TOKEN: token };
+
+  const authProject = await runCli(["project", "add", "ATH", "Auth", "--json"]);
+  assert.equal(authProject.code, 0, authProject.stderr);
+  const authIssue = await runCli(["issue", "add", "ATH", "Auth target", "--json"]);
+  assert.equal(authIssue.code, 0, authIssue.stderr);
+
+  const withoutToken = await runCli(["issue", "block", "ATH-1", "because"], {
+    CURVED_AGENT_TOKEN: "",
+  });
+  assert.equal(withoutToken.code, 1);
+  assert.match(withoutToken.stderr, /^not_authenticated: /);
+  assert.equal(withoutToken.stdout, "");
+
+  const unblockProject = await runCli(["project", "add", "UNB", "Unblock", "--json"]);
+  assert.equal(unblockProject.code, 0, unblockProject.stderr);
+  const unblockIssue = await runCli([
+    "issue",
+    "add",
+    "UNB",
+    "Unblock target",
+    "--json",
+  ]);
+  assert.equal(unblockIssue.code, 0, unblockIssue.stderr);
+
+  const forbiddenUnblock = await runCli([
+    "issue",
+    "unblock",
+    "UNB-1",
+    "--actor",
+    "agent",
+    "--agent",
+    "alpha",
+  ]);
+  assert.equal(forbiddenUnblock.code, 1);
+  assert.match(forbiddenUnblock.stderr, /^forbidden_transition: /);
+  assert.equal(forbiddenUnblock.stdout, "");
+
+  const statusProject = await runCli(["project", "add", "WST", "Wrong", "--json"]);
+  assert.equal(statusProject.code, 0, statusProject.stderr);
+  const statusIssue = await runCli([
+    "issue",
+    "add",
+    "WST",
+    "Wrong status target",
+    "--status",
+    "todo",
+    "--json",
+  ]);
+  assert.equal(statusIssue.code, 0, statusIssue.stderr);
+  const statusClaim = await runCli(["claim", "WST"], env);
+  assert.equal(statusClaim.code, 0, statusClaim.stderr);
+  const statusReview = await runCli(["review", "WST-1", "ready", "--json"], env);
+  assert.equal(statusReview.code, 0, statusReview.stderr);
+
+  const illegalBlock = await runCli(
+    ["issue", "block", "WST-1", "not in progress"],
+    env,
+  );
+  assert.equal(illegalBlock.code, 1);
+  assert.match(illegalBlock.stderr, /^illegal_transition: /);
+  assert.equal(illegalBlock.stdout, "");
+
+  const blankProject = await runCli(["project", "add", "VAL", "Blank", "--json"]);
+  assert.equal(blankProject.code, 0, blankProject.stderr);
+  const blankIssue = await runCli(["issue", "add", "VAL", "Blank target", "--json"]);
+  assert.equal(blankIssue.code, 0, blankIssue.stderr);
+
+  const blankReason = await runCli(["issue", "block", "VAL-1", "   "], env);
+  assert.equal(blankReason.code, 1);
+  assert.match(blankReason.stderr, /^validation: /);
+  assert.equal(blankReason.stdout, "");
 });
