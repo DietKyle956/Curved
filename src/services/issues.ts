@@ -5,7 +5,10 @@ import {
   DEFAULT_PRIORITY,
   DEFAULT_STATUS,
   STATUSES,
+  actorMayTransition,
+  allowedTransitions,
   isActorType,
+  isLegalTransition,
   isPriority,
   isStatus,
 } from "../shared/status.ts";
@@ -26,6 +29,8 @@ export interface Issue {
   title: string;
   description: string;
   status: Status;
+  /** Transitions the reading actor may take from `status` right now. */
+  allowedTransitions: Status[];
   priority: Priority;
   parentId: number | null;
   blockedReason: string | null;
@@ -42,6 +47,38 @@ export interface CreateIssueInput {
   status?: string;
   parent?: string;
   actor?: string;
+}
+
+/**
+ * Who is reading an issue. `actor` defaults to `human`; `agent` names the
+ * agent identity and is only valid alongside `actor: "agent"`.
+ */
+export interface IssueContext {
+  actor?: string;
+  agent?: string;
+}
+
+interface ResolvedContext {
+  actor: ActorType;
+  agent: string | null;
+}
+
+function resolveContext(context?: IssueContext): ResolvedContext {
+  const actor = validateActor(context?.actor ?? "human");
+  if (context?.agent === undefined) {
+    return { actor, agent: null };
+  }
+  const agent = context.agent.trim();
+  if (agent.length === 0) {
+    throw new ServiceError("validation", "agent identity must not be empty");
+  }
+  if (actor !== "agent") {
+    throw new ServiceError(
+      "validation",
+      `agent identity "${agent}" requires actor "agent", got "${actor}"`,
+    );
+  }
+  return { actor, agent };
 }
 
 interface IssueRow extends QueryResultRow {
@@ -65,7 +102,7 @@ const ISSUE_COLUMNS = `i.id, i.project_id, p.key as project_key, i.number, i.key
        i.status, i.priority, i.parent_id, i.blocked_reason, i.claimed_by,
        i.created_at, i.updated_at`;
 
-function toIssue(row: IssueRow): Issue {
+function toIssue(row: IssueRow, context: ResolvedContext): Issue {
   return {
     id: row.id,
     key: row.key,
@@ -75,6 +112,11 @@ function toIssue(row: IssueRow): Issue {
     title: row.title,
     description: row.description,
     status: row.status,
+    allowedTransitions: allowedTransitions(row.status, {
+      actor: context.actor,
+      agent: context.agent,
+      claimedBy: row.claimed_by,
+    }),
     priority: row.priority,
     parentId: row.parent_id,
     blockedReason: row.blocked_reason,
@@ -220,7 +262,7 @@ export async function createIssue(
       throw new Error("created issue could not be read back");
     }
 
-    const issue = toIssue(row);
+    const issue = toIssue(row, { actor, agent: null });
     await appendEvent(tx, {
       issueId: issue.id,
       kind: "created",
@@ -236,7 +278,9 @@ export async function createIssue(
 export async function listIssues(
   db: Db,
   filter?: { project?: string },
+  context?: IssueContext,
 ): Promise<Issue[]> {
+  const resolved = resolveContext(context);
   let project: string | null = null;
   if (filter?.project !== undefined) {
     project = validateProjectKey(filter.project);
@@ -257,10 +301,15 @@ export async function listIssues(
      order by p.key asc, i.number asc`,
     [project],
   );
-  return rows.map(toIssue);
+  return rows.map((row) => toIssue(row, resolved));
 }
 
-export async function getIssue(db: Db, key: string): Promise<Issue> {
+export async function getIssue(
+  db: Db,
+  key: string,
+  context?: IssueContext,
+): Promise<Issue> {
+  const resolved = resolveContext(context);
   const canonical = parseIssueKey(key).key;
   const row = await db.one<IssueRow>(
     `select ${ISSUE_COLUMNS}
@@ -272,7 +321,7 @@ export async function getIssue(db: Db, key: string): Promise<Issue> {
   if (row === null) {
     throw new ServiceError("not_found", `issue "${canonical}" not found`);
   }
-  return toIssue(row);
+  return toIssue(row, resolved);
 }
 
 export interface IssueTimeline {
@@ -283,8 +332,143 @@ export interface IssueTimeline {
 export async function getIssueTimeline(
   db: Db,
   key: string,
+  context?: IssueContext,
 ): Promise<IssueTimeline> {
-  const issue = await getIssue(db, key);
+  const issue = await getIssue(db, key, context);
   const events = await listEvents(db, issue.id);
   return { issue, events };
+}
+
+export interface MoveIssueInput {
+  key: string;
+  to: string;
+  actor?: string;
+  agent?: string;
+  body?: string;
+}
+
+interface LockedIssueRow extends QueryResultRow {
+  id: number;
+  status: Status;
+  claimed_by: string | null;
+}
+
+/**
+ * Whether a legal edge may be taken by this actor with this ownership.
+ * The legal-edge gate runs first; this gate is strictly about authority.
+ */
+function mayMove(
+  actor: ActorType,
+  agent: string | null,
+  from: Status,
+  to: Status,
+  claimedBy: string | null,
+): boolean {
+  if (actor === "human") {
+    return true;
+  }
+  if (actor === "agent") {
+    if (from === "todo" && to === "in_progress" && claimedBy === null) {
+      return agent !== null;
+    }
+    return (
+      agent !== null &&
+      claimedBy !== null &&
+      claimedBy === agent &&
+      actorMayTransition("agent", from, to)
+    );
+  }
+  if (actor === "system") {
+    return false;
+  }
+  return actorMayTransition(actor, from, to);
+}
+
+/**
+ * The claim column after a move: leaving for the backlog clears it, an agent
+ * claiming into `in_progress` takes it, and every other target keeps it.
+ */
+function nextClaimedBy(
+  actor: ActorType,
+  agent: string | null,
+  to: Status,
+  current: string | null,
+): string | null {
+  if (to === "todo" || to === "backlog") {
+    return null;
+  }
+  if (to === "in_progress" && actor === "agent") {
+    return agent;
+  }
+  return current;
+}
+
+export async function moveIssue(
+  db: Database,
+  input: MoveIssueInput,
+): Promise<Issue> {
+  const key = parseIssueKey(input.key).key;
+  const to = validateStatus(input.to);
+  const { actor, agent } = resolveContext({
+    actor: input.actor,
+    agent: input.agent,
+  });
+  if (actor === "agent" && agent === null) {
+    throw new ServiceError(
+      "validation",
+      'actor "agent" requires an agent identity',
+    );
+  }
+  const body = input.body?.trim() ?? "";
+
+  return db.tx(async (tx) => {
+    const locked = await tx.one<LockedIssueRow>(
+      `select id, status, claimed_by from issues where key = $1 for update`,
+      [key],
+    );
+    if (locked === null) {
+      throw new ServiceError("not_found", `issue "${key}" not found`);
+    }
+
+    const from = locked.status;
+    if (!isLegalTransition(from, to)) {
+      throw new ServiceError(
+        "illegal_transition",
+        `issue "${key}" cannot move from "${from}" to "${to}"`,
+      );
+    }
+    if (!mayMove(actor, agent, from, to, locked.claimed_by)) {
+      const who = agent === null ? actor : `${actor} "${agent}"`;
+      throw new ServiceError(
+        "forbidden_transition",
+        `${who} may not move issue "${key}" from "${from}" to "${to}"`,
+      );
+    }
+
+    const claimedBy = nextClaimedBy(actor, agent, to, locked.claimed_by);
+    await tx.query(
+      `update issues set status = $2, claimed_by = $3, updated_at = now() where id = $1`,
+      [locked.id, to, claimedBy],
+    );
+    await appendEvent(tx, {
+      issueId: locked.id,
+      kind: "status",
+      actorType: actor,
+      fromStatus: from,
+      toStatus: to,
+      body: body.length === 0 ? null : body,
+    });
+
+    const row = await tx.one<IssueRow>(
+      `select ${ISSUE_COLUMNS}
+       from issues i
+       join projects p on p.id = i.project_id
+       where i.id = $1`,
+      [locked.id],
+    );
+    if (row === null) {
+      throw new Error("moved issue could not be read back");
+    }
+    return toIssue(row, { actor, agent });
+  });
 }

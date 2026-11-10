@@ -42,6 +42,19 @@ events of their own, not rows in a separate comments table; there is no comments
 table and no migration for one. `issue show` renders the full timeline for an issue,
 so comments appear there alongside status events.
 
+The status machine is live. Legal moves are the edges of one graph: `backlog` ->
+`todo`; `todo` <-> `backlog` and `todo` <-> `in_progress`; `in_progress` <-> `todo`
+and `in_progress` <-> `in_review`; `in_review` <-> `in_progress` and `in_review` ->
+`done`; `done` -> `todo`. A separate actor matrix gates which of those edges each
+actor type may take: `human` may take any legal edge; `agent` may claim an unclaimed
+`todo` issue by moving it to `in_progress` with a named agent, and after that may
+only take `in_progress` -> `in_review` or `in_progress` -> `todo` on an issue it
+owns; `git` may take `in_progress` -> `in_review` and `in_review` -> `done`. The
+claim column is set when an agent claims an issue into `in_progress`, kept for
+`in_review` and `done`, and cleared when the issue moves to `todo` or `backlog`.
+Every issue payload carries `allowedTransitions`: the successors the requesting
+actor may take right now.
+
 - `node src/cli.ts issue add <PROJECT> <title...>` - create an issue; keys are
   assigned atomically.
 - `node src/cli.ts issue list [PROJECT]` - list issues, optionally scoped to one
@@ -50,6 +63,8 @@ so comments appear there alongside status events.
   event order.
 - `node src/cli.ts issue comment <KEY> <body...> [--actor <type>]` - append a comment
   event to the timeline.
+- `node src/cli.ts issue move <KEY> <status> [--body <text>] [--actor <type>]
+  [--agent <name>]` - move an issue along a legal edge for the given actor.
 - `npm run db` - start Postgres and apply migrations.
 - `./scripts/init.sh` - install, database, check, build.
 - `./scripts/clean-state.sh` - end-of-session gate.

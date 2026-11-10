@@ -2,7 +2,7 @@
 
 - **Last updated:** 2026-11-10
 - **Project:** curved
-- **Phase:** comments and timeline read path complete (`LAS-143`). Toolchain, Postgres 18, migrations, the projects resource, the issues resource (atomic keys, append-only events), and comment events with the full timeline read path are live.
+- **Phase:** status machine and actor matrix complete (`LAS-144`). Toolchain, Postgres 18, migrations, the projects resource, the issues resource (atomic keys, append-only events), comment events with the full timeline read path, and the transition graph with its actor matrix are live.
 
 ## Current verified state
 
@@ -13,7 +13,7 @@
   `--no-install` skips only install; the database step still runs.
 - End-of-session gate: `./scripts/clean-state.sh`
 - Baseline: green. `npm run typecheck` covers server and web configs; `npm test`
-  runs 41 tests on the Node test runner.
+  runs 58 tests on the Node test runner.
 - Database: `docker compose up` starts `postgres:18-alpine` on host port 55432
   (user/password/db all `curved`, named volume mounted at `/var/lib/postgresql`).
   `scripts/db.sh` waits for readiness, then runs `node src/migrate.ts`.
@@ -31,7 +31,24 @@
 - CLI: `node src/cli.ts project add <KEY> <name...>`, `project list`, `migrate`,
   `issue add <PROJECT> <title...>`, `issue list [PROJECT]`, `issue show <KEY>`
   (renders the full timeline), `issue comment <KEY> <body...> [--actor <type>]`,
+  `issue move <KEY> <status> [--body <text>] [--actor <type>] [--agent <name>]`
+  (human output `moved <KEY> to <status>`, `--json` prints the issue payload),
   and `--json`; errors print `<code>: <message>` and exit 1.
+- Transitions: the graph is `backlog -> todo`, `todo -> in_progress`, `todo ->
+  backlog`, `in_progress -> in_review`, `in_progress -> todo`, `in_review -> done`,
+  `in_review -> in_progress`, `done -> todo`. Actors: `human` may take any
+  legal edge; `git` may take `in_progress -> in_review` and `in_review -> done`;
+  `system` takes none; `agent` may claim unclaimed `todo -> in_progress` with a
+  named agent, then only its owned `in_progress -> in_review` or `in_progress ->
+  todo`.
+- Claims: `claimed_by` is set when an agent claims into `in_progress`, kept through
+  `in_review` and `done`, and cleared on `todo` and `backlog`.
+- Every issue payload from `createIssue`, `getIssue`, `listIssues`,
+  `getIssueTimeline`, and `moveIssue` carries `allowedTransitions`.
+- `moveIssue` locks the issue row by key (`SELECT ... FOR UPDATE`) inside one
+  transaction, checks the legal edge then the actor gate, applies the claim-column
+  rules, and writes exactly one `status` event with from/to, actor, and optional
+  body before returning the hydrated issue.
 - Comments are `issue_events` rows of kind `comment`; there is no comments table.
   Bodies are trimmed and empty/whitespace-only bodies fail with `validation`.
   Timeline reads order by ascending event id; timestamps are display only.
@@ -39,7 +56,8 @@
   such as `TAC-014`.
 - Tests: isolated database from `TEST_DATABASE_URL` (name must start with
   `curved_test`), created and migrated by `test/helpers/db.ts`; the development
-  database is never touched.
+  database is never touched. `test/transitions.test.ts` holds 12 transition and
+  actor-matrix tests, with 5 CLI move tests appended to the CLI suite.
 - Git repository on branch `main`, remote `origin`
   (`https://github.com/DietKyle956/Curved.git`), public on GitHub.
 - Index: `.codegraph/` initialized, gitignored.
@@ -55,8 +73,15 @@
   same transaction, so a created issue never lacks history.
 - `src/shared/status.ts` is the single contract for statuses, priorities, event
   kinds, and actor types; the schema constraints mirror it.
-- `issues.claimed_by` is plain text until `LAS-145` adds agent identity; the claim
-  fence and the transition rules land in `LAS-144` and `LAS-145`.
+- `src/shared/status.ts` is also the single contract for the transition map and
+  actor matrix (`TRANSITIONS`, `ACTOR_TRANSITIONS`, `isLegalTransition`,
+  `actorMayTransition`, `allowedTransitions`). The agent claim edge
+  (`todo -> in_progress`, unclaimed, named agent) is included because the
+  claim-column rule must be reachable; every other agent edge requires ownership.
+  `system` actors take no transitions.
+- `issues.claimed_by` is plain text until `LAS-145` adds agent identity; the partial
+  unique claim fence lands in `LAS-145`. The transition rules are now in
+  `src/shared/status.ts` (`LAS-144`).
 - Foundation sequence: shared contract modules (`config`, `db`, `errors`) land first,
   then disjoint slices for database, services/CLI, tests, and baseline/docs.
 - Migrations take the session advisory lock before creating the ledger, so two
@@ -70,11 +95,11 @@
 
 - MCP transport: the spec fixes stdio with the v2 package and a v1 fallback; verify at
   `LAS-147`.
-- None blocking. The next slice is fully specified by `LAS-142`.
+- None blocking. The next slice is fully specified by `LAS-145`.
 
 ## Next best step
 
-Execute `LAS-144` (status machine and actor matrix), unblocked by `LAS-142`.
+Execute `LAS-145` (agent identity and the claim fence), unblocked by `LAS-144`.
 
 ## Tracker
 
@@ -86,8 +111,8 @@ Execute `LAS-144` (status machine and actor matrix), unblocked by `LAS-142`.
 - Sub-issues (15, native `blockedBy` edges):
   - `LAS-141` foundation: toolchain, Postgres, migrations, project creation (done 2026-11-10)
   - `LAS-142` issue capture, atomic keys, append-only events (141) (done 2026-11-10)
-  - `LAS-143` comments and timeline read path (142)
-  - `LAS-144` status machine and actor matrix (142)
+  - `LAS-143` comments and timeline read path (142) (done 2026-11-10)
+  - `LAS-144` status machine and actor matrix (142) (done 2026-11-10)
   - `LAS-145` agent identity and claim fence (144)
   - `LAS-146` block and unblock (145)
   - `LAS-147` MCP server over stdio (146)
@@ -236,3 +261,35 @@ Execute `LAS-144` (status machine and actor matrix), unblocked by `LAS-142`.
 - Known risk: the event row still carries only `actor_type`, not an actor id; agent
   identity arrives in `LAS-145`. No comments table exists, by design.
 - Next best step: execute `LAS-144`.
+
+### Session 008
+
+- Date: 2026-11-10
+- Goal: execute `LAS-144` (status machine and actor matrix).
+- Completed: `TRANSITIONS`, `ACTOR_TRANSITIONS`, `isLegalTransition`,
+  `actorMayTransition`, and `allowedTransitions` in `src/shared/status.ts`;
+  `moveIssue` locking the row by key with `SELECT ... FOR UPDATE` in one
+  transaction, checking the legal edge then the actor gate, applying claim-column
+  rules, writing exactly one `status` event with from/to, actor, and optional body,
+  and returning the hydrated issue with `allowedTransitions`; `allowedTransitions`
+  on every payload from `createIssue`, `getIssue`, `listIssues`, `getIssueTimeline`,
+  and `moveIssue`; `issue move <KEY> <status> [--body <text>] [--actor <type>]
+  [--agent <name>]` with `moved <KEY> to <status>` and `--json`; new
+  `test/transitions.test.ts` with 12 tests and 5 appended CLI tests.
+- Verification run: `npm run typecheck` green; `npm test` (58 pass, 0 fail); CLI
+  smoke on a throwaway `curved_test_smoke144` database covering create, `todo`,
+  `in_progress`, the JSON payload with `allowedTransitions`, illegal `done`,
+  agent claim setting `claimed_by`, and agent `done` rejected; smoke database
+  dropped; `./scripts/init.sh` green; `./scripts/clean-state.sh` all 7 checks pass
+  with the expected uncommitted-tree warning.
+- Evidence captured: `moved <KEY> to <status>` lines; the payload carried
+  `allowedTransitions`; illegal `done` returned `illegal_transition`; agent `done`
+  returned `forbidden_transition`; agent claim set `claimedBy`; smoke database
+  dropped.
+- Coordination: five parallel slices, no fix-up pass was needed.
+- Known risk: the literal ticket matrix omits the claim edge, but the claim-column
+  acceptance criterion requires it, so the agent edge is limited to unclaimed
+  `todo -> in_progress` with a named agent. `claimed_by` is still plain text until
+  `LAS-145`, and the partial unique claim fence does not exist yet.
+- Next best step: execute `LAS-145`.
+- Commits: 1 commit, `Add the status machine and actor matrix`.

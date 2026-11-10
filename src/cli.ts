@@ -8,6 +8,7 @@ import {
   createIssue,
   getIssueTimeline,
   listIssues,
+  moveIssue,
 } from "./services/issues.ts";
 import { createProject, listProjects } from "./services/projects.ts";
 
@@ -23,6 +24,8 @@ Commands:
   issue comment <KEY> <body...> [--actor <agent|human|git|system>]
                               Append a comment event to an issue
   issue show <KEY>            Show one issue with its event timeline
+  issue move <KEY> <status> [--body <text>] [--actor <agent|human|git|system>] [--agent <name>]
+                              Move an issue to a new status
   help                        Show this help
 
 Options:
@@ -170,6 +173,46 @@ function parseIssueCommentArgs(rest: readonly string[]): {
   return { positionals, actor };
 }
 
+function parseIssueMoveArgs(rest: readonly string[]): {
+  positionals: string[];
+  body: string | undefined;
+  actor: string | undefined;
+  agent: string | undefined;
+} {
+  const positionals: string[] = [];
+  let body: string | undefined;
+  let actor: string | undefined;
+  let agent: string | undefined;
+
+  for (let index = 0; index < rest.length; index += 1) {
+    const arg = rest[index];
+    if (arg === undefined) {
+      continue;
+    }
+    if (arg === "--body" || arg === "--actor" || arg === "--agent") {
+      const value = rest[index + 1];
+      if (value === undefined) {
+        throw new UsageError(`${arg} requires a value`);
+      }
+      index += 1;
+      if (arg === "--body") {
+        body = value;
+      } else if (arg === "--actor") {
+        actor = value;
+      } else {
+        agent = value;
+      }
+      continue;
+    }
+    if (arg.startsWith("--")) {
+      throw new UsageError(`unknown option "${arg}"`);
+    }
+    positionals.push(arg);
+  }
+
+  return { positionals, body, actor, agent };
+}
+
 async function runIssueCommand(
   subcommand: string | undefined,
   rest: readonly string[],
@@ -278,9 +321,29 @@ async function runIssueCommand(
     return;
   }
 
+  if (subcommand === "move") {
+    const { positionals, body, actor, agent } = parseIssueMoveArgs(rest);
+    const [key, status, ...extra] = positionals;
+    if (key === undefined || status === undefined) {
+      throw new UsageError("issue move requires <KEY> <status>");
+    }
+    if (extra.length > 0) {
+      throw new UsageError("issue move requires exactly <KEY> <status>");
+    }
+    const issue = await withDatabase((db) =>
+      moveIssue(db, { key, to: status, actor, agent, body }),
+    );
+    if (json) {
+      printJson(issue);
+    } else {
+      process.stdout.write(`moved ${issue.key} to ${issue.status}\n`);
+    }
+    return;
+  }
+
   throw new UsageError(
     subcommand === undefined
-      ? "issue requires a subcommand (add, list, comment, show)"
+      ? "issue requires a subcommand (add, list, comment, show, move)"
       : `unknown issue subcommand "${subcommand}"`,
   );
 }

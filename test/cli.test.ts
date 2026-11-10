@@ -481,3 +481,120 @@ test("issue comment with an invalid --actor exits 1", async () => {
   assert.match(result.stderr, /^validation: /);
   assert.equal(result.stdout, "");
 });
+
+test("issue move updates status and reports allowed transitions", async () => {
+  const project = await runCli(["project", "add", "TAC", "Tac", "--json"]);
+  assert.equal(project.code, 0, project.stderr);
+  const created = await runCli(["issue", "add", "TAC", "Move target", "--json"]);
+  assert.equal(created.code, 0, created.stderr);
+
+  const moved = await runCli(["issue", "move", "TAC-1", "todo"]);
+  assert.equal(moved.code, 0, moved.stderr);
+  assert.equal(moved.stdout, "moved TAC-1 to todo\n");
+
+  const shown = await runCli(["issue", "show", "TAC-1", "--json"]);
+  assert.equal(shown.code, 0, shown.stderr);
+  const shownPayload = JSON.parse(shown.stdout) as ShowPayload & {
+    allowedTransitions: string[];
+  };
+  assert.equal(shownPayload.status, "todo");
+  assert.deepEqual(shownPayload.allowedTransitions, ["backlog", "in_progress"]);
+
+  // Moving an issue to its current status has no legal edge, so return to
+  // backlog first and exercise the JSON form of the same move.
+  const reverted = await runCli(["issue", "move", "TAC-1", "backlog"]);
+  assert.equal(reverted.code, 0, reverted.stderr);
+  assert.equal(reverted.stdout, "moved TAC-1 to backlog\n");
+
+  const json = await runCli(["issue", "move", "TAC-1", "todo", "--json"]);
+  assert.equal(json.code, 0, json.stderr);
+  const payload = JSON.parse(json.stdout) as {
+    key: string;
+    status: string;
+    allowedTransitions: string[];
+  };
+  assert.equal(payload.key, "TAC-1");
+  assert.equal(payload.status, "todo");
+  assert.deepEqual(payload.allowedTransitions, ["backlog", "in_progress"]);
+});
+
+test("issue move resolves padded keys in the human output", async () => {
+  const project = await runCli(["project", "add", "TAC", "Tac", "--json"]);
+  assert.equal(project.code, 0, project.stderr);
+  const created = await runCli(["issue", "add", "TAC", "Move target", "--json"]);
+  assert.equal(created.code, 0, created.stderr);
+
+  const result = await runCli(["issue", "move", "TAC-001", "todo"]);
+
+  assert.equal(result.code, 0, result.stderr);
+  assert.equal(result.stdout, "moved TAC-1 to todo\n");
+});
+
+test("issue move along an illegal edge exits 1 with an illegal_transition error", async () => {
+  const project = await runCli(["project", "add", "TAC", "Tac", "--json"]);
+  assert.equal(project.code, 0, project.stderr);
+  const created = await runCli(["issue", "add", "TAC", "Move target", "--json"]);
+  assert.equal(created.code, 0, created.stderr);
+
+  const result = await runCli(["issue", "move", "TAC-1", "done"]);
+
+  assert.equal(result.code, 1);
+  assert.match(result.stderr, /^illegal_transition: /);
+  assert.equal(result.stdout, "");
+
+  const shown = await runCli(["issue", "show", "TAC-1", "--json"]);
+  assert.equal(shown.code, 0, shown.stderr);
+  const payload = JSON.parse(shown.stdout) as ShowPayload;
+  assert.equal(payload.status, "backlog");
+  assert.deepEqual(
+    payload.events.map((event) => event.kind),
+    ["created"],
+  );
+});
+
+test("issue move without a target status exits 2 with the usage block", async () => {
+  const project = await runCli(["project", "add", "TAC", "Tac", "--json"]);
+  assert.equal(project.code, 0, project.stderr);
+  const created = await runCli(["issue", "add", "TAC", "Move target", "--json"]);
+  assert.equal(created.code, 0, created.stderr);
+
+  const result = await runCli(["issue", "move", "TAC-1"]);
+
+  assert.equal(result.code, 2);
+  assert.match(result.stderr, /Usage: curved <command> \[options\]/);
+  assert.equal(result.stdout, "");
+});
+
+test("issue move --body records a status event with the transition", async () => {
+  const project = await runCli(["project", "add", "TAC", "Tac", "--json"]);
+  assert.equal(project.code, 0, project.stderr);
+  const created = await runCli(["issue", "add", "TAC", "Move target", "--json"]);
+  assert.equal(created.code, 0, created.stderr);
+
+  const moved = await runCli([
+    "issue",
+    "move",
+    "TAC-1",
+    "todo",
+    "--body",
+    "starting work",
+  ]);
+  assert.equal(moved.code, 0, moved.stderr);
+  assert.equal(moved.stdout, "moved TAC-1 to todo\n");
+
+  const json = await runCli(["issue", "show", "TAC-1", "--json"]);
+  assert.equal(json.code, 0, json.stderr);
+  const payload = JSON.parse(json.stdout) as ShowPayload;
+  assert.equal(payload.status, "todo");
+  assert.equal(payload.events.length, 2);
+
+  const [createdEvent, statusEvent] = payload.events;
+  assert.ok(createdEvent, "expected a created event in the timeline");
+  assert.ok(statusEvent, "expected a status event in the timeline");
+  assert.equal(createdEvent.kind, "created");
+  assert.equal(statusEvent.kind, "status");
+  assert.equal(statusEvent.actorType, "human");
+  assert.equal(statusEvent.body, "starting work");
+  assert.equal(statusEvent.fromStatus, "backlog");
+  assert.equal(statusEvent.toStatus, "todo");
+});
