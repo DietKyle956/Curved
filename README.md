@@ -35,9 +35,15 @@ stdio. See `initial_idea.md` for the product intent.
 
 The toolchain is live: Node 26.2 runs the TypeScript directly via type stripping,
 Postgres 18 runs through `docker compose` on host port 55432, migrations create and
-update the schema, and the projects resource ships with the `project add` and
-`project list` CLI commands.
+update the schema, and the projects and issues resources ship with CLI commands.
+Issue keys such as `TAC-14` are allocated atomically per project, and every issue
+carries an append-only `issue_events` timeline.
 
+- `node src/cli.ts issue add <PROJECT> <title...>` - create an issue; keys are
+  assigned atomically.
+- `node src/cli.ts issue list [PROJECT]` - list issues, optionally scoped to one
+  project.
+- `node src/cli.ts issue show <KEY>` - print one issue with its timestamps.
 - `npm run db` - start Postgres and apply migrations.
 - `./scripts/init.sh` - install, database, check, build.
 - `./scripts/clean-state.sh` - end-of-session gate.

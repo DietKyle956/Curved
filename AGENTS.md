@@ -29,8 +29,10 @@ in prompts:
 The Node/TypeScript toolchain is live: `npm install`, typechecking for the server and
 web trees, tests, and the build all run today. Postgres 18 runs through
 `docker compose` on host port 55432, with `scripts/db.sh` bootstrapping the database
-and applying migrations. The projects resource ships with the `project add` and
-`project list` CLI commands. Next frontier: LAS-142.
+and applying migrations. The projects and issues resources ship with CLI commands:
+`project add` and `project list`, plus `issue add`, `issue list`, and `issue show`.
+Keys are allocated atomically per project, and every issue carries an append-only
+`issue_events` timeline. Next frontier: LAS-143 and LAS-144.
 
 ## Directory page
 

@@ -2,7 +2,7 @@
 
 - **Last updated:** 2026-11-10
 - **Project:** curved
-- **Phase:** foundation complete (`LAS-141`). Toolchain, Postgres 18, migrations, and the projects resource are live.
+- **Phase:** issue capture complete (`LAS-142`). Toolchain, Postgres 18, migrations, the projects resource, and the issues resource (atomic keys, append-only events) are live.
 
 ## Current verified state
 
@@ -13,7 +13,7 @@
   `--no-install` skips only install; the database step still runs.
 - End-of-session gate: `./scripts/clean-state.sh`
 - Baseline: green. `npm run typecheck` covers server and web configs; `npm test`
-  runs 11 tests on the Node test runner.
+  runs 30 tests on the Node test runner.
 - Database: `docker compose up` starts `postgres:18-alpine` on host port 55432
   (user/password/db all `curved`, named volume mounted at `/var/lib/postgresql`).
   `scripts/db.sh` waits for readiness, then runs `node src/migrate.ts`.
@@ -22,8 +22,17 @@
   Concurrent first runs are serialized and covered by a regression test.
 - Schema: `projects` (identity id, unique key matching `^[A-Z][A-Z0-9]{1,9}$`,
   trimmed name 1..200, `next_number` default 1).
+- Schema: `issues` (project reference, per-project `number`, globally unique `key`
+  matching `^[A-Z][A-Z0-9]{1,9}-[0-9]{1,6}$`, trimmed title 1..500, description,
+  status, priority 1..4, optional parent, blocked reason, and claimer, timestamps;
+  unique `(project_id, number)`), plus append-only `issue_events` (kind, actor type,
+  optional from/to statuses and body; a row trigger rejects every UPDATE and DELETE
+  with SQLSTATE 23001).
 - CLI: `node src/cli.ts project add <KEY> <name...>`, `project list`, `migrate`,
+  `issue add <PROJECT> <title...>`, `issue list [PROJECT]`, `issue show <KEY>`,
   and `--json`; errors print `<code>: <message>` and exit 1.
+- Issue keys are canonical without padding (`TAC-14`); parsing accepts padded input
+  such as `TAC-014`.
 - Tests: isolated database from `TEST_DATABASE_URL` (name must start with
   `curved_test`), created and migrated by `test/helpers/db.ts`; the development
   database is never touched.
@@ -37,6 +46,13 @@
 - The state machine and agent tool interface are the product; the board is a client.
 - Postgres is the store: issues, relations, labels, comments, `issue_events`, plus a
   partial unique index for one `in_progress` issue per project/agent.
+- Issue creation allocates the number with one CTE statement that updates
+  `projects.next_number` and inserts the row; the `created` event is appended in the
+  same transaction, so a created issue never lacks history.
+- `src/shared/status.ts` is the single contract for statuses, priorities, event
+  kinds, and actor types; the schema constraints mirror it.
+- `issues.claimed_by` is plain text until `LAS-145` adds agent identity; the claim
+  fence and the transition rules land in `LAS-144` and `LAS-145`.
 - Foundation sequence: shared contract modules (`config`, `db`, `errors`) land first,
   then disjoint slices for database, services/CLI, tests, and baseline/docs.
 - Migrations take the session advisory lock before creating the ledger, so two
@@ -54,8 +70,7 @@
 
 ## Next best step
 
-Execute `LAS-142`: issue capture with atomic per-project keys and append-only
-`issue_events`.
+Execute `LAS-143` and `LAS-144`, both unblocked by `LAS-142`.
 
 ## Tracker
 
@@ -66,7 +81,7 @@ Execute `LAS-142`: issue capture with atomic per-project keys and append-only
   for the append-only trigger and the partial unique index.
 - Sub-issues (15, native `blockedBy` edges):
   - `LAS-141` foundation: toolchain, Postgres, migrations, project creation (done 2026-11-10)
-  - `LAS-142` issue capture, atomic keys, append-only events (141)
+  - `LAS-142` issue capture, atomic keys, append-only events (141) (done 2026-11-10)
   - `LAS-143` comments and timeline read path (142)
   - `LAS-144` status machine and actor matrix (142)
   - `LAS-145` agent identity and claim fence (144)
@@ -164,3 +179,27 @@ Execute `LAS-142`: issue capture with atomic per-project keys and append-only
 - Known risk: `build` is the typecheck gate for now; `START_CMD` is the CLI help until
   `LAS-148` ships the server.
 - Next best step: execute `LAS-142`.
+
+### Session 006
+
+- Date: 2026-11-10
+- Goal: execute `LAS-142` (issue capture, atomic keys, append-only events).
+- Completed: `0002_issues.sql` (`issues` with unique `(project_id, number)` and the
+  key format; `issue_events` with kind, actor, and status constraints plus a row
+  trigger rejecting UPDATE and DELETE with SQLSTATE 23001); `src/shared/status.ts`
+  contract; `services/issues` with one-statement number allocation, canonical key
+  parsing, and a `created` event per issue in the same transaction;
+  `services/events` append/list; `issue add`, `issue list`, `issue show` CLI commands
+  with padded-key resolution; service, event, and CLI tests; README and AGENTS state.
+- Verification run: `npm run typecheck`; `npm test` (30 pass); CLI smoke against the
+  isolated test database (project `SMK`, 14 issues, `show SMK-014` resolved to
+  `SMK-14`); `./scripts/init.sh`; `./scripts/clean-state.sh`.
+- Evidence captured: contiguous keys `SMK-1` through `SMK-14`; padded JSON show
+  returned `key: "SMK-14"` and `number: 14`; raw UPDATE and DELETE on `issue_events`
+  rejected with `23001`; 25 concurrent creations produced `TAC-1` through `TAC-25`.
+- Coordination: five parallel slices (schema/status, services, CLI, tests, docs).
+  The migration test now derives expected versions from `migrations/*.sql` instead of
+  pinning `0001_projects`.
+- Known risk: `issues.claimed_by` is plain text until `LAS-145`; the partial unique
+  fence and the transition rules land in `LAS-144` and `LAS-145`.
+- Next best step: execute `LAS-143` and `LAS-144`.

@@ -3,6 +3,7 @@ import type { Database } from "./db.ts";
 import { createDatabase } from "./db.ts";
 import { ServiceError } from "./errors.ts";
 import { runMigrations } from "./migrate.ts";
+import { createIssue, getIssue, listIssues } from "./services/issues.ts";
 import { createProject, listProjects } from "./services/projects.ts";
 
 const USAGE = `Usage: curved <command> [options]
@@ -11,6 +12,10 @@ Commands:
   migrate                     Apply pending database migrations
   project add <KEY> <name>    Create a project
   project list                List projects ordered by key
+  issue add <PROJECT> <title...> [--description <text>] [--priority <1-4>] [--status <status>] [--parent <KEY>]
+                              Create an issue
+  issue list [PROJECT]        List issues ordered by project and number
+  issue show <KEY>            Show one issue
   help                        Show this help
 
 Options:
@@ -73,6 +78,148 @@ async function runProjectCommand(
   );
 }
 
+interface IssueAddFlags {
+  description: string | undefined;
+  priority: string | undefined;
+  status: string | undefined;
+  parent: string | undefined;
+}
+
+function parseIssueAddArgs(rest: readonly string[]): {
+  positionals: string[];
+  flags: IssueAddFlags;
+} {
+  const positionals: string[] = [];
+  const flags: IssueAddFlags = {
+    description: undefined,
+    priority: undefined,
+    status: undefined,
+    parent: undefined,
+  };
+
+  for (let index = 0; index < rest.length; index += 1) {
+    const arg = rest[index];
+    if (arg === undefined) {
+      continue;
+    }
+    if (
+      arg === "--description" ||
+      arg === "--priority" ||
+      arg === "--status" ||
+      arg === "--parent"
+    ) {
+      const value = rest[index + 1];
+      if (value === undefined) {
+        throw new UsageError(`${arg} requires a value`);
+      }
+      index += 1;
+      if (arg === "--description") {
+        flags.description = value;
+      } else if (arg === "--priority") {
+        flags.priority = value;
+      } else if (arg === "--status") {
+        flags.status = value;
+      } else {
+        flags.parent = value;
+      }
+      continue;
+    }
+    if (arg.startsWith("--")) {
+      throw new UsageError(`unknown option "${arg}"`);
+    }
+    positionals.push(arg);
+  }
+
+  return { positionals, flags };
+}
+
+async function runIssueCommand(
+  subcommand: string | undefined,
+  rest: readonly string[],
+  json: boolean,
+): Promise<void> {
+  if (subcommand === "add") {
+    const { positionals, flags } = parseIssueAddArgs(rest);
+    const [project, ...words] = positionals;
+    if (project === undefined || words.length === 0) {
+      throw new UsageError("issue add requires <PROJECT> <title...>");
+    }
+    const title = words.join(" ");
+    const issue = await withDatabase((db) =>
+      createIssue(db, {
+        project,
+        title,
+        description: flags.description,
+        priority: flags.priority === undefined ? undefined : Number(flags.priority),
+        status: flags.status,
+        parent: flags.parent,
+      }),
+    );
+    if (json) {
+      printJson(issue);
+    } else {
+      process.stdout.write(`created issue ${issue.key} (${issue.title})\n`);
+    }
+    return;
+  }
+
+  if (subcommand === "list") {
+    const [project, ...extra] = rest;
+    if (extra.length > 0) {
+      throw new UsageError("issue list accepts at most one PROJECT argument");
+    }
+    const filter = project === undefined ? undefined : { project };
+    const issues = await withDatabase((db) => listIssues(db, filter));
+    if (json) {
+      printJson(issues);
+    } else {
+      process.stdout.write(
+        issues
+          .map((issue) => `${issue.key}\t${issue.status}\t${issue.priority}\t${issue.title}\n`)
+          .join(""),
+      );
+    }
+    return;
+  }
+
+  if (subcommand === "show") {
+    const [key, ...extra] = rest;
+    if (key === undefined) {
+      throw new UsageError("issue show requires <KEY>");
+    }
+    if (extra.length > 0) {
+      throw new UsageError("issue show accepts exactly one KEY argument");
+    }
+    const issue = await withDatabase((db) => getIssue(db, key));
+    if (json) {
+      printJson(issue);
+    } else {
+      process.stdout.write(
+        [
+          `key: ${issue.key}`,
+          `status: ${issue.status}`,
+          `priority: ${issue.priority}`,
+          `title: ${issue.title}`,
+          `description: ${issue.description}`,
+          `parent: ${issue.parentId === null ? "-" : String(issue.parentId)}`,
+          `blocked_reason: ${issue.blockedReason === null ? "-" : issue.blockedReason}`,
+          `claimed_by: ${issue.claimedBy === null ? "-" : issue.claimedBy}`,
+          `created_at: ${issue.createdAt}`,
+          `updated_at: ${issue.updatedAt}`,
+          "",
+        ].join("\n"),
+      );
+    }
+    return;
+  }
+
+  throw new UsageError(
+    subcommand === undefined
+      ? "issue requires a subcommand (add, list, show)"
+      : `unknown issue subcommand "${subcommand}"`,
+  );
+}
+
 async function main(argv: readonly string[]): Promise<void> {
   const json = argv.includes("--json");
   const args = argv.filter((arg) => arg !== "--json");
@@ -102,6 +249,11 @@ async function main(argv: readonly string[]): Promise<void> {
 
   if (command === "project") {
     await runProjectCommand(subcommand, rest, json);
+    return;
+  }
+
+  if (command === "issue") {
+    await runIssueCommand(subcommand, rest, json);
     return;
   }
 
