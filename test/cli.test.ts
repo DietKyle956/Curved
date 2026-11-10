@@ -26,6 +26,31 @@ interface CliResult {
   stderr: string;
 }
 
+interface TimelineEvent {
+  id: number;
+  issueId: number;
+  kind: string;
+  actorType: string;
+  fromStatus: string | null;
+  toStatus: string | null;
+  body: string | null;
+  createdAt: string;
+}
+
+interface ShowPayload {
+  key: string;
+  status: string;
+  priority: number;
+  title: string;
+  description: string;
+  parentId: number | null;
+  blockedReason: string | null;
+  claimedBy: string | null;
+  createdAt: string;
+  updatedAt: string;
+  events: TimelineEvent[];
+}
+
 function runCli(args: readonly string[]): Promise<CliResult> {
   const { promise, resolve, reject } = Promise.withResolvers<CliResult>();
   const child = spawn(process.execPath, ["src/cli.ts", ...args], {
@@ -255,7 +280,13 @@ test("issue add, list, and show print the pinned human formats", async () => {
 
   const json = await runCli(["issue", "show", "TAC-1", "--json"]);
   assert.equal(json.code, 0, json.stderr);
-  const issue = JSON.parse(json.stdout) as { createdAt: string; updatedAt: string };
+  const issue = JSON.parse(json.stdout) as {
+    createdAt: string;
+    updatedAt: string;
+    events: Array<{ id: number; kind: string; actorType: string; createdAt: string }>;
+  };
+  const [createdEvent] = issue.events;
+  assert.ok(createdEvent, "expected a created event in the show payload");
 
   const shown = await runCli(["issue", "show", "TAC-1"]);
   assert.equal(shown.code, 0, shown.stderr);
@@ -273,6 +304,180 @@ test("issue add, list, and show print the pinned human formats", async () => {
       `created_at: ${issue.createdAt}`,
       `updated_at: ${issue.updatedAt}`,
       "",
+      "timeline:",
+      `${createdEvent.id}\t${createdEvent.kind}\t${createdEvent.actorType}\t${createdEvent.createdAt}\t-`,
+      "",
     ].join("\n"),
   );
+});
+
+test("issue comment then issue show render the comment in human and JSON form", async () => {
+  const project = await runCli(["project", "add", "TAC", "Tac", "--json"]);
+  assert.equal(project.code, 0, project.stderr);
+  const created = await runCli(["issue", "add", "TAC", "Comment target", "--json"]);
+  assert.equal(created.code, 0, created.stderr);
+
+  const commented = await runCli(["issue", "comment", "TAC-1", "  Looks", "good  "]);
+  assert.equal(commented.code, 0, commented.stderr);
+  assert.equal(commented.stderr, "");
+  assert.equal(commented.stdout, "commented on TAC-1 as human\n");
+
+  const json = await runCli(["issue", "show", "TAC-1", "--json"]);
+  assert.equal(json.code, 0, json.stderr);
+  const payload = JSON.parse(json.stdout) as ShowPayload;
+  assert.equal(payload.key, "TAC-1");
+  assert.equal(payload.events.length, 2);
+
+  const [createdEvent, commentEvent] = payload.events;
+  assert.ok(createdEvent, "expected a created event in the timeline");
+  assert.ok(commentEvent, "expected a comment event in the timeline");
+  assert.equal(createdEvent.kind, "created");
+  assert.equal(commentEvent.kind, "comment");
+  assert.equal(commentEvent.issueId, createdEvent.issueId);
+  assert.ok(commentEvent.id > createdEvent.id);
+  assert.equal(commentEvent.actorType, "human");
+  assert.equal(commentEvent.fromStatus, null);
+  assert.equal(commentEvent.toStatus, null);
+  assert.equal(commentEvent.body, "Looks good");
+  assert.equal(new Date(commentEvent.createdAt).toISOString(), commentEvent.createdAt);
+
+  const shown = await runCli(["issue", "show", "TAC-1"]);
+  assert.equal(shown.code, 0, shown.stderr);
+  assert.equal(
+    shown.stdout,
+    [
+      "key: TAC-1",
+      "status: backlog",
+      "priority: 3",
+      "title: Comment target",
+      "description: ",
+      "parent: -",
+      "blocked_reason: -",
+      "claimed_by: -",
+      `created_at: ${payload.createdAt}`,
+      `updated_at: ${payload.updatedAt}`,
+      "",
+      "timeline:",
+      `${createdEvent.id}\tcreated\thuman\t${createdEvent.createdAt}\t-`,
+      `${commentEvent.id}\tcomment\thuman\t${commentEvent.createdAt}\tLooks good`,
+      "",
+    ].join("\n"),
+  );
+});
+
+test("issue comment --json prints the appended comment event", async () => {
+  const project = await runCli(["project", "add", "TAC", "Tac", "--json"]);
+  assert.equal(project.code, 0, project.stderr);
+  const created = await runCli(["issue", "add", "TAC", "Comment target", "--json"]);
+  assert.equal(created.code, 0, created.stderr);
+
+  const result = await runCli(["issue", "comment", "TAC-1", "Looks", "good", "--json"]);
+  assert.equal(result.code, 0, result.stderr);
+  const event = JSON.parse(result.stdout) as TimelineEvent;
+
+  assert.deepEqual(
+    Object.keys(event).sort(),
+    [
+      "actorType",
+      "body",
+      "createdAt",
+      "fromStatus",
+      "id",
+      "issueId",
+      "kind",
+      "toStatus",
+    ],
+  );
+  assert.equal(typeof event.id, "number");
+  assert.equal(typeof event.issueId, "number");
+  assert.equal(event.kind, "comment");
+  assert.equal(event.actorType, "human");
+  assert.equal(event.fromStatus, null);
+  assert.equal(event.toStatus, null);
+  assert.equal(event.body, "Looks good");
+  assert.equal(new Date(event.createdAt).toISOString(), event.createdAt);
+});
+
+test("issue comment appends two actors' comments in insertion order", async () => {
+  const project = await runCli(["project", "add", "TAC", "Tac", "--json"]);
+  assert.equal(project.code, 0, project.stderr);
+  const created = await runCli(["issue", "add", "TAC", "Comment target", "--json"]);
+  assert.equal(created.code, 0, created.stderr);
+
+  const human = await runCli(["issue", "comment", "TAC-1", "Human", "first"]);
+  assert.equal(human.code, 0, human.stderr);
+  assert.equal(human.stdout, "commented on TAC-1 as human\n");
+
+  const agent = await runCli([
+    "issue",
+    "comment",
+    "TAC-1",
+    "Agent",
+    "second",
+    "--actor",
+    "agent",
+  ]);
+  assert.equal(agent.code, 0, agent.stderr);
+  assert.equal(agent.stdout, "commented on TAC-1 as agent\n");
+
+  const json = await runCli(["issue", "show", "TAC-1", "--json"]);
+  assert.equal(json.code, 0, json.stderr);
+  const payload = JSON.parse(json.stdout) as ShowPayload;
+
+  assert.deepEqual(
+    payload.events.map((event) => event.kind),
+    ["created", "comment", "comment"],
+  );
+  const ids = payload.events.map((event) => event.id);
+  assert.deepEqual(ids, [...ids].sort((a, b) => a - b));
+
+  assert.deepEqual(
+    payload.events.slice(1).map((event) => [event.actorType, event.body]),
+    [
+      ["human", "Human first"],
+      ["agent", "Agent second"],
+    ],
+  );
+});
+
+test("issue comment with an empty or blank body exits 1 with a validation error", async () => {
+  const project = await runCli(["project", "add", "TAC", "Tac", "--json"]);
+  assert.equal(project.code, 0, project.stderr);
+  const created = await runCli(["issue", "add", "TAC", "Comment target", "--json"]);
+  assert.equal(created.code, 0, created.stderr);
+
+  for (const body of [[""], ["   "]]) {
+    const result = await runCli(["issue", "comment", "TAC-1", ...body]);
+    assert.equal(result.code, 1, JSON.stringify(body));
+    assert.match(result.stderr, /^validation: /);
+    assert.equal(result.stdout, "");
+  }
+
+  const json = await runCli(["issue", "show", "TAC-1", "--json"]);
+  assert.equal(json.code, 0, json.stderr);
+  const payload = JSON.parse(json.stdout) as ShowPayload;
+  assert.deepEqual(
+    payload.events.map((event) => event.kind),
+    ["created"],
+  );
+});
+
+test("issue comment with an invalid --actor exits 1", async () => {
+  const project = await runCli(["project", "add", "TAC", "Tac", "--json"]);
+  assert.equal(project.code, 0, project.stderr);
+  const created = await runCli(["issue", "add", "TAC", "Comment target", "--json"]);
+  assert.equal(created.code, 0, created.stderr);
+
+  const result = await runCli([
+    "issue",
+    "comment",
+    "TAC-1",
+    "Hello",
+    "--actor",
+    "robot",
+  ]);
+
+  assert.equal(result.code, 1);
+  assert.match(result.stderr, /^validation: /);
+  assert.equal(result.stdout, "");
 });

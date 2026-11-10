@@ -10,7 +10,8 @@ import {
   isStatus,
 } from "../shared/status.ts";
 import type { ActorType, Priority, Status } from "../shared/status.ts";
-import { appendEvent } from "./events.ts";
+import { appendEvent, listEvents } from "./events.ts";
+import type { IssueEvent } from "./events.ts";
 
 const ISSUE_KEY_PATTERN = /^([A-Z][A-Z0-9]{1,9})-([0-9]{1,6})$/;
 const PROJECT_KEY_PATTERN = /^[A-Z][A-Z0-9]{1,9}$/;
@@ -150,7 +151,7 @@ function validateStatus(raw: string): Status {
   return raw;
 }
 
-function validateActor(raw: string): ActorType {
+export function validateActor(raw: string): ActorType {
   if (!isActorType(raw)) {
     throw new ServiceError(
       "validation",
@@ -272,4 +273,18 @@ export async function getIssue(db: Db, key: string): Promise<Issue> {
     throw new ServiceError("not_found", `issue "${canonical}" not found`);
   }
   return toIssue(row);
+}
+
+export interface IssueTimeline {
+  issue: Issue;
+  events: IssueEvent[];
+}
+
+export async function getIssueTimeline(
+  db: Db,
+  key: string,
+): Promise<IssueTimeline> {
+  const issue = await getIssue(db, key);
+  const events = await listEvents(db, issue.id);
+  return { issue, events };
 }

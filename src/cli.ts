@@ -3,7 +3,12 @@ import type { Database } from "./db.ts";
 import { createDatabase } from "./db.ts";
 import { ServiceError } from "./errors.ts";
 import { runMigrations } from "./migrate.ts";
-import { createIssue, getIssue, listIssues } from "./services/issues.ts";
+import { commentOnIssue } from "./services/comments.ts";
+import {
+  createIssue,
+  getIssueTimeline,
+  listIssues,
+} from "./services/issues.ts";
 import { createProject, listProjects } from "./services/projects.ts";
 
 const USAGE = `Usage: curved <command> [options]
@@ -15,7 +20,9 @@ Commands:
   issue add <PROJECT> <title...> [--description <text>] [--priority <1-4>] [--status <status>] [--parent <KEY>]
                               Create an issue
   issue list [PROJECT]        List issues ordered by project and number
-  issue show <KEY>            Show one issue
+  issue comment <KEY> <body...> [--actor <agent|human|git|system>]
+                              Append a comment event to an issue
+  issue show <KEY>            Show one issue with its event timeline
   help                        Show this help
 
 Options:
@@ -133,6 +140,36 @@ function parseIssueAddArgs(rest: readonly string[]): {
   return { positionals, flags };
 }
 
+function parseIssueCommentArgs(rest: readonly string[]): {
+  positionals: string[];
+  actor: string | undefined;
+} {
+  const positionals: string[] = [];
+  let actor: string | undefined;
+
+  for (let index = 0; index < rest.length; index += 1) {
+    const arg = rest[index];
+    if (arg === undefined) {
+      continue;
+    }
+    if (arg === "--actor") {
+      const value = rest[index + 1];
+      if (value === undefined) {
+        throw new UsageError("--actor requires a value");
+      }
+      index += 1;
+      actor = value;
+      continue;
+    }
+    if (arg.startsWith("--")) {
+      throw new UsageError(`unknown option "${arg}"`);
+    }
+    positionals.push(arg);
+  }
+
+  return { positionals, actor };
+}
+
 async function runIssueCommand(
   subcommand: string | undefined,
   rest: readonly string[],
@@ -182,6 +219,27 @@ async function runIssueCommand(
     return;
   }
 
+  if (subcommand === "comment") {
+    const { positionals, actor } = parseIssueCommentArgs(rest);
+    const [key, ...words] = positionals;
+    if (key === undefined) {
+      throw new UsageError("issue comment requires <KEY> <body...>");
+    }
+    if (words.length === 0) {
+      throw new UsageError("issue comment requires a body");
+    }
+    const body = words.join(" ");
+    const event = await withDatabase((db) =>
+      commentOnIssue(db, { key, body, actor }),
+    );
+    if (json) {
+      printJson(event);
+    } else {
+      process.stdout.write(`commented on ${key} as ${event.actorType}\n`);
+    }
+    return;
+  }
+
   if (subcommand === "show") {
     const [key, ...extra] = rest;
     if (key === undefined) {
@@ -190,32 +248,39 @@ async function runIssueCommand(
     if (extra.length > 0) {
       throw new UsageError("issue show accepts exactly one KEY argument");
     }
-    const issue = await withDatabase((db) => getIssue(db, key));
+    const { issue, events } = await withDatabase((db) =>
+      getIssueTimeline(db, key),
+    );
     if (json) {
-      printJson(issue);
+      printJson({ ...issue, events });
     } else {
-      process.stdout.write(
-        [
-          `key: ${issue.key}`,
-          `status: ${issue.status}`,
-          `priority: ${issue.priority}`,
-          `title: ${issue.title}`,
-          `description: ${issue.description}`,
-          `parent: ${issue.parentId === null ? "-" : String(issue.parentId)}`,
-          `blocked_reason: ${issue.blockedReason === null ? "-" : issue.blockedReason}`,
-          `claimed_by: ${issue.claimedBy === null ? "-" : issue.claimedBy}`,
-          `created_at: ${issue.createdAt}`,
-          `updated_at: ${issue.updatedAt}`,
-          "",
-        ].join("\n"),
-      );
+      const lines = [
+        `key: ${issue.key}`,
+        `status: ${issue.status}`,
+        `priority: ${issue.priority}`,
+        `title: ${issue.title}`,
+        `description: ${issue.description}`,
+        `parent: ${issue.parentId === null ? "-" : String(issue.parentId)}`,
+        `blocked_reason: ${issue.blockedReason === null ? "-" : issue.blockedReason}`,
+        `claimed_by: ${issue.claimedBy === null ? "-" : issue.claimedBy}`,
+        `created_at: ${issue.createdAt}`,
+        `updated_at: ${issue.updatedAt}`,
+        "",
+        "timeline:",
+      ];
+      for (const event of events) {
+        lines.push(
+          `${event.id}\t${event.kind}\t${event.actorType}\t${event.createdAt}\t${event.body === null ? "-" : event.body}`,
+        );
+      }
+      process.stdout.write(`${lines.join("\n")}\n`);
     }
     return;
   }
 
   throw new UsageError(
     subcommand === undefined
-      ? "issue requires a subcommand (add, list, show)"
+      ? "issue requires a subcommand (add, list, comment, show)"
       : `unknown issue subcommand "${subcommand}"`,
   );
 }

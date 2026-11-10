@@ -5,6 +5,7 @@ import { listEvents } from "../src/services/events.ts";
 import {
   createIssue,
   getIssue,
+  getIssueTimeline,
   listIssues,
   type CreateIssueInput,
 } from "../src/services/issues.ts";
@@ -185,6 +186,34 @@ test("getIssue accepts padded keys and rejects malformed or unknown keys", async
   );
   await assert.rejects(
     getIssue(testDb.db, "TAC-99"),
+    rejectsWithServiceCode("not_found"),
+  );
+});
+
+test("getIssueTimeline returns the issue and exactly its created event", async () => {
+  await seedProject("TAC");
+  const created = await createIssue(testDb.db, {
+    project: "TAC",
+    title: "Timeline target",
+  });
+
+  const timeline = await getIssueTimeline(testDb.db, created.key);
+
+  assert.deepEqual(timeline.issue, created);
+  assert.equal(timeline.events.length, 1);
+
+  const [event] = timeline.events;
+  assert.ok(event, "expected a created event");
+  assert.equal(event.issueId, created.id);
+  assert.equal(event.kind, "created");
+  assert.equal(event.actorType, "human");
+  assert.equal(event.fromStatus, null);
+  assert.equal(event.toStatus, "backlog");
+  assert.equal(event.body, null);
+  assertIsoTimestamp(event.createdAt);
+
+  await assert.rejects(
+    getIssueTimeline(testDb.db, "TAC-99"),
     rejectsWithServiceCode("not_found"),
   );
 });

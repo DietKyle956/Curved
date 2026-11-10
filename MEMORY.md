@@ -2,7 +2,7 @@
 
 - **Last updated:** 2026-11-10
 - **Project:** curved
-- **Phase:** issue capture complete (`LAS-142`). Toolchain, Postgres 18, migrations, the projects resource, and the issues resource (atomic keys, append-only events) are live.
+- **Phase:** comments and timeline read path complete (`LAS-143`). Toolchain, Postgres 18, migrations, the projects resource, the issues resource (atomic keys, append-only events), and comment events with the full timeline read path are live.
 
 ## Current verified state
 
@@ -13,7 +13,7 @@
   `--no-install` skips only install; the database step still runs.
 - End-of-session gate: `./scripts/clean-state.sh`
 - Baseline: green. `npm run typecheck` covers server and web configs; `npm test`
-  runs 30 tests on the Node test runner.
+  runs 41 tests on the Node test runner.
 - Database: `docker compose up` starts `postgres:18-alpine` on host port 55432
   (user/password/db all `curved`, named volume mounted at `/var/lib/postgresql`).
   `scripts/db.sh` waits for readiness, then runs `node src/migrate.ts`.
@@ -29,8 +29,12 @@
   optional from/to statuses and body; a row trigger rejects every UPDATE and DELETE
   with SQLSTATE 23001).
 - CLI: `node src/cli.ts project add <KEY> <name...>`, `project list`, `migrate`,
-  `issue add <PROJECT> <title...>`, `issue list [PROJECT]`, `issue show <KEY>`,
+  `issue add <PROJECT> <title...>`, `issue list [PROJECT]`, `issue show <KEY>`
+  (renders the full timeline), `issue comment <KEY> <body...> [--actor <type>]`,
   and `--json`; errors print `<code>: <message>` and exit 1.
+- Comments are `issue_events` rows of kind `comment`; there is no comments table.
+  Bodies are trimmed and empty/whitespace-only bodies fail with `validation`.
+  Timeline reads order by ascending event id; timestamps are display only.
 - Issue keys are canonical without padding (`TAC-14`); parsing accepts padded input
   such as `TAC-014`.
 - Tests: isolated database from `TEST_DATABASE_URL` (name must start with
@@ -70,7 +74,7 @@
 
 ## Next best step
 
-Execute `LAS-143` and `LAS-144`, both unblocked by `LAS-142`.
+Execute `LAS-144` (status machine and actor matrix), unblocked by `LAS-142`.
 
 ## Tracker
 
@@ -203,3 +207,32 @@ Execute `LAS-143` and `LAS-144`, both unblocked by `LAS-142`.
 - Known risk: `issues.claimed_by` is plain text until `LAS-145`; the partial unique
   fence and the transition rules land in `LAS-144` and `LAS-145`.
 - Next best step: execute `LAS-143` and `LAS-144`.
+
+### Session 007
+
+- Date: 2026-11-10
+- Goal: execute `LAS-143` (comments and the timeline read path).
+- Completed: `services/comments` with `commentOnIssue` (trimmed body, empty body
+  rejected as `validation`, actor defaulting to `human` and validated, issue resolved
+  through `getIssue`, one `comment` event appended in a transaction); exported
+  `validateActor`; `getIssueTimeline` returning the issue plus events ascending by
+  id; `issue comment <KEY> <body...> [--actor <type>]`; `issue show` now renders the
+  full timeline in human output and exposes `events` alongside the issue in `--json`;
+  service, timeline, and CLI tests; README and AGENTS state.
+- Verification run: `npm run typecheck`; `npm test` (41 pass); CLI smoke against a
+  throwaway `curved_test_smoke` database (migrate, project, issue, human comment,
+  agent comment on a padded key, empty and blank bodies, human and JSON show);
+  raw UPDATE and DELETE on comment rows rejected with `23001`;
+  `./scripts/init.sh`; `./scripts/clean-state.sh`.
+- Evidence captured: timeline rendered `1 created human ... -`,
+  `2 comment human ... first from human`, `3 comment agent ... second from agent`
+  in ascending id order with no grouping by actor; `issue comment SMK-1 ""` exited 1
+  with `validation: comment body must not be empty`; `--json` show returned
+  `{ ...issue, events }`; psql UPDATE and DELETE both raised
+  `issue_events is append-only` and the stored comments survived.
+- Coordination: four parallel slices (services, CLI, tests, docs), then a corrective
+  pass after the test slice asserted whitespace-padded key input that `parseIssueKey`
+  never accepted (padded digits are accepted, surrounding spaces are not).
+- Known risk: the event row still carries only `actor_type`, not an actor id; agent
+  identity arrives in `LAS-145`. No comments table exists, by design.
+- Next best step: execute `LAS-144`.
