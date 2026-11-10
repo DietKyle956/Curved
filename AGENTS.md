@@ -45,7 +45,11 @@ unique claim fence (`issues_one_active_claim_per_agent`) that allows one active
 issue per agent globally. LAS-146 is live: `issue block` records a 1..2000 character
 reason, returns the issue to Todo, clears the claim, and appends a `blocked` event;
 `issue unblock` is human only, clears the reason, and appends `unblocked`; blocked
-issues are absent from `ready` and unclaimable. Next frontier: LAS-147.
+issues are absent from `ready` and unclaimable. LAS-147 is live: MCP-over-stdio
+(`npm run mcp`, `node src/mcp/main.ts`) exposes the eight tools (`claim_next`,
+`comment`, `create_issue`, `get_issue`, `list_ready`, `mark_blocked`,
+`release_claim`, `submit_for_review`) over the shared service layer, resolving the
+agent from `CURVED_AGENT_TOKEN` on every call. Next frontier: LAS-148.
 
 ## Directory page
 

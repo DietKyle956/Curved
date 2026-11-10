@@ -14,12 +14,16 @@
     "build": "npm run typecheck",
     "db": "bash scripts/db.sh",
     "migrate": "node src/migrate.ts",
-    "cli": "node src/cli.ts"
+    "cli": "node src/cli.ts",
+    "mcp": "node src/mcp/main.ts"
   },
   "dependencies": {
-    "pg": "^8.13.0"
+    "@modelcontextprotocol/server": "^2.4.0",
+    "pg": "^8.13.0",
+    "zod": "^4.6.7"
   },
   "devDependencies": {
+    "@modelcontextprotocol/client": "^2.4.0",
     "@types/node": "^24.0.0",
     "@types/pg": "^8.11.0",
     "typescript": "^5.9.0"

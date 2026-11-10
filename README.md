@@ -106,3 +106,56 @@ issue is absent from `ready` and cannot be claimed until it is unblocked.
 - `npm test` - tests run against the isolated `curved_test` database.
 - Working agreement: `AGENTS.md`
 - Current state and next step: `MEMORY.md`
+
+## MCP server (stdio)
+
+The MCP server speaks JSON-RPC over stdio and calls the same service layer as the
+CLI. It never runs SQL itself.
+
+Prerequisites:
+
+1. Postgres: `docker compose up -d`.
+2. Schema: `npm run migrate`.
+3. An agent identity: `node src/cli.ts agent add <name>` prints a `crv_` token
+   once. Export it as `CURVED_AGENT_TOKEN`; only its hash is stored, so save it.
+
+Start the server with `npm run mcp`, which is `node src/mcp/main.ts`. stdout
+belongs to the JSON-RPC protocol; logs go to stderr. Writing anything else to
+stdout corrupts the stream.
+
+Harness config example:
+
+```json
+{
+  "mcpServers": {
+    "curved": {
+      "command": "node",
+      "args": ["/absolute/path/to/curved/src/mcp/main.ts"],
+      "env": {
+        "DATABASE_URL": "postgres://curved:curved@localhost:55432/curved",
+        "CURVED_AGENT_TOKEN": "crv_..."
+      }
+    }
+  }
+}
+```
+
+Every call resolves the agent from `CURVED_AGENT_TOKEN` and acts as actor
+`agent` under that agent's name. Tools:
+
+| Tool | Input | Result |
+|---|---|---|
+| `claim_next` | `{ project? }` | Claims the next ready issue, then returns `{ issue, events }`. |
+| `comment` | `{ key, body }` | Appends a comment event and returns it. |
+| `create_issue` | `{ project, title, description?, priority? }` | Returns the created issue. |
+| `get_issue` | `{ key }` | Returns `{ issue, events }`. |
+| `list_ready` | `{ project? }` | Returns `{ ready, busy }`. |
+| `mark_blocked` | `{ key, reason }` | Blocks the issue and returns it. |
+| `release_claim` | `{ key }` | Returns the issue to Todo and returns it. |
+| `submit_for_review` | `{ key, summary }` | Submits the issue for review and returns it. |
+
+Successful results are the payload as pretty-printed JSON in a single text
+content block. A service error becomes a text block of `<code>: <message>` with
+`isError: true`, for example `not_authenticated: ...` or `agent_busy: ...`.
+Invalid tool input fails zod validation before the handler runs and comes back as
+an error result: `Input validation error: Invalid arguments for tool <name>: ...`.

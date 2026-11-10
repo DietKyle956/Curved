@@ -2,7 +2,7 @@
 
 - **Last updated:** 2026-11-10
 - **Project:** curved
-- **Phase:** block and unblock complete (`LAS-146`). Toolchain, Postgres 18, migrations, the projects resource, the issues resource (atomic keys, append-only events), comment events with the full timeline read path, the transition graph with its actor matrix, token-authenticated agents with the one-active-issue fence, and agent block with human unblock are live.
+- **Phase:** MCP server complete (`LAS-147`). Toolchain, Postgres 18, migrations, the projects resource, the issues resource (atomic keys, append-only events), comment events with the full timeline read path, the transition graph with its actor matrix, token-authenticated agents with the one-active-issue fence, agent block with human unblock, and the MCP server over stdio are live.
 
 ## Current verified state
 
@@ -102,6 +102,22 @@
   accepts `--actor`/`--agent` so the rejection is reachable from the CLI, but
   defaults to human. Blocked issues are absent from `listReady` and `claimNext`
   (`no_ready_issue`) and reappear after unblock.
+- MCP: `npm run mcp` (`node src/mcp/main.ts`) serves the v2
+  `@modelcontextprotocol/server` (2.4.0) over stdio via `serveStdio`, registering
+  exactly `claim_next`, `comment`, `create_issue`, `get_issue`, `list_ready`,
+  `mark_blocked`, `release_claim`, and `submit_for_review`. Handlers are thin over
+  the service layer and never run SQL. Every call authenticates
+  `CURVED_AGENT_TOKEN` (`not_authenticated` names the variable when blank or
+  unknown) and acts as actor `agent` with that agent's name. Inputs are
+  zod-validated; the SDK returns schema failures as `isError` text results
+  beginning `Input validation error: Invalid arguments for tool ...`.
+  Successful payloads are pretty-printed JSON in one text block; `ServiceError`
+  becomes `<code>: <message>` with `isError: true`. `list_ready` returns
+  `{ ready, busy }`; `claim_next` and `get_issue` return `{ issue, events }`;
+  `create_issue`, `submit_for_review`, `release_claim`, and `mark_blocked` return
+  the issue; `comment` returns the appended event. stdout carries protocol only;
+  diagnostics go to stderr. The process closes the database and exits when stdin
+  ends or on SIGINT/SIGTERM.
 - Comment ownership: an agent cannot comment on an issue claimed by another agent
   (`forbidden_transition`); the owner, humans, and comments on unclaimed issues are
   allowed. An agent actor requires a registered identity (`validation` when absent,
@@ -113,8 +129,9 @@
 - Tests: isolated database from `TEST_DATABASE_URL` (name must start with
   `curved_test`), created and migrated by `test/helpers/db.ts`; its reset truncates
   `projects` and `agents` with cascade. The development database is never touched.
-  `npm test` runs 102 tests, including 22 agent/queue tests in `test/agents.test.ts`,
-  the blocking suite in `test/blocking.test.ts`, the transition suite, comment
+  `npm test` runs 115 tests, including 22 agent/queue tests in
+  `test/agents.test.ts`, 13 MCP-over-stdio tests in `test/mcp.test.ts`, the
+  blocking suite in `test/blocking.test.ts`, the transition suite, comment
   ownership tests, and the CLI sequence.
 - Git repository on branch `main`, remote `origin`
   (`https://github.com/DietKyle956/Curved.git`), public on GitHub.
@@ -156,6 +173,19 @@
   `unblocked` are distinct event kinds like `review_submitted`: `blocked` records the
   status move (`in_progress -> todo`) plus the reason, `unblocked` records no status
   change. Claim ownership gates blocking; the human actor gates unblocking.
+- MCP targets the v2 `@modelcontextprotocol/server` 2.4.0 with `serveStdio`
+  (default `legacy: "serve"`), not the v1 SDK: v2 serves the 2025 `initialize`
+  handshake and the 2026 spec from the same factory, so no fallback was needed.
+  `@modelcontextprotocol/client` is a dev dependency used only by the stdio test.
+- MCP handlers live in `src/mcp/tools.ts` and are thin over the service layer;
+  `src/mcp/server.ts` registers them and owns the token/database lifecycle;
+  `src/mcp/main.ts` is the entry. Tool schemas are zod-only in the adapter; the
+  services stay authoritative for business validation.
+- Input-schema failures surface as `isError` results (`Input validation error:
+  Invalid arguments for tool <name>: ...`), because the v2 SDK catches the
+  InvalidParams throw inside the tools/call handler. Tests assert that shape.
+- The MCP process exits when stdin ends (client disconnect) or on SIGINT/SIGTERM,
+  closing the stdio transport and the pool once; `serveStdio` owns the transport.
 - The transition rules remain in `src/shared/status.ts` (`LAS-144`).
 - Foundation sequence: shared contract modules (`config`, `db`, `errors`) land first,
   then disjoint slices for database, services/CLI, tests, and baseline/docs.
@@ -168,13 +198,13 @@
 
 ## Open questions
 
-- MCP transport: the spec fixes stdio with the v2 package and a v1 fallback; verify at
-  `LAS-147`.
-- None blocking. The next slice is fully specified by `LAS-146`.
+- None blocking. MCP transport is settled: stdio on the v2
+  `@modelcontextprotocol/server` package, no v1 fallback.
+- The next slice is fully specified by `LAS-147`.
 
 ## Next best step
 
-Execute `LAS-147` (MCP server over stdio), unblocked by `LAS-146`.
+Execute `LAS-148` (HTTP API and auth boundary), unblocked by `LAS-146`.
 
 ## Tracker
 
@@ -190,7 +220,7 @@ Execute `LAS-147` (MCP server over stdio), unblocked by `LAS-146`.
   - `LAS-144` status machine and actor matrix (142) (done 2026-11-10)
   - `LAS-145` agent identity and claim fence (144) (done 2026-11-10)
   - `LAS-146` block and unblock (145) (done 2026-11-10)
-  - `LAS-147` MCP server over stdio (146)
+  - `LAS-147` MCP server over stdio (146) (done 2026-11-10)
   - `LAS-148` HTTP API and auth boundary (146)
   - `LAS-149` labels, relations, dependency-aware ready (148)
   - `LAS-150` SSE realtime stream (148)
@@ -434,3 +464,36 @@ Execute `LAS-147` (MCP server over stdio), unblocked by `LAS-146`.
   existing `issues.blocked_reason` constraint, so no migration was required.
 - Next best step: execute `LAS-147`.
 - Commits: 1 commit, `Add agent block and human unblock`.
+
+### Session 011
+
+- Date: 2026-11-10
+- Goal: execute `LAS-147` (MCP server over stdio).
+- Completed: `@modelcontextprotocol/server` 2.4.0 and `zod` dependencies,
+  `@modelcontextprotocol/client` as a dev dependency, and the `mcp` npm script;
+  `src/mcp/tools.ts` (zod input schemas plus eight handlers thin over the service
+  layer), `src/mcp/server.ts` (`createCurvedMcpServer`, `resolveAgentFromToken`,
+  `serveStdio` lifecycle with stdin-end and signal shutdown), `src/mcp/main.ts`;
+  `test/mcp.test.ts` with 13 stdio tests (raw JSON-RPC handshake, exact tool
+  list, all eight tools, token failures, schema rejection, pretty JSON); README
+  MCP section and AGENTS current state.
+- Verification run: `npm run typecheck` green; `node --test test/mcp.test.ts`
+  (13 pass); `npm test` (115 pass, 0 fail); real-entry smoke on throwaway
+  `curved_test_smoke147` (initialize, `tools/list` exactly eight, `create_issue`
+  `SMK-2 backlog`, `list_ready` `SMK-1`, `claim_next` with `created,claim`, second
+  claim `agent_busy` naming `SMK-1`, `mark_blocked` `todo`/null claim/reason,
+  ready empty, stderr empty); smoke database dropped; `./scripts/init.sh`;
+  `./scripts/clean-state.sh`.
+- Evidence captured: live tool names; pretty JSON payloads; zod failures return
+  `Input validation error: Invalid arguments for tool ...` as `isError`; a blank
+  token returns `not_authenticated` text naming `CURVED_AGENT_TOKEN`; stdout
+  carried only JSON-RPC.
+- Coordination: four parallel slices (implementation, tests, docs, npm script),
+  then one corrective pass: the test expected a JSON-RPC InvalidParams rejection,
+  but the v2 SDK catches schema failures and returns an `isError` result; helper
+  and assertion corrected.
+- Known risk: `create_issue` accepts no status, so it creates `backlog` issues;
+  agents still need seeded `todo` work to claim. The HTTP server and UI remain
+  `LAS-148`/`LAS-152`. Each stdio test spawns its own server process (~250ms).
+- Next best step: execute `LAS-148`.
+- Commits: 1 commit, `Add MCP server over stdio`.
