@@ -26,9 +26,11 @@ in prompts:
 
 ## Current state
 
-Greenfield: harness only, no `package.json` yet. `scripts/init.sh` runs `true` for
-install, check, build, and start because no toolchain exists. When the Node project
-lands, replace those placeholder commands with the real ones.
+The Node/TypeScript toolchain is live: `npm install`, typechecking for the server and
+web trees, tests, and the build all run today. Postgres 18 runs through
+`docker compose` on host port 55432, with `scripts/db.sh` bootstrapping the database
+and applying migrations. The projects resource ships with the `project add` and
+`project list` CLI commands. Next frontier: LAS-142.
 
 ## Directory page
 

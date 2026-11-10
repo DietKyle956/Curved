@@ -1,0 +1,27 @@
+{
+  "name": "curved",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Lightweight, agent-first issue tracker with the rules enforced in code and in Postgres.",
+  "engines": {
+    "node": ">=26.2.0"
+  },
+  "scripts": {
+    "typecheck": "tsc -p tsconfig.server.json && tsc -p tsconfig.web.json",
+    "test": "node --test --test-concurrency=1 test/*.test.ts",
+    "check": "npm run typecheck && npm test",
+    "build": "npm run typecheck",
+    "db": "bash scripts/db.sh",
+    "migrate": "node src/migrate.ts",
+    "cli": "node src/cli.ts"
+  },
+  "dependencies": {
+    "pg": "^8.13.0"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "@types/pg": "^8.11.0",
+    "typescript": "^5.9.0"
+  }
+}

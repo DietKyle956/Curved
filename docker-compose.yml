@@ -1,0 +1,19 @@
+services:
+  db:
+    image: postgres:18-alpine
+    environment:
+      POSTGRES_USER: curved
+      POSTGRES_PASSWORD: curved
+      POSTGRES_DB: curved
+    ports:
+      - "55432:5432"
+    volumes:
+      - curved-pgdata:/var/lib/postgresql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U curved -d curved"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+
+volumes:
+  curved-pgdata:

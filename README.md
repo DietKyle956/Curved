@@ -33,12 +33,14 @@ stdio. See `initial_idea.md` for the product intent.
 
 ## Status
 
-Early scaffold. There is no application code yet; the build is sliced into
-tracer-bullet tickets.
+The toolchain is live: Node 26.2 runs the TypeScript directly via type stripping,
+Postgres 18 runs through `docker compose` on host port 55432, migrations create and
+update the schema, and the projects resource ships with the `project add` and
+`project list` CLI commands.
 
-- Baseline: `./scripts/init.sh` (install, check, build)
-- End-of-session gate: `./scripts/clean-state.sh`
+- `npm run db` - start Postgres and apply migrations.
+- `./scripts/init.sh` - install, database, check, build.
+- `./scripts/clean-state.sh` - end-of-session gate.
+- `npm test` - tests run against the isolated `curved_test` database.
 - Working agreement: `AGENTS.md`
 - Current state and next step: `MEMORY.md`
-
-The baseline currently runs placeholder commands until the Node toolchain lands.

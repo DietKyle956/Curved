@@ -1,14 +1,16 @@
 #!/usr/bin/env bash
-# Baseline runner for curved.
-# Rendered by repo-init from templates/scripts/init.sh; edit the template, not this file.
+# Baseline runner for curved: install, database, check, build.
+# scripts/clean-state.sh runs this with --no-install; the database step still runs.
 
 set -euo pipefail
 
 PROJECT_NAME="curved"
-INSTALL_CMD="true"
-CHECK_CMD="true"
-BUILD_CMD="true"
-START_CMD="true"
+INSTALL_CMD="npm install"
+DATABASE_CMD="bash scripts/db.sh"
+CHECK_CMD="npm run check"
+BUILD_CMD="npm run build"
+# Placeholder entry point; the HTTP server replaces it in LAS-148.
+START_CMD="node src/cli.ts --help"
 
 BASH_BIN="${BASH:-bash}"
 
@@ -28,9 +30,14 @@ warn() {
 usage() {
   cat <<EOF
 Usage:
-  ./scripts/init.sh                       Install dependencies, run checks, build.
-  ./scripts/init.sh --no-install          Skip install; run checks and build.
+  ./scripts/init.sh                       Install dependencies, set up the database,
+                                          run checks, then build.
+  ./scripts/init.sh --no-install          Skip the dependency install; still set up the
+                                          database, run checks, then build.
   RUN_START_COMMAND=1 ./scripts/init.sh   Launch the start command after a green baseline.
+
+Steps run in order: install, database, check, build. The database step runs even with
+--no-install, since only dependency installation is skipped.
 
 Options:
   --no-install   Skip dependency installation (used by scripts/clean-state.sh).
@@ -79,6 +86,7 @@ else
   say "==> install: skipped (--no-install)"
 fi
 
+run_step "database" "$DATABASE_CMD"
 run_step "check" "$CHECK_CMD"
 run_step "build" "$BUILD_CMD"
 
