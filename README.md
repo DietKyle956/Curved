@@ -55,16 +55,39 @@ claim column is set when an agent claims an issue into `in_progress`, kept for
 Every issue payload carries `allowedTransitions`: the successors the requesting
 actor may take right now.
 
+Agent identities live in an `agents` table. `agent add <name>` mints a `crv_`
+token, prints it once, and stores only its SHA-256 hash. Agent commands
+authenticate with `CURVED_AGENT_TOKEN` and fail with `not_authenticated` when it
+is absent or invalid. `ready` lists unblocked `todo` issues ordered by priority
+then number, together with the caller's busy key. `claim` takes one issue with
+`for update skip locked` and writes a `claim` event; `review` writes
+`review_submitted`; `release` returns the issue to `todo`. The partial unique
+index `issues_one_active_claim_per_agent` fences one active issue (`in_progress`
+or `in_review`) per agent globally, across projects, and the service maps a
+violation to `agent_busy`. Another agent's claimed issue is off limits for
+transitions and comments.
+
 - `node src/cli.ts issue add <PROJECT> <title...>` - create an issue; keys are
   assigned atomically.
 - `node src/cli.ts issue list [PROJECT]` - list issues, optionally scoped to one
   project.
 - `node src/cli.ts issue show <KEY>` - print the issue and its timeline in ascending
   event order.
-- `node src/cli.ts issue comment <KEY> <body...> [--actor <type>]` - append a comment
-  event to the timeline.
+- `node src/cli.ts issue comment <KEY> <body...> [--actor <type>]
+  [--agent <name>]` - append a comment event to the timeline.
 - `node src/cli.ts issue move <KEY> <status> [--body <text>] [--actor <type>]
   [--agent <name>]` - move an issue along a legal edge for the given actor.
+- `node src/cli.ts agent add <name>` - create an agent; prints its `crv_` token
+  once, and only the SHA-256 hash is stored.
+- `node src/cli.ts ready [PROJECT] [--human]` - list unblocked `todo` issues by
+  priority then number, with the caller's busy key; requires
+  `CURVED_AGENT_TOKEN` unless `--human` is passed.
+- `node src/cli.ts claim [PROJECT]` - claim the next ready issue with
+  `for update skip locked`; requires `CURVED_AGENT_TOKEN`.
+- `node src/cli.ts review <KEY> <summary...>` - submit a claimed issue for
+  review; requires `CURVED_AGENT_TOKEN`.
+- `node src/cli.ts release <KEY>` - return a claimed issue to `todo`; requires
+  `CURVED_AGENT_TOKEN`.
 - `npm run db` - start Postgres and apply migrations.
 - `./scripts/init.sh` - install, database, check, build.
 - `./scripts/clean-state.sh` - end-of-session gate.

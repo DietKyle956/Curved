@@ -2,9 +2,10 @@ import assert from "node:assert/strict";
 import { after, before, beforeEach, test } from "node:test";
 import { pgErrorCode } from "../src/db.ts";
 import { ServiceError, type ErrorCode } from "../src/errors.ts";
+import { createAgent } from "../src/services/agents.ts";
 import { commentOnIssue } from "../src/services/comments.ts";
 import { listEvents } from "../src/services/events.ts";
-import { createIssue } from "../src/services/issues.ts";
+import { createIssue, moveIssue } from "../src/services/issues.ts";
 import { createProject } from "../src/services/projects.ts";
 import { openTestDatabase, type TestDatabase } from "./helpers/db.ts";
 
@@ -16,6 +17,8 @@ before(async () => {
 
 beforeEach(async () => {
   await testDb.reset();
+  await createAgent(testDb.db, "agent-1");
+  await createAgent(testDb.db, "agent-2");
 });
 
 after(async () => {
@@ -51,6 +54,7 @@ test("commentOnIssue appends interleaved agent and human comments in insertion o
     key: "TAC-1",
     body: "second from agent",
     actor: "agent",
+    agent: "agent-1",
   });
   const humanAgain = await commentOnIssue(testDb.db, {
     key: "TAC-0001",
@@ -145,6 +149,7 @@ test("issue_events rejects updates and deletes on a comment row and keeps the st
     key: "TAC-1",
     body: "original comment",
     actor: "agent",
+    agent: "agent-1",
   });
 
   await assert.rejects(
@@ -182,4 +187,112 @@ test("there is no separate comments table", async () => {
   );
   assert.ok(row, "to_regclass query returned no row");
   assert.equal(row.comments, null);
+});
+
+test("commentOnIssue forbids an agent from commenting on another agent's claim without appending events", async () => {
+  const issueId = await seedIssue();
+  await moveIssue(testDb.db, { key: "TAC-1", to: "todo", actor: "human" });
+  await moveIssue(testDb.db, {
+    key: "TAC-1",
+    to: "in_progress",
+    actor: "agent",
+    agent: "agent-1",
+  });
+
+  const before = await listEvents(testDb.db, issueId);
+
+  await assert.rejects(
+    commentOnIssue(testDb.db, {
+      key: "TAC-1",
+      body: "not mine",
+      actor: "agent",
+      agent: "agent-2",
+    }),
+    rejectsWithServiceCode("forbidden_transition"),
+  );
+
+  const events = await listEvents(testDb.db, issueId);
+  assert.deepEqual(
+    events.map((event) => event.id),
+    before.map((event) => event.id),
+  );
+});
+
+test("commentOnIssue lets the owning agent and a human comment on a claimed issue", async () => {
+  const issueId = await seedIssue();
+  await moveIssue(testDb.db, { key: "TAC-1", to: "todo", actor: "human" });
+  await moveIssue(testDb.db, {
+    key: "TAC-1",
+    to: "in_progress",
+    actor: "agent",
+    agent: "agent-1",
+  });
+
+  const owner = await commentOnIssue(testDb.db, {
+    key: "TAC-1",
+    body: "  owner note  ",
+    actor: "agent",
+    agent: "agent-1",
+  });
+  const human = await commentOnIssue(testDb.db, {
+    key: "TAC-1",
+    body: "human note",
+  });
+
+  assert.equal(owner.actorType, "agent");
+  assert.equal(owner.body, "owner note");
+  assert.equal(human.actorType, "human");
+  assert.equal(human.body, "human note");
+
+  const events = await listEvents(testDb.db, issueId);
+  assert.deepEqual(
+    events.map((event) => event.kind),
+    ["created", "status", "status", "comment", "comment"],
+  );
+  assert.deepEqual(
+    events.slice(3).map((event) => [event.actorType, event.body]),
+    [
+      ["agent", "owner note"],
+      ["human", "human note"],
+    ],
+  );
+});
+
+test("commentOnIssue rejects an agent comment without an identity", async () => {
+  const issueId = await seedIssue();
+
+  await assert.rejects(
+    commentOnIssue(testDb.db, {
+      key: "TAC-1",
+      body: "anonymous agent",
+      actor: "agent",
+    }),
+    rejectsWithServiceCode("validation"),
+  );
+
+  const events = await listEvents(testDb.db, issueId);
+  assert.deepEqual(
+    events.map((event) => event.kind),
+    ["created"],
+  );
+});
+
+test("commentOnIssue rejects an unregistered agent identity", async () => {
+  const issueId = await seedIssue();
+
+  await assert.rejects(
+    commentOnIssue(testDb.db, {
+      key: "TAC-1",
+      body: "ghost comment",
+      actor: "agent",
+      agent: "ghost",
+    }),
+    rejectsWithServiceCode("not_found"),
+  );
+
+  const events = await listEvents(testDb.db, issueId);
+  assert.deepEqual(
+    events.map((event) => event.kind),
+    ["created"],
+  );
 });

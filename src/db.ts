@@ -116,3 +116,11 @@ export function pgErrorCode(error: unknown): string | undefined {
   }
   return typeof error.code === "string" ? error.code : undefined;
 }
+
+/** Returns the violated constraint name when the error carries one. */
+export function pgErrorConstraint(error: unknown): string | undefined {
+  if (typeof error !== "object" || error === null || !("constraint" in error)) {
+    return undefined;
+  }
+  return typeof error.constraint === "string" ? error.constraint : undefined;
+}

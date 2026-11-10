@@ -7,6 +7,7 @@ export interface Config {
   port: number;
   uiToken: string;
   webhookSecret: string;
+  agentToken: string;
 }
 
 const DEFAULT_DATABASE_URL = "postgres://curved:curved@127.0.0.1:55432/curved";
@@ -42,5 +43,6 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     port: readPort(env.PORT),
     uiToken: env.CURVED_UI_TOKEN ?? "",
     webhookSecret: env.GITHUB_WEBHOOK_SECRET ?? "",
+    agentToken: env.CURVED_AGENT_TOKEN ?? "",
   };
 }

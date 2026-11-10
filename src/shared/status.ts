@@ -14,6 +14,7 @@ export const EVENT_KINDS = [
   "comment",
   "claim",
   "release",
+  "review_submitted",
   "blocked",
   "unblocked",
   "labels",

@@ -2,7 +2,7 @@
 
 - **Last updated:** 2026-11-10
 - **Project:** curved
-- **Phase:** status machine and actor matrix complete (`LAS-144`). Toolchain, Postgres 18, migrations, the projects resource, the issues resource (atomic keys, append-only events), comment events with the full timeline read path, and the transition graph with its actor matrix are live.
+- **Phase:** agent identity and the claim fence complete (`LAS-145`). Toolchain, Postgres 18, migrations, the projects resource, the issues resource (atomic keys, append-only events), comment events with the full timeline read path, the transition graph with its actor matrix, and token-authenticated agents with the one-active-issue fence are live.
 
 ## Current verified state
 
@@ -54,10 +54,53 @@
   Timeline reads order by ascending event id; timestamps are display only.
 - Issue keys are canonical without padding (`TAC-14`); parsing accepts padded input
   such as `TAC-014`.
+- Schema: `agents` (identity id, unique trimmed name 1..100, unique lowercase
+  SHA-256 hex `token_hash`, created_at). `issues.claimed_by` references
+  `agents(name)`. The partial unique index `issues_one_active_claim_per_agent`
+  allows one row per `claimed_by` where status is `in_progress` or `in_review`;
+  the fence is per agent and global across projects. `done` keeps `claimed_by` as
+  history but is not active.
+- Agent tokens: `crv_` plus 24 random bytes base64url (36 chars). `agent add <name>`
+  prints the token once and stores only its SHA-256 hex; a duplicate name fails with
+  `duplicate`. `authenticateAgent` hashes the presented token and resolves by
+  `token_hash`; blank and unknown tokens both fail `not_authenticated`.
+- CLI: `agent add <name> [--json]`, `ready [PROJECT] [--human]`, `claim [PROJECT]`,
+  `review <KEY> <summary...>`, `release <KEY>`. `ready` without `--human`, plus
+  `claim`, `review`, and `release`, read `CURVED_AGENT_TOKEN`; an absent or invalid
+  token fails `not_authenticated` and never falls back to the human actor. `ready`
+  JSON is `{ ready, busy }`; human output lists
+  `<key>\t<priority>\t<status>\t<title>` then `busy: <key>` or `busy: -`.
+  `issue comment` accepts `--agent <name>`; `issue move --agent` now requires a
+  registered agent name.
+- Ready queue: `listReady` returns `todo` issues with no blocked reason, optionally
+  scoped to a project, ordered by priority then number then key, plus the caller's
+  active claim key (`null` for humans).
+- Claiming: `claimNext` takes `pg_advisory_xact_lock(727275, hashtext(agent))` so
+  concurrent claims by one agent serialize, pre-checks the active claim for
+  `agent_busy`, then selects one candidate with
+  `order by priority, number, key limit 1 for update skip locked`, sets
+  `in_progress` and `claimed_by`, and appends one `claim` event (`todo ->
+  in_progress`). Different agents compete through `skip locked`; two agents racing
+  one ready issue produce one claim and one `no_ready_issue`. A partial-index
+  violation is mapped to `agent_busy` naming the active key.
+- Review and release: `submitForReview` requires ownership and `in_progress`, writes
+  one `review_submitted` event (`in_progress -> in_review`) with the trimmed summary
+  as body, and keeps the claim. `releaseClaim` requires ownership and
+  `in_progress`, returns the issue to `todo`, clears `claimed_by`, and writes one
+  `release` event. Both reject non-owners with `forbidden_transition` and wrong
+  statuses with `illegal_transition`.
+- Comment ownership: an agent cannot comment on an issue claimed by another agent
+  (`forbidden_transition`); the owner, humans, and comments on unclaimed issues are
+  allowed. An agent actor requires a registered identity (`validation` when absent,
+  `not_found` when unknown).
+- `EVENT_KINDS` now includes `review_submitted`; the database check constraint
+  mirrors it. `moveIssue` still writes kind `status`; the queue tools write `claim`,
+  `review_submitted`, and `release`.
 - Tests: isolated database from `TEST_DATABASE_URL` (name must start with
-  `curved_test`), created and migrated by `test/helpers/db.ts`; the development
-  database is never touched. `test/transitions.test.ts` holds 12 transition and
-  actor-matrix tests, with 5 CLI move tests appended to the CLI suite.
+  `curved_test`), created and migrated by `test/helpers/db.ts`; its reset truncates
+  `projects` and `agents` with cascade. The development database is never touched.
+  `npm test` runs 92 tests, including 22 agent/queue tests in `test/agents.test.ts`,
+  the transition suite, comment ownership tests, and the CLI sequence.
 - Git repository on branch `main`, remote `origin`
   (`https://github.com/DietKyle956/Curved.git`), public on GitHub.
 - Index: `.codegraph/` initialized, gitignored.
@@ -79,9 +122,22 @@
   (`todo -> in_progress`, unclaimed, named agent) is included because the
   claim-column rule must be reachable; every other agent edge requires ownership.
   `system` actors take no transitions.
-- `issues.claimed_by` is plain text until `LAS-145` adds agent identity; the partial
-  unique claim fence lands in `LAS-145`. The transition rules are now in
-  `src/shared/status.ts` (`LAS-144`).
+- `issues.claimed_by` references `agents(name)` (`LAS-145`). Migration `0003`
+  backfills pre-fence names with unusable random hashes and demotes duplicate active
+  claims before adding the FK and the partial unique index; the service maps the
+  index violation to `agent_busy`.
+- The claim fence is per agent and global across projects, over `in_progress` and
+  `in_review`; `done` is not active, so a completed issue frees the agent. The
+  unique index is the real fence; the pre-check exists to name the busy key.
+- `claimNext` serializes same-agent claims with advisory lock namespace 727275 so
+  the losing concurrent claim sees the committed claim and gets `agent_busy`.
+  Different agents use `skip locked`, which yields `no_ready_issue` for the loser.
+- Agent commands never infer an actor from a missing token: `ready` requires
+  `--human` for the human view, and `claim`/`review`/`release` require a valid
+  token. Tokens are minted once and only hashed at rest.
+- `review_submitted` is a distinct event kind from `status`: the queue tools record
+  the tool-level action, while `issue move` remains the generic status path.
+- The transition rules remain in `src/shared/status.ts` (`LAS-144`).
 - Foundation sequence: shared contract modules (`config`, `db`, `errors`) land first,
   then disjoint slices for database, services/CLI, tests, and baseline/docs.
 - Migrations take the session advisory lock before creating the ledger, so two
@@ -95,11 +151,11 @@
 
 - MCP transport: the spec fixes stdio with the v2 package and a v1 fallback; verify at
   `LAS-147`.
-- None blocking. The next slice is fully specified by `LAS-145`.
+- None blocking. The next slice is fully specified by `LAS-146`.
 
 ## Next best step
 
-Execute `LAS-145` (agent identity and the claim fence), unblocked by `LAS-144`.
+Execute `LAS-146` (block and unblock), unblocked by `LAS-145`.
 
 ## Tracker
 
@@ -113,7 +169,7 @@ Execute `LAS-145` (agent identity and the claim fence), unblocked by `LAS-144`.
   - `LAS-142` issue capture, atomic keys, append-only events (141) (done 2026-11-10)
   - `LAS-143` comments and timeline read path (142) (done 2026-11-10)
   - `LAS-144` status machine and actor matrix (142) (done 2026-11-10)
-  - `LAS-145` agent identity and claim fence (144)
+  - `LAS-145` agent identity and claim fence (144) (done 2026-11-10)
   - `LAS-146` block and unblock (145)
   - `LAS-147` MCP server over stdio (146)
   - `LAS-148` HTTP API and auth boundary (146)
@@ -293,3 +349,36 @@ Execute `LAS-145` (agent identity and the claim fence), unblocked by `LAS-144`.
   `LAS-145`, and the partial unique claim fence does not exist yet.
 - Next best step: execute `LAS-145`.
 - Commits: 1 commit, `Add the status machine and actor matrix`.
+
+### Session 009
+
+- Date: 2026-11-10
+- Goal: execute `LAS-145` (agent identity and the one-active-issue claim fence).
+- Completed: `0003_agents.sql` (`agents` with unique trimmed name and SHA-256 token
+  hash; pre-fence claim backfill and duplicate-claim demotion; `issues.claimed_by`
+  FK; partial unique index `issues_one_active_claim_per_agent`;
+  `review_submitted` event kind); `services/agents` with one-time `crv_` tokens and
+  hash-only storage; `services/queue` with `listReady`, `claimNext`,
+  `submitForReview`, and `releaseClaim`; advisory-lock serialization for same-agent
+  claims and `skip locked` candidate selection; index-violation mapping to
+  `agent_busy`; agent registration and claim-index mapping in `moveIssue`; comment
+  ownership in `comments`; CLI `agent add`, `ready`, `claim`, `review`, `release`,
+  and `issue comment --agent`; 22 service/queue tests plus CLI sequence tests;
+  README and AGENTS state.
+- Verification run: `npm run typecheck`; `npm test` (92 pass, 0 fail);
+  `./scripts/init.sh`; CLI smoke on throwaway `curved_test_smoke145` covering
+  migrate, project/issue create, `agent add`, ready (busy null), claim, agent_busy,
+  ready busy key, review, agent_busy in review, human done, no_ready_issue, absent
+  and invalid token failures, `ready --human`, and release; smoke database dropped;
+  `./scripts/clean-state.sh`.
+- Evidence captured: token length 36 with the `crv_` prefix; `claimed TAC-1` then
+  `agent_busy: agent "alpha" already holds issue "TAC-1"`; review timeline
+  `created, claim, review_submitted, status`; final `no_ready_issue`; 92 tests green.
+- Coordination: three waves of parallel slices (schema/contracts, agents and
+  issues/comments; queue and tests; CLI, CLI tests, docs), with one corrective pass
+  for two test scenarios that skipped a legal edge.
+- Known risk: blocking is still absent, so `ready` cannot yet exclude blocked
+  relations; `LAS-146` adds block/unblock. The claim fence is global across
+  projects, by design.
+- Next best step: execute `LAS-146`.
+- Commits: 1 commit, `Add agent identities and the one-active-issue claim fence`.

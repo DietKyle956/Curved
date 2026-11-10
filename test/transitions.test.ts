@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { after, before, beforeEach, test } from "node:test";
 import { ServiceError, type ErrorCode } from "../src/errors.ts";
+import { createAgent } from "../src/services/agents.ts";
 import { listEvents, type IssueEvent } from "../src/services/events.ts";
 import {
   createIssue,
@@ -22,6 +23,8 @@ before(async () => {
 
 beforeEach(async () => {
   await testDb.reset();
+  await createAgent(testDb.db, "agent-1");
+  await createAgent(testDb.db, "agent-2");
 });
 
 after(async () => {
@@ -333,9 +336,10 @@ test("allowedTransitions reflects the actor, the claim, and the current status a
   ]);
 
   const ownedReview = await seedIssue("todo", "Owned review");
-  await move(ownedReview.key, "in_progress", { actor: "agent", agent: "agent-1" });
-  await move(ownedReview.key, "in_review", { actor: "agent", agent: "agent-1" });
+  await move(ownedReview.key, "in_progress", { actor: "agent", agent: "agent-2" });
+  await move(ownedReview.key, "in_review", { actor: "agent", agent: "agent-2" });
   assert.deepEqual(await transitionsFor(ownedReview.key, { actor: "agent", agent: "agent-1" }), []);
+  assert.deepEqual(await transitionsFor(ownedReview.key, { actor: "agent", agent: "agent-2" }), []);
   assert.deepEqual(await transitionsFor(ownedReview.key, { actor: "human" }), [
     "done",
     "in_progress",

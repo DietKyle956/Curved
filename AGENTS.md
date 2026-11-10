@@ -10,8 +10,9 @@ in prompts:
 
 - Statuses: Backlog -> Todo -> In Progress -> In Review -> Done. Legal transitions are
   validated in the service layer; illegal ones return an error, not a silent write.
-- One `in_progress` issue per project/agent, enforced by a partial unique index.
-- An agent cannot claim a new issue until its current one passes review.
+- One active issue per agent (`in_progress` or `in_review`, global across
+  projects), enforced by a partial unique index. An agent cannot claim another
+  issue until its current one is done or released.
 - `issue_events` is append-only status history. Never update or delete rows.
 - Agents use the tool interface only (`list_ready`, `claim_next`, `comment`,
   `submit_for_review`, `mark_blocked`). No agent writes SQL or touches tables.
@@ -37,7 +38,11 @@ events, not rows in a separate table: `issue comment` appends one, and `issue sh
 renders the full timeline in ascending event order. The LAS-144 status machine is
 live: one shared transition graph, an actor matrix gating which legal edges each
 actor type may take, claim-column rules tied to agent moves, the `issue move` CLI
-command, and `allowedTransitions` on every issue payload. Next frontier: LAS-145.
+command, and `allowedTransitions` on every issue payload. LAS-145 is live: an
+`agents` table with hashed tokens, token-authenticated `ready`, `claim`, `review`,
+and `release` commands, `claim` and `review_submitted` events, and the partial
+unique claim fence (`issues_one_active_claim_per_agent`) that allows one active
+issue per agent globally. Next frontier: LAS-146.
 
 ## Directory page
 
