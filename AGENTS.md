@@ -49,7 +49,20 @@ issues are absent from `ready` and unclaimable. LAS-147 is live: MCP-over-stdio
 (`npm run mcp`, `node src/mcp/main.ts`) exposes the eight tools (`claim_next`,
 `comment`, `create_issue`, `get_issue`, `list_ready`, `mark_blocked`,
 `release_claim`, `submit_for_review`) over the shared service layer, resolving the
-agent from `CURVED_AGENT_TOKEN` on every call. Next frontier: LAS-148.
+agent from `CURVED_AGENT_TOKEN` on every call. LAS-148 is live: an HTTP API and
+auth boundary (`npm start`, `node src/server.ts`) on `PORT` (default 4747) that
+requires `CURVED_UI_TOKEN`, authenticates humans by UI bearer or the
+`curved_session` cookie (SHA-256 of the UI token) and agents by `crv_` bearer,
+and serves `/api/me`, `/api/session`, projects, issues (list with `project` and
+`status` filters, create, show, human-only `PATCH`), per-issue transition,
+comments, block (agent), unblock (human), release (agent), `/api/ready`, and
+`/api/claims/next`. Errors are `{ error: { code, message } }` with 400 validation,
+401 `not_authenticated`, 403 `forbidden_transition`, 404 `not_found`, 409 for the
+other service codes, and 500 internal. There is no CORS, mutating requests with a
+body must be JSON, and non-`/api` paths fall back to `web/dist` with no-cache
+documents, immutable `/assets/*`, and a 503 naming the build when it is absent.
+Tests: 136 pass, 0 fail, including `test/http.test.ts` and the issue filter and
+human-only edit cases in `test/issues.test.ts`. Next frontier: LAS-149.
 
 ## Directory page
 
@@ -58,6 +71,8 @@ agent from `CURVED_AGENT_TOKEN` on every call. Next frontier: LAS-148.
 | `initial_idea.md` | Product intent and the design sketch. Source of truth for scope. |
 | `AGENTS.md` | This file: constraints and startup path. |
 | `MEMORY.md` | Verified state, decisions, session log. Update it every session. |
+| `src/http/` | HTTP router, auth boundary, and SPA fallback. |
+| `src/server.ts` | HTTP entry. Reads `PORT` and requires `CURVED_UI_TOKEN`. |
 | `scripts/init.sh` | Baseline runner: install, check, build. `--no-install` skips install. |
 | `scripts/clean-state.sh` | End-of-session gate. Idempotent, writes nothing. |
 | `.codegraph/` | Local index, gitignored. Refresh with `codegraph sync`. |

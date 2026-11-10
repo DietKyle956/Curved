@@ -74,6 +74,14 @@ to `todo`, clears the claim, stores the reason in `blocked_reason`, and appends 
 and appends an `unblocked` event, leaving status and claim untouched. A blocked
 issue is absent from `ready` and cannot be claimed until it is unblocked.
 
+The authenticated HTTP boundary is live. `npm start` runs `node src/server.ts` on
+`PORT` (default 4747) and refuses to start without `CURVED_UI_TOKEN`. Requests
+authenticate as a human through the session cookie or the UI bearer token, or as
+an agent through a `crv_` bearer token; failures and service errors share one JSON
+error shape, and there is no CORS. The API covers projects, issues, comments,
+transitions, block/unblock, release, and claims, and serves the SPA from
+`web/dist` for every non-`/api` path. See "HTTP API" below.
+
 - `node src/cli.ts issue add <PROJECT> <title...>` - create an issue; keys are
   assigned atomically.
 - `node src/cli.ts issue list [PROJECT]` - list issues, optionally scoped to one
@@ -101,11 +109,76 @@ issue is absent from `ready` and cannot be claimed until it is unblocked.
 - `node src/cli.ts release <KEY>` - return a claimed issue to `todo`; requires
   `CURVED_AGENT_TOKEN`.
 - `npm run db` - start Postgres and apply migrations.
+- `npm start` - run the HTTP server and SPA on `PORT` (default 4747); requires
+  `CURVED_UI_TOKEN`.
 - `./scripts/init.sh` - install, database, check, build.
 - `./scripts/clean-state.sh` - end-of-session gate.
 - `npm test` - tests run against the isolated `curved_test` database.
 - Working agreement: `AGENTS.md`
 - Current state and next step: `MEMORY.md`
+
+## HTTP API
+
+`node src/server.ts` (or `npm start`) serves the JSON API under `/api` and the SPA
+for every other path. One process owns both.
+
+Prerequisites:
+
+1. Postgres: `docker compose up -d`.
+2. Schema: `npm run migrate`.
+3. A UI token: export any secret as `CURVED_UI_TOKEN`. The server refuses to start
+   without it and exits 1 with
+   `CURVED_UI_TOKEN is required to start the HTTP server`.
+4. Agent tokens for `crv_` bearers: `node src/cli.ts agent add <name>`.
+
+`PORT` defaults to 4747.
+
+Authentication has two lanes. A human session is either
+`Authorization: Bearer <CURVED_UI_TOKEN>` or the `curved_session` cookie minted by
+`POST /api/session`. The cookie is the lowercase SHA-256 hex of the UI token and is
+`HttpOnly; SameSite=Lax; Path=/; Max-Age=2592000`. Any other bearer is resolved as
+an agent token through the `agents` table. A bearer that is present but invalid is
+`401 not_authenticated`, even alongside a valid cookie, so a stale agent token is
+never silently downgraded.
+
+`POST /api/session` is the only unauthenticated `/api` route; every other route,
+including `GET /api/projects`, rejects requests without valid credentials with
+`401 not_authenticated`.
+
+| Method | Path | Auth | Result |
+|---|---|---|---|
+| `GET` | `/api/me` | human or agent | `{ actor }` |
+| `POST` | `/api/session` | UI token in the `{ token }` body | Sets the cookie, returns `{ actor }` |
+| `DELETE` | `/api/session` | human or agent | `204`, clears the cookie |
+| `GET` | `/api/projects` | human or agent | `{ projects }` |
+| `POST` | `/api/projects` | human only | `{ project }` |
+| `GET` | `/api/issues` | human or agent | `{ issues }`; optional `project` and `status` filters |
+| `POST` | `/api/issues` | human or agent | `{ issue }` |
+| `GET` | `/api/issues/:key` | human or agent | `{ issue, events }` |
+| `PATCH` | `/api/issues/:key` | human only | `{ issue }`; `title`, `description`, `priority` |
+| `POST` | `/api/issues/:key/transition` | human or agent | `{ issue }` |
+| `POST` | `/api/issues/:key/comments` | human or agent | `{ event }` |
+| `POST` | `/api/issues/:key/block` | agent only | `{ issue }` |
+| `POST` | `/api/issues/:key/unblock` | human only | `{ issue }` |
+| `POST` | `/api/issues/:key/release` | agent only | `{ issue }` |
+| `GET` | `/api/ready` | human or agent | `{ ready, busy }` |
+| `POST` | `/api/claims/next` | agent only | `{ issue }` |
+
+Mutating requests with a body must send `Content-Type: application/json`; anything
+else is `400 validation`. An empty body reads as `{}`. The API sends no CORS
+headers, so browser clients run on the same origin.
+
+Errors share one shape, `{ "error": { "code", "message" } }`. `validation` maps to
+400, `not_authenticated` to 401, `forbidden_transition` to 403, `not_found` to
+404, the remaining service codes such as `agent_busy`, `duplicate`, and
+`illegal_transition` to 409, and an unexpected failure to 500 with the detail
+logged to stderr. An unknown `/api` path returns a JSON 404 and never falls back to
+HTML.
+
+Everything outside `/api` is served from `web/dist`: a matching file, otherwise
+`index.html` for client-side routes. The document is `cache-control: no-cache`;
+`/assets/*` is `public, max-age=31536000, immutable`. When no build exists the
+response is a 503 text naming `web/dist` and the build command.
 
 ## MCP server (stdio)
 

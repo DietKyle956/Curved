@@ -2,7 +2,7 @@
 
 - **Last updated:** 2026-11-10
 - **Project:** curved
-- **Phase:** MCP server complete (`LAS-147`). Toolchain, Postgres 18, migrations, the projects resource, the issues resource (atomic keys, append-only events), comment events with the full timeline read path, the transition graph with its actor matrix, token-authenticated agents with the one-active-issue fence, agent block with human unblock, and the MCP server over stdio are live.
+- **Phase:** HTTP API and auth boundary complete (`LAS-148`). Toolchain, Postgres 18, migrations, the projects resource, the issues resource (atomic keys, append-only events), comment events with the full timeline read path, the transition graph with its actor matrix, token-authenticated agents with the one-active-issue fence, agent block with human unblock, the MCP server over stdio, and the authenticated HTTP API with its SPA fallback are live.
 
 ## Current verified state
 
@@ -13,7 +13,7 @@
   `--no-install` skips only install; the database step still runs.
 - End-of-session gate: `./scripts/clean-state.sh`
 - Baseline: green. `npm run typecheck` covers server and web configs; `npm test`
-  runs 102 tests on the Node test runner.
+  runs 136 tests on the Node test runner.
 - Database: `docker compose up` starts `postgres:18-alpine` on host port 55432
   (user/password/db all `curved`, named volume mounted at `/var/lib/postgresql`).
   `scripts/db.sh` waits for readiness, then runs `node src/migrate.ts`.
@@ -126,13 +126,49 @@
   check constraint mirrors it. `moveIssue` still writes kind `status`; the queue
   tools write `claim`, `review_submitted`, and `release`; `blockIssue` and
   `unblockIssue` write `blocked` and `unblocked`.
+- HTTP: `src/server.ts` (npm script `start`, and `scripts/init.sh`'s `START_CMD`)
+  reads `PORT` (default 4747), requires `CURVED_UI_TOKEN`, and exits 1 with
+  `CURVED_UI_TOKEN is required to start the HTTP server` when it is absent.
+  `createApp({ db, uiToken, webDistDir?, logger? })` returns
+  `{ handle(request: Request): Promise<Response> }`, so tests drive the real router
+  in-process. A `Bearer` equal to `CURVED_UI_TOKEN` is the human actor; any other
+  bearer goes through `authenticateAgent` and becomes an agent actor with its name;
+  the `curved_session` cookie (lowercase SHA-256 hex of the UI token,
+  `HttpOnly; SameSite=Lax; Path=/; Max-Age=2592000`) also identifies the human. A
+  present but invalid bearer is `401 not_authenticated` even with a valid cookie.
+  No CORS headers are emitted.
+- HTTP routes: `GET /api/me`; `POST`/`DELETE /api/session` (POST takes the UI token
+  in a `{ token }` body and sets the cookie; DELETE requires auth); `GET`/`POST
+  /api/projects` (GET requires a human or agent; create is human only); `GET`/`POST
+  /api/issues` (list filters on `project` and `status`); `GET`/`PATCH
+  /api/issues/:key` (PATCH is human only:
+  title, description, priority); `POST /api/issues/:key/transition | comments |
+  block (agent) | unblock (human) | release (agent)`; `GET /api/ready` (any
+  authenticated actor); `POST /api/claims/next` (agent). Payloads are wrapped as
+  `{project}`, `{projects}`, `{issue}`, `{issues}`, `{issue,events}`, `{event}`,
+  `{ready,busy}`, and `{actor}`. Mutating requests with a body require a
+  `Content-Type: application/json` header (`validation` otherwise); an empty body
+  reads as `{}`. Errors are `{ error: { code, message } }`: 400 `validation`, 401
+  `not_authenticated`, 403 `forbidden_transition`, 404 `not_found`, 409 for the
+  other service codes (`agent_busy`, `duplicate`, `illegal_transition`), 500
+  `internal` with the detail logged. Unknown `/api` paths return JSON 404.
+- HTTP SPA fallback: non-`/api` `GET`/`HEAD` serves `web/dist` (default) as a
+  matching file or `index.html`; the document is `cache-control: no-cache` and
+  `/assets/*` is `public, max-age=31536000, immutable`. With no build the response
+  is a 503 text naming `web/dist` and the build command; `/api` never falls back
+  to HTML.
+- Service additions for the HTTP slice: `listIssues` accepts `{ project?, status? }`;
+  `updateIssue(db, { key, title?, description?, priority?, actor?, agent? })` is
+  human only (`forbidden_transition` otherwise), requires at least one field, trims
+  the title, validates priority, appends no timeline event (no event kind exists for
+  field edits), and returns the hydrated issue with `allowedTransitions`.
 - Tests: isolated database from `TEST_DATABASE_URL` (name must start with
   `curved_test`), created and migrated by `test/helpers/db.ts`; its reset truncates
   `projects` and `agents` with cascade. The development database is never touched.
-  `npm test` runs 115 tests, including 22 agent/queue tests in
+  `npm test` runs 136 tests, including 22 agent/queue tests in
   `test/agents.test.ts`, 13 MCP-over-stdio tests in `test/mcp.test.ts`, the
-  blocking suite in `test/blocking.test.ts`, the transition suite, comment
-  ownership tests, and the CLI sequence.
+  blocking suite in `test/blocking.test.ts`, the HTTP suite in `test/http.test.ts`,
+  the transition suite, comment ownership tests, and the CLI sequence.
 - Git repository on branch `main`, remote `origin`
   (`https://github.com/DietKyle956/Curved.git`), public on GitHub.
 - Index: `.codegraph/` initialized, gitignored.
@@ -200,11 +236,14 @@
 
 - None blocking. MCP transport is settled: stdio on the v2
   `@modelcontextprotocol/server` package, no v1 fallback.
-- The next slice is fully specified by `LAS-147`.
+- `LAS-149` is fully specified by `LAS-148` now that the HTTP surface exists.
+- The SPA build remains `LAS-152`; until then the HTTP server answers non-`/api`
+  paths with the 503 naming `web/dist`.
 
 ## Next best step
 
-Execute `LAS-148` (HTTP API and auth boundary), unblocked by `LAS-146`.
+Execute `LAS-149` (labels, relations, dependency-aware ready), unblocked by
+`LAS-148`.
 
 ## Tracker
 
@@ -221,7 +260,7 @@ Execute `LAS-148` (HTTP API and auth boundary), unblocked by `LAS-146`.
   - `LAS-145` agent identity and claim fence (144) (done 2026-11-10)
   - `LAS-146` block and unblock (145) (done 2026-11-10)
   - `LAS-147` MCP server over stdio (146) (done 2026-11-10)
-  - `LAS-148` HTTP API and auth boundary (146)
+  - `LAS-148` HTTP API and auth boundary (146) (done 2026-11-10)
   - `LAS-149` labels, relations, dependency-aware ready (148)
   - `LAS-150` SSE realtime stream (148)
   - `LAS-151` GitHub webhook and branch helper (148)
@@ -497,3 +536,44 @@ Execute `LAS-148` (HTTP API and auth boundary), unblocked by `LAS-146`.
   `LAS-148`/`LAS-152`. Each stdio test spawns its own server process (~250ms).
 - Next best step: execute `LAS-148`.
 - Commits: 1 commit, `Add MCP server over stdio`.
+
+### Session 012
+
+- Date: 2026-11-10
+- Goal: execute `LAS-148` (HTTP API and auth boundary).
+- Completed: `src/http/app.ts` with `createApp` and every `/api` route,
+  `src/http/auth.ts` (UI-token comparison, agent token resolution, SHA-256 session
+  cookie), `src/http/spa.ts` (file lookup, index fallback, cache headers, 503 when
+  the build is absent), and `src/server.ts` (PORT default 4747, required
+  `CURVED_UI_TOKEN`, exit 1 when missing); the `start` npm script and `START_CMD`
+  switched to `npm start`; `listIssues` gained `{ project?, status? }` filters;
+  human-only `updateIssue` for title, description, and priority; `test/http.test.ts`
+  with 15 in-process route tests and 6 issue tests for the filter and edit paths;
+  README HTTP API section, AGENTS current state, and this memory entry.
+- Verification run: `npm run typecheck` green; `npm test` (136 pass, 0 fail); a live
+  smoke against a real `node src/server.ts` on a throwaway
+  `curved_test_smoke148` database covering startup without the token, unauthenticated
+  and wrong-token `401`, login cookie attributes, `/api/me` as human by cookie and
+  by UI bearer, `/api/me` as agent from an `agent add --json` token, project create
+  (agent `403`), issue create/list filters/show timeline, agent claim, second claim
+  `409 agent_busy`, ready busy key, comment event, block to `todo` with cleared claim
+  and reason, blocked issue absent from ready, agent unblock `403`, human unblock,
+  re-claim, agent `in_review`, human `done`, human claim `403`, validation `400`,
+  not_found `404`, duplicate `409`, non-JSON body `400`, unknown `/api` JSON `404`,
+  no CORS headers on `GET`/`OPTIONS`, SPA `503` text naming `web/dist` and the build,
+  and logout `204` clearing the cookie followed by `401`; smoke database dropped.
+- Evidence captured: `curved_session=<sha256>; HttpOnly; SameSite=Lax; Path=/;
+  Max-Age=2592000`; `401 not_authenticated` for a missing bearer; `403
+  forbidden_transition` for human-only routes as an agent and for agent unblock;
+  `409 agent_busy` on the second claim; `201` with `{ issue, events }` on the
+  timeline; the `503` body naming `web/dist` and the build command; exit 1 with
+  `CURVED_UI_TOKEN is required to start the HTTP server`.
+- Coordination: three parallel slices (HTTP app and auth, server entry and SPA, HTTP
+  tests), then one inline fix: `server.ts` called the synchronous `toRequest` as if
+  it returned a promise.
+- Known risk: the SPA still answers 503 until `LAS-152` builds `web/dist`; issue
+  field edits append no timeline event because no event kind exists; agent-created
+  HTTP issues record the actor `agent` without an identity because `createIssue` has
+  no agent parameter.
+- Next best step: execute `LAS-149`.
+- Commits: 1 commit, `Add the HTTP API and auth boundary`.

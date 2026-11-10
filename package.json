@@ -14,6 +14,7 @@
     "build": "npm run typecheck",
     "db": "bash scripts/db.sh",
     "migrate": "node src/migrate.ts",
+    "start": "node src/server.ts",
     "cli": "node src/cli.ts",
     "mcp": "node src/mcp/main.ts"
   },

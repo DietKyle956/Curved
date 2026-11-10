@@ -9,8 +9,8 @@ INSTALL_CMD="npm install"
 DATABASE_CMD="bash scripts/db.sh"
 CHECK_CMD="npm run check"
 BUILD_CMD="npm run build"
-# Placeholder entry point; the HTTP server replaces it in LAS-148.
-START_CMD="node src/cli.ts --help"
+# The HTTP server requires CURVED_UI_TOKEN; without it startup exits with an error.
+START_CMD="npm start"
 
 BASH_BIN="${BASH:-bash}"
 

@@ -7,6 +7,7 @@ import {
   getIssue,
   getIssueTimeline,
   listIssues,
+  updateIssue,
   type CreateIssueInput,
 } from "../src/services/issues.ts";
 import { createProject } from "../src/services/projects.ts";
@@ -245,5 +246,127 @@ test("listIssues orders by project key then number and filters by project", asyn
   await assert.rejects(
     listIssues(testDb.db, { project: "tac" }),
     rejectsWithServiceCode("validation"),
+  );
+});
+
+test("listIssues filters by status and rejects an invalid status", async () => {
+  await seedProject("TAC");
+  await seedProject("AAA");
+
+  const backlog = await createIssue(testDb.db, {
+    project: "TAC",
+    title: "Backlog issue",
+  });
+  await createIssue(testDb.db, { project: "TAC", title: "Todo issue", status: "todo" });
+  await createIssue(testDb.db, { project: "AAA", title: "AAA todo", status: "todo" });
+
+  const todo = await listIssues(testDb.db, { status: "todo" });
+  assert.deepEqual(
+    todo.map((issue) => issue.key),
+    ["AAA-1", "TAC-2"],
+  );
+
+  const tacTodo = await listIssues(testDb.db, { project: "TAC", status: "todo" });
+  assert.deepEqual(
+    tacTodo.map((issue) => issue.key),
+    ["TAC-2"],
+  );
+
+  const backlogIssues = await listIssues(testDb.db, { status: "backlog" });
+  assert.deepEqual(
+    backlogIssues.map((issue) => issue.key),
+    [backlog.key],
+  );
+
+  await assert.rejects(
+    listIssues(testDb.db, { status: "nope" }),
+    rejectsWithServiceCode("validation"),
+  );
+});
+
+test("updateIssue trims the title, persists it, and appends no event", async () => {
+  await seedProject("TAC");
+  const created = await createIssue(testDb.db, { project: "TAC", title: "Original" });
+
+  const updated = await updateIssue(testDb.db, {
+    key: created.key,
+    title: "  Revised title  ",
+  });
+
+  assert.equal(updated.id, created.id);
+  assert.equal(updated.key, created.key);
+  assert.equal(updated.title, "Revised title");
+  assert.equal(updated.description, created.description);
+  assertIsoTimestamp(updated.updatedAt);
+
+  const reloaded = await getIssue(testDb.db, created.key);
+  assert.equal(reloaded.title, "Revised title");
+
+  const events = await listEvents(testDb.db, created.id);
+  assert.equal(events.length, 1);
+  assert.equal(events[0]?.kind, "created");
+});
+
+test("updateIssue stores an empty description and a new priority", async () => {
+  await seedProject("TAC");
+  const created = await createIssue(testDb.db, {
+    project: "TAC",
+    title: "Editable fields",
+    description: "old description",
+  });
+
+  const updated = await updateIssue(testDb.db, {
+    key: "TAC-0001",
+    description: "",
+    priority: 1,
+  });
+
+  assert.equal(updated.description, "");
+  assert.equal(updated.priority, 1);
+  assert.equal(updated.title, "Editable fields");
+
+  const reloaded = await getIssue(testDb.db, created.key);
+  assert.equal(reloaded.description, "");
+  assert.equal(reloaded.priority, 1);
+});
+
+test("updateIssue rejects non-human actors with forbidden_transition", async () => {
+  await seedProject("TAC");
+  const created = await createIssue(testDb.db, { project: "TAC", title: "Locked" });
+
+  await assert.rejects(
+    updateIssue(testDb.db, {
+      key: created.key,
+      title: "Agent edit",
+      actor: "agent",
+      agent: "bot",
+    }),
+    rejectsWithServiceCode("forbidden_transition"),
+  );
+  await assert.rejects(
+    updateIssue(testDb.db, { key: created.key, title: "System edit", actor: "system" }),
+    rejectsWithServiceCode("forbidden_transition"),
+  );
+
+  const unchanged = await getIssue(testDb.db, created.key);
+  assert.equal(unchanged.title, "Locked");
+});
+
+test("updateIssue requires at least one editable field", async () => {
+  await seedProject("TAC");
+  const created = await createIssue(testDb.db, { project: "TAC", title: "No fields" });
+
+  await assert.rejects(
+    updateIssue(testDb.db, { key: created.key }),
+    rejectsWithServiceCode("validation"),
+  );
+});
+
+test("updateIssue rejects an unknown key", async () => {
+  await seedProject("TAC");
+
+  await assert.rejects(
+    updateIssue(testDb.db, { key: "TAC-99", title: "Missing" }),
+    rejectsWithServiceCode("not_found"),
   );
 });

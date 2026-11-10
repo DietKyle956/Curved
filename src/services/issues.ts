@@ -298,7 +298,7 @@ export async function createIssue(
 
 export async function listIssues(
   db: Db,
-  filter?: { project?: string },
+  filter?: { project?: string; status?: string },
   context?: IssueContext,
 ): Promise<Issue[]> {
   const resolved = resolveContext(context);
@@ -313,16 +313,78 @@ export async function listIssues(
       throw new ServiceError("not_found", `project "${project}" not found`);
     }
   }
+  const status =
+    filter?.status === undefined ? null : validateStatus(filter.status);
 
   const rows = await db.query<IssueRow>(
     `select ${ISSUE_COLUMNS}
      from issues i
      join projects p on p.id = i.project_id
-     where $1::text is null or p.key = $1
+     where ($1::text is null or p.key = $1)
+       and ($2::text is null or i.status = $2)
      order by p.key asc, i.number asc`,
-    [project],
+    [project, status],
   );
   return rows.map((row) => toIssue(row, resolved));
+}
+
+export interface UpdateIssueInput {
+  key: string;
+  title?: string;
+  description?: string;
+  priority?: number;
+  actor?: string;
+  agent?: string;
+}
+
+/**
+ * Edits an issue's mutable fields. Field edits are not status history, so no
+ * event is appended. Only humans may edit.
+ */
+export async function updateIssue(
+  db: Database,
+  input: UpdateIssueInput,
+): Promise<Issue> {
+  const { actor } = resolveContext({ actor: input.actor, agent: input.agent });
+  if (actor !== "human") {
+    throw new ServiceError(
+      "forbidden_transition",
+      `actor "${actor}" may not edit issue "${input.key}"`,
+    );
+  }
+  if (
+    input.title === undefined &&
+    input.description === undefined &&
+    input.priority === undefined
+  ) {
+    throw new ServiceError(
+      "validation",
+      "at least one of title, description, or priority is required",
+    );
+  }
+
+  const title = input.title === undefined ? null : validateTitle(input.title);
+  const description = input.description ?? null;
+  const priority =
+    input.priority === undefined ? null : validatePriority(input.priority);
+  const key = parseIssueKey(input.key).key;
+
+  return db.tx(async (tx) => {
+    const updated = await tx.one<{ id: number }>(
+      `update issues i
+       set title = coalesce($2, i.title),
+           description = coalesce($3, i.description),
+           priority = coalesce($4, i.priority),
+           updated_at = now()
+       where i.key = $1
+       returning i.id`,
+      [key, title, description, priority],
+    );
+    if (updated === null) {
+      throw new ServiceError("not_found", `issue "${key}" not found`);
+    }
+    return hydrateIssue(tx, updated.id, { actor: "human", agent: null });
+  });
 }
 
 export async function getIssue(
