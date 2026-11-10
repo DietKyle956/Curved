@@ -162,13 +162,46 @@
   human only (`forbidden_transition` otherwise), requires at least one field, trims
   the title, validates priority, appends no timeline event (no event kind exists for
   field edits), and returns the hydrated issue with `allowedTransitions`.
+- Schema (LAS-149): `labels` (per-project unique trimmed name 1..50),
+  `issue_labels` link table keyed `(issue_id, label_id)`, and `issue_relations`
+  directed edges keyed `(blocking_issue_id, blocked_issue_id)` with a no-self
+  check and a `blocked_issue_id` index. Migration `0004` adds only the tables:
+  the `labels` and `relation` event kinds were already in the 0002/0003
+  constraint.
+- Labels: `setIssueLabels(db, { key, labels, actor?, agent? })` is human only,
+  trims and dedupes names, upserts them into the issue's project, rewrites the
+  issue's link rows, appends one `labels` event whose body is the JSON
+  `{"labels":[...]}` (sorted; an empty array clears the set and still records one
+  event), and returns the hydrated issue. `POST /api/issues/:key/labels` wraps it
+  (`{ labels }`, human only, 200 `{ issue }`).
+- Relations: `addRelation(db, { blocked, blocking, actor?, agent? })` is human
+  only, resolves both keys before writing (`not_found` names the missing key),
+  rejects self-edges with `validation`, inserts with `on conflict do nothing`
+  (duplicates append no second event), appends one `relation` event on the blocked
+  issue with body `{"blocking":...,"blocked":...}`, and returns the hydrated
+  blocked issue. `POST /api/issues/:key/relations` wraps it (`{ blocking }`, where
+  `:key` is the blocked issue; human only, 200 `{ issue }`).
+- Issue payloads carry `labels: string[]` and
+  `relations: { blocks, blockedBy }` (keys, both ascending) on every hydration
+  path, including move, block, release, and review. `src/services/issue-meta.ts`
+  loads both directions for a batch in two statements; `listIssues` is exactly
+  three statements for a non-empty project list (issues, labels, relations), with
+  no per-issue query and no lateral aggregate, and runs an existence check only
+  when a filtered list comes back empty.
+- Ready: `listReady` and `claimNext` exclude a `todo` issue while any issue
+  blocking it is not `done`; it reappears in the queue and becomes claimable once
+  the blocker reaches `done`.
+- CLI: `issue show` renders `labels:`, `blocks:`, and `blocked_by:` (`-` when
+  empty) between `parent:` and `blocked_reason:`.
 - Tests: isolated database from `TEST_DATABASE_URL` (name must start with
   `curved_test`), created and migrated by `test/helpers/db.ts`; its reset truncates
   `projects` and `agents` with cascade. The development database is never touched.
-  `npm test` runs 136 tests, including 22 agent/queue tests in
+  `npm test` runs 154 tests, including 22 agent/queue tests in
   `test/agents.test.ts`, 13 MCP-over-stdio tests in `test/mcp.test.ts`, the
   blocking suite in `test/blocking.test.ts`, the HTTP suite in `test/http.test.ts`,
-  the transition suite, comment ownership tests, and the CLI sequence.
+  the label and relation suites in `test/labels.test.ts` and
+  `test/relations.test.ts`, the transition suite, comment ownership tests, and the
+  CLI sequence.
 - Git repository on branch `main`, remote `origin`
   (`https://github.com/DietKyle956/Curved.git`), public on GitHub.
 - Index: `.codegraph/` initialized, gitignored.
@@ -209,6 +242,16 @@
   `unblocked` are distinct event kinds like `review_submitted`: `blocked` records the
   status move (`in_progress -> todo`) plus the reason, `unblocked` records no status
   change. Claim ownership gates blocking; the human actor gates unblocking.
+- Relations are blocking-only directed edges (`LAS-149`), shaped as
+  `relations: { blocks, blockedBy }` to match Linear's vocabulary: `blocks` points
+  out, `blockedBy` points in. Labels are per project, so an issue can only carry
+  its own project's labels. Replacing an issue's labels rewrites `issue_labels`
+  wholesale; label rows are never deleted, and the event body is the full sorted
+  set. Cycles are recorded as given: readiness only asks whether a blocker is
+  `done`, so a cyclic pair stays out of `ready` until a human breaks it.
+- The label and relation writes are human-only HTTP surfaces, not new CLI verbs
+  or MCP tools: agents consume the results through the issue payload and the
+  dependency-aware ready queue.
 - MCP targets the v2 `@modelcontextprotocol/server` 2.4.0 with `serveStdio`
   (default `legacy: "serve"`), not the v1 SDK: v2 serves the 2025 `initialize`
   handshake and the 2026 spec from the same factory, so no fallback was needed.
@@ -236,14 +279,16 @@
 
 - None blocking. MCP transport is settled: stdio on the v2
   `@modelcontextprotocol/server` package, no v1 fallback.
-- `LAS-149` is fully specified by `LAS-148` now that the HTTP surface exists.
+- Blocking-relation cycles are permitted and simply keep the affected issues out
+  of `ready`; no cycle detection was specified for `LAS-149`.
 - The SPA build remains `LAS-152`; until then the HTTP server answers non-`/api`
   paths with the 503 naming `web/dist`.
 
 ## Next best step
 
-Execute `LAS-149` (labels, relations, dependency-aware ready), unblocked by
-`LAS-148`.
+Execute `LAS-150` (SSE realtime stream) and `LAS-151` (GitHub webhook and branch
+helper), both unblocked by `LAS-148`. `LAS-152` then needs `LAS-149` and
+`LAS-150`.
 
 ## Tracker
 
@@ -261,7 +306,7 @@ Execute `LAS-149` (labels, relations, dependency-aware ready), unblocked by
   - `LAS-146` block and unblock (145) (done 2026-11-10)
   - `LAS-147` MCP server over stdio (146) (done 2026-11-10)
   - `LAS-148` HTTP API and auth boundary (146) (done 2026-11-10)
-  - `LAS-149` labels, relations, dependency-aware ready (148)
+  - `LAS-149` labels, relations, dependency-aware ready (148) (done 2026-11-10)
   - `LAS-150` SSE realtime stream (148)
   - `LAS-151` GitHub webhook and branch helper (148)
   - `LAS-152` SPA sign-in, setup, board (148, 149, 150)
@@ -577,3 +622,44 @@ Execute `LAS-149` (labels, relations, dependency-aware ready), unblocked by
   no agent parameter.
 - Next best step: execute `LAS-149`.
 - Commits: 1 commit, `Add the HTTP API and auth boundary`.
+
+### Session 013
+
+- Date: 2026-11-10
+- Goal: execute `LAS-149` (labels, relations, dependency-aware ready).
+- Completed: `0004_labels_relations.sql` (`labels` unique per project with a
+  trimmed 1..50 name, `issue_labels` link table, `issue_relations` directed edges
+  with a no-self check and a `blocked_issue_id` index); `src/services/issue-meta.ts`
+  with `emptyMeta` and the two-query batch `loadIssueMeta`; `Issue` gains
+  `labels` and `relations: { blocks, blockedBy }` on every hydration path;
+  `listIssues` is three statements for a non-empty project list with an
+  empty-result existence check preserving `not_found`; `listReady` and `claimNext`
+  exclude issues with an unfinished blocker; `setIssueLabels` and `addRelation`
+  services with JSON-bodied `labels` and `relation` events; human-only
+  `POST /api/issues/:key/labels` and `POST /api/issues/:key/relations`; `issue show`
+  renders `labels`, `blocks`, and `blocked_by`; `test/labels.test.ts` (9 tests,
+  including the three-statement query budget) and `test/relations.test.ts` (5
+  tests, including cross-project gating); HTTP route and ready tests in
+  `test/http.test.ts`; README, AGENTS, and this memory entry.
+- Verification run: `npm run typecheck` green; `npm test` (154 pass, 0 fail); a live
+  smoke against a real `node src/server.ts` on a throwaway
+  `curved_test_smoke149` database covering label replace/dedupe/trim, relation add
+  and duplicate ignore, both payload directions, agent `403 forbidden_transition`
+  on both routes, `400 validation` for a self relation, `404 not_found` for an
+  unknown blocking key, ready excluding the blocked issue and including it after
+  the blocker reached `done`, claim of the unblocked issue, timeline JSON bodies,
+  the three-statement project list path, and CLI `issue show` rendering labels,
+  blocks, and blocked_by; smoke database dropped and server stopped.
+- Evidence captured: `{"labels":["bug","ui"]}` and
+  `{"blocking":"SMK-2","blocked":"SMK-1"}` event bodies; `ready:["SMK-2"]` then
+  `ready:["SMK-1"]`; `403 {"code":"forbidden_transition","message":"this action is
+  restricted to humans"}`; CLI lines `labels: bug, ui`, `blocks: -`,
+  `blocked_by: SMK-2`; duplicate relation produced one event.
+- Coordination: eight parallel slices (core schema/metadata/queue, labels service,
+  relations service, HTTP routes, CLI render plus its exact-output tests, service
+  tests, HTTP tests, docs), all green without a fix-up pass.
+- Known risk: relation cycles are permitted and keep the affected issues out of
+  `ready`; labels cannot be renamed or deleted independently of a set replacement;
+  relation writes are HTTP-only (no CLI or MCP verb), by design.
+- Next best step: execute `LAS-150` and `LAS-151`.
+- Commits: 1 commit, `Add labels, relations, and dependency-aware ready`.

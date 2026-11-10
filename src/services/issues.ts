@@ -16,6 +16,8 @@ import {
 import type { ActorType, Priority, Status } from "../shared/status.ts";
 import { appendEvent, listEvents } from "./events.ts";
 import type { IssueEvent } from "./events.ts";
+import { emptyMeta, loadIssueMeta } from "./issue-meta.ts";
+import type { IssueMeta } from "./issue-meta.ts";
 import { ensureAgentExists } from "./agents.ts";
 
 const ISSUE_KEY_PATTERN = /^([A-Z][A-Z0-9]{1,9})-([0-9]{1,6})$/;
@@ -37,6 +39,10 @@ export interface Issue {
   parentId: number | null;
   blockedReason: string | null;
   claimedBy: string | null;
+  /** Label names in ascending order. */
+  labels: string[];
+  /** Issue keys in ascending order; `blocks` points out, `blockedBy` points in. */
+  relations: { blocks: string[]; blockedBy: string[] };
   createdAt: string;
   updatedAt: string;
 }
@@ -104,7 +110,11 @@ export const ISSUE_COLUMNS = `i.id, i.project_id, p.key as project_key, i.number
        i.status, i.priority, i.parent_id, i.blocked_reason, i.claimed_by,
        i.created_at, i.updated_at`;
 
-export function toIssue(row: IssueRow, context: ResolvedContext): Issue {
+export function toIssue(
+  row: IssueRow,
+  context: ResolvedContext,
+  meta: IssueMeta = emptyMeta(),
+): Issue {
   return {
     id: row.id,
     key: row.key,
@@ -123,6 +133,8 @@ export function toIssue(row: IssueRow, context: ResolvedContext): Issue {
     parentId: row.parent_id,
     blockedReason: row.blocked_reason,
     claimedBy: row.claimed_by,
+    labels: meta.labels,
+    relations: meta.relations,
     createdAt: row.created_at.toISOString(),
     updatedAt: row.updated_at.toISOString(),
   };
@@ -144,7 +156,8 @@ export async function hydrateIssue(
   if (row === null) {
     throw new Error(`issue ${id} could not be read back`);
   }
-  return toIssue(row, context);
+  const meta = (await loadIssueMeta(db, [id])).get(id) ?? emptyMeta();
+  return toIssue(row, context, meta);
 }
 
 export function parseIssueKey(input: string): {
@@ -305,13 +318,6 @@ export async function listIssues(
   let project: string | null = null;
   if (filter?.project !== undefined) {
     project = validateProjectKey(filter.project);
-    const existing = await db.one<{ id: number }>(
-      `select id from projects where key = $1`,
-      [project],
-    );
-    if (existing === null) {
-      throw new ServiceError("not_found", `project "${project}" not found`);
-    }
   }
   const status =
     filter?.status === undefined ? null : validateStatus(filter.status);
@@ -325,7 +331,23 @@ export async function listIssues(
      order by p.key asc, i.number asc`,
     [project, status],
   );
-  return rows.map((row) => toIssue(row, resolved));
+  if (rows.length > 0) {
+    const meta = await loadIssueMeta(db, rows.map((row) => row.id));
+    return rows.map((row) =>
+      toIssue(row, resolved, meta.get(row.id) ?? emptyMeta()),
+    );
+  }
+  // An empty list may mean an unknown project rather than an empty one.
+  if (project !== null) {
+    const existing = await db.one<{ id: number }>(
+      `select id from projects where key = $1`,
+      [project],
+    );
+    if (existing === null) {
+      throw new ServiceError("not_found", `project "${project}" not found`);
+    }
+  }
+  return [];
 }
 
 export interface UpdateIssueInput {
@@ -404,7 +426,8 @@ export async function getIssue(
   if (row === null) {
     throw new ServiceError("not_found", `issue "${canonical}" not found`);
   }
-  return toIssue(row, resolved);
+  const meta = (await loadIssueMeta(db, [row.id])).get(row.id) ?? emptyMeta();
+  return toIssue(row, resolved, meta);
 }
 
 export interface IssueTimeline {

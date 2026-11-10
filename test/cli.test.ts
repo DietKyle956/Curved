@@ -3,6 +3,10 @@ import { spawn } from "node:child_process";
 import { resolve } from "node:path";
 import { after, before, beforeEach, test } from "node:test";
 import { openTestDatabase, type TestDatabase } from "./helpers/db.ts";
+import { createIssue } from "../src/services/issues.ts";
+import { setIssueLabels } from "../src/services/labels.ts";
+import { createProject } from "../src/services/projects.ts";
+import { addRelation } from "../src/services/relations.ts";
 
 const REPO_ROOT = resolve(import.meta.dirname, "..");
 
@@ -44,6 +48,8 @@ interface ShowPayload {
   title: string;
   description: string;
   parentId: number | null;
+  labels: string[];
+  relations: { blocks: string[]; blockedBy: string[] };
   blockedReason: string | null;
   claimedBy: string | null;
   createdAt: string;
@@ -307,6 +313,9 @@ test("issue add, list, and show print the pinned human formats", async () => {
       "title: Fix the flux capacitor",
       "description: Needs 1.21 GW",
       "parent: -",
+      "labels: -",
+      "blocks: -",
+      "blocked_by: -",
       "blocked_reason: -",
       "claimed_by: -",
       `created_at: ${issue.createdAt}`,
@@ -360,6 +369,9 @@ test("issue comment then issue show render the comment in human and JSON form", 
       "title: Comment target",
       "description: ",
       "parent: -",
+      "labels: -",
+      "blocks: -",
+      "blocked_by: -",
       "blocked_reason: -",
       "claimed_by: -",
       `created_at: ${payload.createdAt}`,
@@ -371,6 +383,32 @@ test("issue comment then issue show render the comment in human and JSON form", 
       "",
     ].join("\n"),
   );
+});
+
+test("issue show renders labels and relations seeded through the service layer", async () => {
+  await createProject(testDb.db, { key: "TAC", name: "Tac" });
+  await createIssue(testDb.db, { project: "TAC", title: "Blocked work" });
+  await createIssue(testDb.db, { project: "TAC", title: "Blocking work" });
+  await setIssueLabels(testDb.db, { key: "TAC-1", labels: ["ui", "bug"] });
+  await addRelation(testDb.db, { blocked: "TAC-1", blocking: "TAC-2" });
+
+  const blocked = await runCli(["issue", "show", "TAC-1"]);
+  assert.equal(blocked.code, 0, blocked.stderr);
+  assert.ok(blocked.stdout.includes("\nlabels: bug, ui\n"), blocked.stdout);
+  assert.ok(blocked.stdout.includes("\nblocks: -\n"), blocked.stdout);
+  assert.ok(blocked.stdout.includes("\nblocked_by: TAC-2\n"), blocked.stdout);
+
+  const blocking = await runCli(["issue", "show", "TAC-2"]);
+  assert.equal(blocking.code, 0, blocking.stderr);
+  assert.ok(blocking.stdout.includes("\nlabels: -\n"), blocking.stdout);
+  assert.ok(blocking.stdout.includes("\nblocks: TAC-1\n"), blocking.stdout);
+  assert.ok(blocking.stdout.includes("\nblocked_by: -\n"), blocking.stdout);
+
+  const json = await runCli(["issue", "show", "TAC-1", "--json"]);
+  assert.equal(json.code, 0, json.stderr);
+  const payload = JSON.parse(json.stdout) as ShowPayload;
+  assert.deepEqual(payload.labels, ["bug", "ui"]);
+  assert.deepEqual(payload.relations, { blocks: [], blockedBy: ["TAC-2"] });
 });
 
 test("issue comment --json prints the appended comment event", async () => {

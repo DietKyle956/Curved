@@ -520,6 +520,267 @@ test("agent claim, busy, ready, release, block, and unblock flow", async () => {
   assert.equal((await readJson<IssueResponse>(humanUnblock)).issue.blockedReason, null);
 });
 
+test("issue labels are human-only, sorted, replaced, and recorded once", async () => {
+  await seedIssue("todo");
+
+  const applied = await request(app, "/api/issues/TAC-1/labels", {
+    method: "POST",
+    headers: { ...HUMAN_BEARER, ...JSON_HEADERS },
+    body: JSON.stringify({ labels: ["ui", "bug"] }),
+  });
+  assert.equal(applied.status, 200);
+  assertJson(applied);
+  assert.deepEqual((await readJson<IssueResponse>(applied)).issue.labels, [
+    "bug",
+    "ui",
+  ]);
+
+  const timeline = await request(app, "/api/issues/TAC-1", {
+    headers: HUMAN_BEARER,
+  });
+  assert.equal(timeline.status, 200);
+  assertJson(timeline);
+  const shown = await readJson<IssueTimelineResponse>(timeline);
+  assert.deepEqual(shown.issue.labels, ["bug", "ui"]);
+  const labelEvents = shown.events.filter((event) => event.kind === "labels");
+  assert.equal(labelEvents.length, 1);
+  assert.equal(labelEvents[0]?.actorType, "human");
+  assert.equal(labelEvents[0]?.fromStatus, null);
+  assert.equal(labelEvents[0]?.toStatus, null);
+  assert.deepEqual(JSON.parse(labelEvents[0]?.body ?? ""), {
+    labels: ["bug", "ui"],
+  });
+
+  const replaced = await request(app, "/api/issues/TAC-1/labels", {
+    method: "POST",
+    headers: { ...HUMAN_BEARER, ...JSON_HEADERS },
+    body: JSON.stringify({ labels: ["backend"] }),
+  });
+  assert.equal(replaced.status, 200);
+  assert.deepEqual((await readJson<IssueResponse>(replaced)).issue.labels, [
+    "backend",
+  ]);
+  const afterReplace = await readJson<IssueTimelineResponse>(
+    await request(app, "/api/issues/TAC-1", { headers: HUMAN_BEARER }),
+  );
+  assert.deepEqual(afterReplace.issue.labels, ["backend"]);
+
+  const cleared = await request(app, "/api/issues/TAC-1/labels", {
+    method: "POST",
+    headers: { ...HUMAN_BEARER, ...JSON_HEADERS },
+    body: JSON.stringify({ labels: [] }),
+  });
+  assert.equal(cleared.status, 200);
+  assert.deepEqual((await readJson<IssueResponse>(cleared)).issue.labels, []);
+  const afterClear = await readJson<IssueTimelineResponse>(
+    await request(app, "/api/issues/TAC-1", { headers: HUMAN_BEARER }),
+  );
+  assert.deepEqual(afterClear.issue.labels, []);
+
+  const invalid = await request(app, "/api/issues/TAC-1/labels", {
+    method: "POST",
+    headers: { ...HUMAN_BEARER, ...JSON_HEADERS },
+    body: JSON.stringify({ labels: "nope" }),
+  });
+  assert.equal(invalid.status, 400);
+  assert.equal(
+    (await readJson<ErrorResponse>(invalid)).error.code,
+    "validation",
+  );
+
+  const agentCreated = await createAgent(testDb.db, "agent-1");
+  const forbidden = await request(app, "/api/issues/TAC-1/labels", {
+    method: "POST",
+    headers: {
+      authorization: `Bearer ${agentCreated.token}`,
+      ...JSON_HEADERS,
+    },
+    body: JSON.stringify({ labels: ["ui"] }),
+  });
+  assert.equal(forbidden.status, 403);
+  assert.equal(
+    (await readJson<ErrorResponse>(forbidden)).error.code,
+    "forbidden_transition",
+  );
+});
+
+test("issue relations are human-only, expose both directions, and ignore duplicates", async () => {
+  await seedProject();
+  await createIssue(testDb.db, {
+    project: "TAC",
+    title: "Blocked issue",
+    status: "todo",
+  });
+  await createIssue(testDb.db, {
+    project: "TAC",
+    title: "Blocking issue",
+    status: "todo",
+  });
+
+  const created = await request(app, "/api/issues/TAC-1/relations", {
+    method: "POST",
+    headers: { ...HUMAN_BEARER, ...JSON_HEADERS },
+    body: JSON.stringify({ blocking: "TAC-2" }),
+  });
+  assert.equal(created.status, 200);
+  assertJson(created);
+  const blockedIssue = (await readJson<IssueResponse>(created)).issue;
+  assert.equal(blockedIssue.key, "TAC-1");
+  assert.deepEqual(blockedIssue.relations.blockedBy, ["TAC-2"]);
+  assert.deepEqual(blockedIssue.relations.blocks, []);
+
+  const blocker = await readJson<IssueTimelineResponse>(
+    await request(app, "/api/issues/TAC-2", { headers: HUMAN_BEARER }),
+  );
+  assert.deepEqual(blocker.issue.relations.blocks, ["TAC-1"]);
+  assert.deepEqual(blocker.issue.relations.blockedBy, []);
+
+  const blockedTimeline = await readJson<IssueTimelineResponse>(
+    await request(app, "/api/issues/TAC-1", { headers: HUMAN_BEARER }),
+  );
+  assert.deepEqual(blockedTimeline.issue.relations.blockedBy, ["TAC-2"]);
+  const relationEvents = blockedTimeline.events.filter(
+    (event) => event.kind === "relation",
+  );
+  assert.equal(relationEvents.length, 1);
+  assert.equal(relationEvents[0]?.actorType, "human");
+  assert.equal(relationEvents[0]?.fromStatus, null);
+  assert.equal(relationEvents[0]?.toStatus, null);
+  assert.deepEqual(JSON.parse(relationEvents[0]?.body ?? ""), {
+    blocking: "TAC-2",
+    blocked: "TAC-1",
+  });
+
+  const duplicate = await request(app, "/api/issues/TAC-1/relations", {
+    method: "POST",
+    headers: { ...HUMAN_BEARER, ...JSON_HEADERS },
+    body: JSON.stringify({ blocking: "TAC-2" }),
+  });
+  assert.equal(duplicate.status, 200);
+  const afterDuplicate = await readJson<IssueTimelineResponse>(
+    await request(app, "/api/issues/TAC-1", { headers: HUMAN_BEARER }),
+  );
+  assert.deepEqual(afterDuplicate.issue.relations.blockedBy, ["TAC-2"]);
+  assert.equal(
+    afterDuplicate.events.filter((event) => event.kind === "relation").length,
+    1,
+  );
+
+  const selfRelation = await request(app, "/api/issues/TAC-1/relations", {
+    method: "POST",
+    headers: { ...HUMAN_BEARER, ...JSON_HEADERS },
+    body: JSON.stringify({ blocking: "TAC-1" }),
+  });
+  assert.equal(selfRelation.status, 400);
+  assert.equal(
+    (await readJson<ErrorResponse>(selfRelation)).error.code,
+    "validation",
+  );
+
+  const missing = await request(app, "/api/issues/TAC-1/relations", {
+    method: "POST",
+    headers: { ...HUMAN_BEARER, ...JSON_HEADERS },
+    body: JSON.stringify({ blocking: "ZZZ-9" }),
+  });
+  assert.equal(missing.status, 404);
+  assert.equal((await readJson<ErrorResponse>(missing)).error.code, "not_found");
+
+  const agentCreated = await createAgent(testDb.db, "agent-1");
+  const forbidden = await request(app, "/api/issues/TAC-1/relations", {
+    method: "POST",
+    headers: {
+      authorization: `Bearer ${agentCreated.token}`,
+      ...JSON_HEADERS,
+    },
+    body: JSON.stringify({ blocking: "TAC-2" }),
+  });
+  assert.equal(forbidden.status, 403);
+  assert.equal(
+    (await readJson<ErrorResponse>(forbidden)).error.code,
+    "forbidden_transition",
+  );
+});
+
+test("the ready queue and claims skip a todo issue with an open blocker", async () => {
+  await seedProject();
+  await createIssue(testDb.db, {
+    project: "TAC",
+    title: "Blocked issue",
+    status: "todo",
+  });
+  await createIssue(testDb.db, {
+    project: "TAC",
+    title: "Blocking issue",
+    status: "todo",
+  });
+
+  const relation = await request(app, "/api/issues/TAC-1/relations", {
+    method: "POST",
+    headers: { ...HUMAN_BEARER, ...JSON_HEADERS },
+    body: JSON.stringify({ blocking: "TAC-2" }),
+  });
+  assert.equal(relation.status, 200);
+
+  const agentCreated = await createAgent(testDb.db, "agent-1");
+  const agent = { authorization: `Bearer ${agentCreated.token}` };
+
+  const blockedReady = await request(app, "/api/ready?project=TAC", {
+    headers: agent,
+  });
+  assert.equal(blockedReady.status, 200);
+  assertJson(blockedReady);
+  const blockedQueue = await readJson<ReadyResponse>(blockedReady);
+  assert.equal(blockedQueue.busy, null);
+  assert.deepEqual(
+    blockedQueue.ready.map((entry) => entry.key),
+    ["TAC-2"],
+  );
+
+  const claimed = await request(app, "/api/claims/next?project=TAC", {
+    method: "POST",
+    headers: agent,
+  });
+  assert.equal(claimed.status, 201);
+  assert.equal((await readJson<IssueResponse>(claimed)).issue.key, "TAC-2");
+
+  const released = await request(app, "/api/issues/TAC-2/release", {
+    method: "POST",
+    headers: agent,
+  });
+  assert.equal(released.status, 200);
+  assert.equal((await readJson<IssueResponse>(released)).issue.status, "todo");
+
+  for (const to of ["in_progress", "in_review", "done"]) {
+    const moved = await request(app, "/api/issues/TAC-2/transition", {
+      method: "POST",
+      headers: { ...HUMAN_BEARER, ...JSON_HEADERS },
+      body: JSON.stringify({ to }),
+    });
+    assert.equal(moved.status, 200);
+    assert.equal((await readJson<IssueResponse>(moved)).issue.status, to);
+  }
+
+  const unblockedReady = await request(app, "/api/ready?project=TAC", {
+    headers: agent,
+  });
+  assert.equal(unblockedReady.status, 200);
+  assert.deepEqual(
+    (await readJson<ReadyResponse>(unblockedReady)).ready.map(
+      (entry) => entry.key,
+    ),
+    ["TAC-1"],
+  );
+
+  const nextClaim = await request(app, "/api/claims/next?project=TAC", {
+    method: "POST",
+    headers: agent,
+  });
+  assert.equal(nextClaim.status, 201);
+  const unblockedClaim = (await readJson<IssueResponse>(nextClaim)).issue;
+  assert.equal(unblockedClaim.key, "TAC-1");
+  assert.equal(unblockedClaim.status, "in_progress");
+});
+
 test("responses never carry CORS headers", async () => {
   const get = await request(app, "/api/me", { headers: COOKIE_HEADER });
   assert.equal(get.headers.get("access-control-allow-origin"), null);

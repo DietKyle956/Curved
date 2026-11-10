@@ -4,6 +4,7 @@ import { pgErrorConstraint } from "../db.ts";
 import { ServiceError } from "../errors.ts";
 import { appendEvent } from "./events.ts";
 import { ensureAgentExists } from "./agents.ts";
+import { emptyMeta, loadIssueMeta } from "./issue-meta.ts";
 import {
   hydrateIssue,
   parseIssueKey,
@@ -91,10 +92,18 @@ export async function listReady(
      join projects p on p.id = i.project_id
      where i.status = 'todo'
        and i.blocked_reason is null
+       and not exists (
+         select 1
+         from issue_relations r
+         join issues blocker on blocker.id = r.blocking_issue_id
+         where r.blocked_issue_id = i.id and blocker.status <> 'done'
+       )
        and ($1::text is null or p.key = $1)
      order by i.priority asc, i.number asc, i.key asc`,
     [project],
   );
+
+  const meta = await loadIssueMeta(db, rows.map((row) => row.id));
 
   let busy: string | null = null;
   if (resolved.actor === "agent" && resolved.agent !== null) {
@@ -102,7 +111,9 @@ export async function listReady(
   }
 
   return {
-    ready: rows.map((row) => toIssue(row, resolved)),
+    ready: rows.map((row) =>
+      toIssue(row, resolved, meta.get(row.id) ?? emptyMeta()),
+    ),
     busy,
   };
 }
@@ -141,6 +152,12 @@ export async function claimNext(
          join projects p on p.id = i.project_id
          where i.status = 'todo'
            and i.blocked_reason is null
+           and not exists (
+             select 1
+             from issue_relations r
+             join issues blocker on blocker.id = r.blocking_issue_id
+             where r.blocked_issue_id = i.id and blocker.status <> 'done'
+           )
            and ($1::text is null or p.key = $1)
          order by i.priority asc, i.number asc, i.key asc
          limit 1

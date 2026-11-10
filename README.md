@@ -79,15 +79,25 @@ The authenticated HTTP boundary is live. `npm start` runs `node src/server.ts` o
 authenticate as a human through the session cookie or the UI bearer token, or as
 an agent through a `crv_` bearer token; failures and service errors share one JSON
 error shape, and there is no CORS. The API covers projects, issues, comments,
-transitions, block/unblock, release, and claims, and serves the SPA from
-`web/dist` for every non-`/api` path. See "HTTP API" below.
+transitions, block/unblock, release, claims, labels, and relations, and serves the
+SPA from `web/dist` for every non-`/api` path. See "HTTP API" below.
+
+Labels are per project: a label name is unique within its project, trimmed, 1 to
+50 characters, and reused by every issue in that project that carries it. Setting
+an issue's labels replaces its whole set, and an empty set clears it. Relations
+are directed and only express blocking: one issue blocks another. Both are
+append-only timeline events with JSON bodies, a `labels` event carrying the sorted
+label names and a `relation` event carrying the blocking and blocked keys. Every
+issue payload carries `labels` and `relations: { blocks, blockedBy }`, where
+`blocks` holds the keys this issue blocks and `blockedBy` the keys blocking it.
+`ready` and `claim` exclude an issue while any issue blocking it is not `done`.
 
 - `node src/cli.ts issue add <PROJECT> <title...>` - create an issue; keys are
   assigned atomically.
 - `node src/cli.ts issue list [PROJECT]` - list issues, optionally scoped to one
   project; the fifth column is the blocked reason or `-`.
 - `node src/cli.ts issue show <KEY>` - print the issue and its timeline in ascending
-  event order.
+  event order, plus its `labels`, `blocks`, and `blocked_by`.
 - `node src/cli.ts issue comment <KEY> <body...> [--actor <type>]
   [--agent <name>]` - append a comment event to the timeline.
 - `node src/cli.ts issue move <KEY> <status> [--body <text>] [--actor <type>]
@@ -161,6 +171,8 @@ including `GET /api/projects`, rejects requests without valid credentials with
 | `POST` | `/api/issues/:key/block` | agent only | `{ issue }` |
 | `POST` | `/api/issues/:key/unblock` | human only | `{ issue }` |
 | `POST` | `/api/issues/:key/release` | agent only | `{ issue }` |
+| `POST` | `/api/issues/:key/labels` | human only | `{ issue }`; body `{ labels }` replaces the label set, upserting project labels |
+| `POST` | `/api/issues/:key/relations` | human only | `{ issue }`; body `{ blocking }`, where `:key` is the blocked issue |
 | `GET` | `/api/ready` | human or agent | `{ ready, busy }` |
 | `POST` | `/api/claims/next` | agent only | `{ issue }` |
 

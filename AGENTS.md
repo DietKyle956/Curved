@@ -61,8 +61,16 @@ comments, block (agent), unblock (human), release (agent), `/api/ready`, and
 other service codes, and 500 internal. There is no CORS, mutating requests with a
 body must be JSON, and non-`/api` paths fall back to `web/dist` with no-cache
 documents, immutable `/assets/*`, and a 503 naming the build when it is absent.
-Tests: 136 pass, 0 fail, including `test/http.test.ts` and the issue filter and
-human-only edit cases in `test/issues.test.ts`. Next frontier: LAS-149.
+LAS-149 is live: migration `0004` adds project-scoped `labels`, `issue_labels`, and
+`issue_relations`; the label and relation services write the `labels` and
+`relation` event kinds; human-only HTTP routes replace an issue's label set and
+add a blocking relation; issue payloads carry `labels` and `relations` with
+`blocks` and `blockedBy`; and `ready` and claim skip issues whose blocking
+relation is not Done.
+Tests: 154 pass, 0 fail, including `test/http.test.ts`, the label and relation
+suites in `test/labels.test.ts` and `test/relations.test.ts`, and the issue filter
+and human-only edit cases in `test/issues.test.ts`. Next frontier: LAS-150 and
+LAS-151.
 
 ## Directory page
 

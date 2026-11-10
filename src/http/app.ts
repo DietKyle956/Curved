@@ -11,8 +11,10 @@ import {
   updateIssue,
 } from "../services/issues.ts";
 import type { IssueContext } from "../services/issues.ts";
+import { setIssueLabels } from "../services/labels.ts";
 import { createProject, listProjects } from "../services/projects.ts";
 import { claimNext, listReady, releaseClaim } from "../services/queue.ts";
+import { addRelation } from "../services/relations.ts";
 import {
   constantTimeEqual,
   resolveActor,
@@ -75,6 +77,20 @@ function optionalStringField(
   }
   if (typeof value !== "string") {
     throw new ServiceError("validation", `"${name}" must be a string`);
+  }
+  return value;
+}
+
+function stringArrayField(
+  body: Record<string, unknown>,
+  name: string,
+): string[] {
+  const value = body[name];
+  if (!Array.isArray(value) || value.some((item) => typeof item !== "string")) {
+    throw new ServiceError(
+      "validation",
+      `"${name}" must be an array of strings`,
+    );
   }
   return value;
 }
@@ -332,6 +348,28 @@ export function createApp(options: CreateAppOptions): App {
           agent: authContext.agentName ?? undefined,
         });
         return json({ event }, 201);
+      }
+
+      if (action === "labels" && method === "POST") {
+        requireHuman(await auth());
+        const body = await requestBody();
+        const issue = await setIssueLabels(db, {
+          key,
+          labels: stringArrayField(body, "labels"),
+          actor: "human",
+        });
+        return json({ issue });
+      }
+
+      if (action === "relations" && method === "POST") {
+        requireHuman(await auth());
+        const body = await requestBody();
+        const issue = await addRelation(db, {
+          blocked: key,
+          blocking: stringField(body, "blocking"),
+          actor: "human",
+        });
+        return json({ issue });
       }
 
       if (action === "block" && method === "POST") {
