@@ -11,7 +11,8 @@
 - End-of-session gate: `./scripts/clean-state.sh`
 - Baseline: green. Install/check/build/start are `true` placeholders because no
   `package.json` exists.
-- Not a git repository yet. `initial_idea.md` is the only pre-existing file.
+- Git repository on branch `main`, remote `origin`
+  (`https://github.com/DietKyle956/Curved.git`), public on GitHub.
 - Index: `.codegraph/` initialized, gitignored.
 
 ## Decisions
@@ -104,3 +105,17 @@ agent surfaces, HTTP and SPA.
   `LAS-145`; `LAS-144` proves agent and git actors at the service seam only.
 - Next best step: execute `LAS-141` (foundation), then walk the frontier:
   `LAS-142`, then `LAS-143` and `LAS-144`, and so on.
+
+### Session 004
+
+- Date: 2026-11-10
+- Goal: put the project under version control and publish it.
+- Completed: `README.md` added; git repository initialized on `main`; initial
+  commit `4b66958` ("Initial commit: project scaffold and working agreement");
+  public GitHub repository created at `https://github.com/DietKyle956/Curved`
+  and pushed.
+- Verification run: `git ls-remote origin main` equals local HEAD; `gh repo view`
+  reports visibility PUBLIC, default branch main; working tree clean and tracking
+  `origin/main`.
+- Known risk: none new. The baseline remains placeholder-green until `LAS-141`.
+- Next best step: execute `LAS-141`.
