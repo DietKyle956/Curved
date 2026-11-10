@@ -51,6 +51,8 @@ Keys are allocated atomically per project, and every issue carries an append-onl
 - Prefer boring, explicit code over abstraction. Type the boundaries.
 - Do not silently relax a verification rule mid-implementation.
 - Record durable state in `MEMORY.md`, not in chat.
+- Push every completed work item to `origin/main` before reporting success. An
+  unpushed commit is not finished work.
 
 ## Definition of done
 
@@ -66,3 +68,5 @@ Keys are allocated atomically per project, and every issue carries an append-onl
 1. Update `MEMORY.md`: `- **Last updated:** <today>` plus the session entry.
 2. Note unresolved risk or blockers explicitly.
 3. Run `./scripts/clean-state.sh`.
+4. Commit the work and push `main` to `origin`; report success only once
+   `git ls-remote origin main` matches local `HEAD`.
