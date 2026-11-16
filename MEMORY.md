@@ -199,11 +199,11 @@
 - Web surface: sign-in with `CURVED_UI_TOKEN`, first-run project setup, five-lane
   board with desktop drag-to-move gated by each issue's `allowedTransitions`,
   mobile status list, ready queue with claim order, in-flight agents and human
-  unblock, issue detail with timeline, comment composer, field edits, label
-  replacement, blocking relations and unblock, and a `Ctrl/Cmd+K` palette. The
-  shell is `fixed inset-0`; sign-in and setup scroll normally. Data refreshes on
-  mutation, window focus, and a 20 second visible-tab poll (SSE is still
-  `LAS-150`).
+  unblock, issue detail as a centered modal with timeline, comment composer, field
+  edits, label replacement, blocking relations and unblock, and a `Ctrl/Cmd+K`
+  palette. The shell is `fixed inset-0`; sign-in and setup scroll normally. Data
+  refreshes on mutation, window focus, and a 20 second visible-tab poll (SSE is
+  still `LAS-150`).
 - Web design: fixed warm near-black palette (`canvas`, `panel`, `elevated`,
   `line`, parchment text, spice primary, semantic status accents), Instrument Sans
   + JetBrains Mono, one 5 px radius, no light mode. The visual verification matrix
@@ -292,8 +292,13 @@
 - The SPA uses the server payload's `allowedTransitions` as the only drag-and-drop
   source of truth; it never re-implements the transition graph client-side.
 - The app shell is fixed to the viewport and the board owns its horizontal scroll.
-  The detail inspector overlays on `lg`, becomes a static 420 px panel on `xl`, and
-  is a full-screen sheet below `lg`.
+  The issue detail is a centered modal built on the shared `Modal` shell
+  (`web/src/components/Modal.tsx`): a dimmed blurred backdrop, a 768 px panel
+  capped at `min(100dvh - 3rem, 50rem)` and rounded on `sm` and up, a full-screen
+  sheet below `sm`, Escape and backdrop close, body scroll lock, focus taken on
+  open and restored to the trigger on close, and a Tab cycle inside the panel.
+  `Dialog` and the issue detail share that shell; the palette keeps its own
+  overlay at a higher layer so Escape closes it before the detail.
 - No frontend test framework was added for the prototype. Verification was a real
   Chromium pass against a live server at 1440, 1024, and 390 px, including sign-in,
   setup, empty project, create, comment, move, drag, label, relation, unblock,
@@ -733,3 +738,41 @@ end-to-end gate.
 - Next best step: `LAS-150` SSE, then replace the poll with a stream and close the
   remaining SPA tickets.
 - Commits: 1 commit, `Prototype the web client`.
+
+### Session 015
+
+- Date: 2026-11-16
+- Goal: open issue cards in a centered container instead of a side panel.
+- Completed: new shared `web/src/components/Modal.tsx` (backdrop, Escape and
+  backdrop close, body scroll lock, panel focus on open with restore on close,
+  Tab trap) now used by both `Dialog` and `IssueDetail`; `Dialog` keeps its title
+  header and sizes; the issue detail is a 768 px centered panel capped at
+  `min(100dvh - 3rem, 50rem)` with a 5 px radius, border, and `shadow-float` from
+  `sm` up, and stays a borderless full-screen sheet below `sm`. Removed the
+  sidebar breakpoints and the redundant back arrow; the close button is now
+  visible at every width. The detail body resets to the top when the open issue
+  changes, and the panel widens its padding from `sm`.
+- Verification run: `npm run typecheck` green; `npm run build` green;
+  `./scripts/init.sh --no-install` green; `npm test` green (154 pass, 0 fail); a
+  live Chromium pass against `node src/server.ts` on 4747 with the local `CRV`
+  demo project. At 1440x900 the panel measured 768x800 at x=336, y=50 (centered),
+  with the footer composer inside the panel; at 1024x768 it measured 768x720 at
+  x=128, y=24; at 390x844 it measured the full 390x844 with 0 radius and the
+  composer at the viewport bottom. Escape and a backdrop click both closed it and
+  returned to `/p/CRV`; palette Escape closed the palette first and left the issue
+  modal open; a second Escape closed the modal; browser Back moved CRV-5 back to
+  CRV-3, then to the board; comment append worked from the modal footer; the
+  panel took focus on open, 40 Tab presses and Shift+Tab from the panel stayed
+  inside, focus returned to the opening card on close; a comment draft survived a
+  refresh; the new issue dialog still centers at 512 px and its title input keeps
+  autofocus.
+- Evidence captured: centered rect values above; `aria-modal="true"`,
+  `aria-label="Issue CRV-3"`, `role="dialog"`; palette-then-modal Escape ordering
+  `{palette:false, modal:true}` then `{palette:false, modal:false}`; focus trap
+  `true`; comment `Modal redesign check` appended and the composer cleared.
+- Known risk: no frontend test framework, so the modal layout is covered by the
+  browser pass only; the issue modal remains route-driven and unmounts on close,
+  so its exit animation still does not play.
+- Next best step: `LAS-150` SSE, then replace the poll with a stream and close the
+  remaining SPA tickets.
+- Commits: 1 commit, `Open issue detail as a centered modal`.

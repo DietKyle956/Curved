@@ -1,5 +1,4 @@
 import {
-  ArrowLeft,
   ArrowUUpLeft,
   ChatCircle,
   CheckCircle,
@@ -13,7 +12,7 @@ import {
   Tag,
   WarningOctagon,
 } from "@phosphor-icons/react";
-import { motion, useReducedMotion } from "motion/react";
+import { useReducedMotion } from "motion/react";
 import { useEffect, useRef, useState } from "react";
 import type { FormEvent } from "react";
 
@@ -42,6 +41,7 @@ import {
   PriorityMark,
   StatusChip,
 } from "./ui.tsx";
+import { Modal } from "./Modal.tsx";
 
 function EventIcon({ kind }: { kind: EventKind }) {
   const className = `size-3 ${EVENT_TONE[kind]}`;
@@ -209,6 +209,7 @@ export function IssueDetail({
     setComment("");
     setRelationDraft("");
     setMoving(null);
+    scrollRef.current?.scrollTo({ top: 0 });
   }, [issueKey]);
 
   function startEditing(): void {
@@ -306,20 +307,14 @@ export function IssueDetail({
   }
 
   return (
-    <motion.aside
-      initial={reduce ? false : { opacity: 0, x: 10 }}
-      animate={{ opacity: 1, x: 0 }}
-      transition={{ duration: 0.18, ease: [0.16, 1, 0.3, 1] }}
-      className="fixed inset-0 z-40 flex flex-col bg-canvas lg:inset-y-auto lg:top-[60px] lg:right-0 lg:bottom-0 lg:left-auto lg:z-40 lg:w-[400px] lg:border-l lg:border-line lg:shadow-float xl:static xl:z-auto xl:w-[420px] xl:shadow-none"
-      aria-label={`Issue ${issueKey}`}
+    <Modal
+      open
+      onClose={onClose}
+      label={`Issue ${issueKey}`}
+      overlayClassName="z-40 items-stretch p-0 sm:items-center sm:p-6"
+      panelClassName="flex h-[100dvh] w-full flex-col overflow-hidden bg-panel sm:h-[min(calc(100dvh-3rem),50rem)] sm:max-w-3xl sm:rounded-ui sm:border sm:border-line sm:shadow-float"
     >
-      <header className="flex min-h-12 shrink-0 items-center gap-2 border-b border-line px-3 pt-[env(safe-area-inset-top)] lg:min-h-[60px] lg:px-4 lg:pt-0">
-        <IconButton
-          label="Back to board"
-          onClick={onClose}
-          icon={<ArrowLeft className="size-4" />}
-          className="lg:hidden"
-        />
+      <header className="flex min-h-12 shrink-0 items-center gap-2 border-b border-line px-4 pt-[env(safe-area-inset-top)] sm:min-h-14 sm:pt-0">
         <span className="font-mono text-[11px] text-fg">{issueKey}</span>
         {issue !== null ? <StatusChip status={issue.status} /> : null}
         <div className="ml-auto flex items-center gap-1">
@@ -330,9 +325,7 @@ export function IssueDetail({
               icon={<PencilSimple className="size-4" />}
             />
           ) : null}
-          <span className="hidden lg:block">
-            <CloseButton label="Close issue" onClick={onClose} />
-          </span>
+          <CloseButton label="Close issue" onClick={onClose} />
         </div>
       </header>
 
@@ -351,7 +344,7 @@ export function IssueDetail({
         ) : issue === null ? (
           <div className="px-4 py-6 text-[12px] text-fg-muted">Issue not found.</div>
         ) : (
-          <div className="px-4 py-4">
+          <div className="px-4 py-4 sm:px-5 sm:py-5">
             {editing ? (
               <form
                 onSubmit={(event) => void saveEdits(event)}
@@ -684,7 +677,7 @@ export function IssueDetail({
       {issue !== null && !editing ? (
         <form
           onSubmit={(event) => void submitComment(event)}
-          className="shrink-0 border-t border-line bg-canvas px-3 pt-2.5 pb-[calc(0.75rem+env(safe-area-inset-bottom))] lg:pb-3"
+          className="shrink-0 border-t border-line bg-canvas px-4 pt-3 pb-[calc(0.75rem+env(safe-area-inset-bottom))] sm:pb-4"
         >
           <label htmlFor="issue-comment" className="sr-only">
             Add a comment
@@ -721,7 +714,7 @@ export function IssueDetail({
           </div>
         </form>
       ) : null}
-    </motion.aside>
+    </Modal>
   );
 }
 
