@@ -864,4 +864,4 @@ end-to-end gate.
   update fires the `issues` update trigger, so the board still refreshes.
 - Next best step: execute `LAS-151`, then close `LAS-152`/`LAS-153`/`LAS-154` once
   their acceptance tests land.
-- Commits: not recorded in this entry.
+- Commits: 1 commit, `Add the SSE realtime stream` (`74be39b`).
