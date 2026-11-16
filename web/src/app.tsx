@@ -18,6 +18,7 @@ import { Toasts } from "./components/Toasts.tsx";
 import type { ToastItem, ToastKind } from "./components/Toasts.tsx";
 import { Button, LogoMark, Spinner } from "./components/ui.tsx";
 import { api, ApiError } from "./lib/api.ts";
+import { useIssueEvents } from "./lib/events.ts";
 import { STATUS_LABEL } from "./lib/presentation.ts";
 import {
   boardPath,
@@ -278,12 +279,6 @@ export function App() {
 
     void load(!loadedProjects.current.has(key));
 
-    const interval = window.setInterval(() => {
-      if (document.visibilityState === "visible") {
-        void load(true);
-      }
-    }, 20_000);
-
     const onFocus = (): void => {
       void load(true);
     };
@@ -291,12 +286,24 @@ export function App() {
 
     return () => {
       alive = false;
-      window.clearInterval(interval);
       window.removeEventListener("focus", onFocus);
     };
   }, [auth, projectKeyFromRoute, dataTick, onUnauthorized]);
 
   const issueKey = route.kind === "issue" ? route.key : null;
+
+  const onEventsChange = useCallback((): void => {
+    refresh();
+    if (issueKey !== null) {
+      setDetailTick((current) => current + 1);
+    }
+  }, [issueKey, refresh]);
+
+  useIssueEvents({
+    enabled: auth === "human" && project !== null,
+    projectId: project?.id ?? null,
+    onChange: onEventsChange,
+  });
 
   useEffect(() => {
     if (auth !== "human" || issueKey === null) {

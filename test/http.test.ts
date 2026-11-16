@@ -3,7 +3,7 @@ import { createHash } from "node:crypto";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { after, before, beforeEach, test } from "node:test";
+import { after, afterEach, before, beforeEach, test } from "node:test";
 import { createApp } from "../src/http/app.ts";
 import { createAgent } from "../src/services/agents.ts";
 import type { IssueEvent } from "../src/services/events.ts";
@@ -23,6 +23,7 @@ const COOKIE_HEADER = { cookie: HUMAN_COOKIE };
 
 interface HttpApp {
   handle(request: Request): Promise<Response>;
+  close(): Promise<void>;
 }
 
 interface Actor {
@@ -70,14 +71,28 @@ interface ReadyResponse {
 
 let testDb: TestDatabase;
 let app: HttpApp;
+let appOpened = false;
 
 before(async () => {
   testDb = await openTestDatabase();
 });
 
 beforeEach(async () => {
+  appOpened = false;
   await testDb.reset();
-  app = createApp({ db: testDb.db, uiToken: UI_TOKEN, logger: () => {} });
+  app = createApp({
+    db: testDb.db,
+    databaseUrl: testDb.databaseUrl,
+    uiToken: UI_TOKEN,
+    logger: () => {},
+  });
+  appOpened = true;
+});
+
+afterEach(async () => {
+  if (appOpened) {
+    await app.close();
+  }
 });
 
 after(async () => {
@@ -115,7 +130,13 @@ async function seedIssue(status?: string): Promise<Issue> {
 
 test("createApp rejects an empty ui token with a message naming CURVED_UI_TOKEN", () => {
   assert.throws(
-    () => createApp({ db: testDb.db, uiToken: "", logger: () => {} }),
+    () =>
+      createApp({
+        db: testDb.db,
+        databaseUrl: testDb.databaseUrl,
+        uiToken: "",
+        logger: () => {},
+      }),
     /CURVED_UI_TOKEN/,
   );
 });
@@ -825,6 +846,7 @@ test("unknown API routes return JSON 404 instead of HTML", async () => {
 
 test("SPA serving uses the fixture build, caches by kind, and rejects traversal", async () => {
   const dist = await mkdtemp(join(tmpdir(), "curved-http-dist-"));
+  let spa: HttpApp | undefined;
   try {
     await mkdir(join(dist, "assets"));
     await writeFile(
@@ -833,8 +855,9 @@ test("SPA serving uses the fixture build, caches by kind, and rejects traversal"
     );
     await writeFile(join(dist, "assets", "app-abc123.js"), "console.log('app');");
 
-    const spa = createApp({
+    spa = createApp({
       db: testDb.db,
+      databaseUrl: testDb.databaseUrl,
       uiToken: UI_TOKEN,
       webDistDir: dist,
       logger: () => {},
@@ -864,6 +887,9 @@ test("SPA serving uses the fixture build, caches by kind, and rejects traversal"
     );
     assert.doesNotMatch(await traversal.text(), /"name":\s*"curved"/);
   } finally {
+    if (spa !== undefined) {
+      await spa.close();
+    }
     await rm(dist, { recursive: true, force: true });
   }
 });
@@ -872,15 +898,20 @@ test("a missing web build returns 503 text explaining how to build", async () =>
   const missingDir = join(tmpdir(), `curved-http-missing-${process.pid}-${Date.now()}`);
   const spa = createApp({
     db: testDb.db,
+    databaseUrl: testDb.databaseUrl,
     uiToken: UI_TOKEN,
     webDistDir: missingDir,
     logger: () => {},
   });
 
-  const response = await request(spa, "/");
-  assert.equal(response.status, 503);
-  assert.match(response.headers.get("content-type") ?? "", /text\/plain/);
-  const body = await response.text();
-  assert.match(body, /web\/dist/);
-  assert.match(body, /build/i);
+  try {
+    const response = await request(spa, "/");
+    assert.equal(response.status, 503);
+    assert.match(response.headers.get("content-type") ?? "", /text\/plain/);
+    const body = await response.text();
+    assert.match(body, /web\/dist/);
+    assert.match(body, /build/i);
+  } finally {
+    await spa.close();
+  }
 });

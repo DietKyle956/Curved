@@ -27,8 +27,7 @@ nobody can say who did what when. Curved moves those rules out of the prompt.
   UI token; the first run creates a project.
 - **Automation**: a GitHub webhook that moves issues on pull request open and
   merge, and a branch-name helper. (planned)
-- **Transport**: one process serving the HTTP API, the SPA, and, next, the SSE
-  stream.
+- **Transport**: one process serving the HTTP API, the SPA, and the SSE stream.
 
 Target stack: Node with TypeScript, Postgres, Hono, React with Vite, and MCP over
 stdio. See `initial_idea.md` for the product intent.
@@ -85,6 +84,16 @@ an agent through a `crv_` bearer token; failures and service errors share one JS
 error shape, and there is no CORS. The API covers projects, issues, comments,
 transitions, block/unblock, release, claims, labels, and relations, and serves the
 SPA from `web/dist` for every non-`/api` path. See "HTTP API" below.
+
+Realtime is live. Migration `0005` adds `notify_issue_change()`, which fires on
+`after insert` and `after update` of `issues` and on `after insert` of
+`issue_events`, calling `pg_notify('issues_changed', project_id::text)` for the
+owning project. `GET /api/events` is a cookie-authenticated `text/event-stream`
+that sends `ready` once the subscription exists, one `issues_changed` frame per
+notification carrying the project id as `data`, and a `ping` every 25 seconds.
+One lazily opened shared `pg.Client` per app runs a single `LISTEN
+issues_changed` and fans notifications out to that app's subscribers. The web
+client now drives refreshes from the stream instead of polling.
 
 Labels are per project: a label name is unique within its project, trimmed, 1 to
 50 characters, and reused by every issue in that project that carries it. Setting
@@ -158,6 +167,11 @@ an agent token through the `agents` table. A bearer that is present but invalid 
 `401 not_authenticated`, even alongside a valid cookie, so a stale agent token is
 never silently downgraded.
 
+`GET /api/events` is the one exception: it authenticates by the `curved_session`
+cookie only and ignores `Authorization`, because `EventSource` cannot set request
+headers. A request with no cookie, including a bearer-only request, is
+`401 not_authenticated` JSON.
+
 `POST /api/session` is the only unauthenticated `/api` route; every other route,
 including `GET /api/projects`, rejects requests without valid credentials with
 `401 not_authenticated`.
@@ -182,6 +196,7 @@ including `GET /api/projects`, rejects requests without valid credentials with
 | `POST` | `/api/issues/:key/relations` | human only | `{ issue }`; body `{ blocking }`, where `:key` is the blocked issue |
 | `GET` | `/api/ready` | human or agent | `{ ready, busy }` |
 | `POST` | `/api/claims/next` | agent only | `{ issue }` |
+| `GET` | `/api/events` | human session cookie only | `text/event-stream`; `ready`, `issues_changed` (project id as `data`), and a 25 second `ping` |
 
 Mutating requests with a body must send `Content-Type: application/json`; anything
 else is `400 validation`. An empty body reads as `{}`. The API sends no CORS
@@ -214,6 +229,12 @@ The client covers the core human loop:
   field edits, label replacement, and blocking relations.
 - Command palette (`Ctrl+K` or `Cmd+K`) for issue search and actions.
 - Loading, empty, error, and reduced-motion states throughout.
+
+The board and an open issue detail refresh from one `EventSource` on
+`/api/events`. `issues_changed` frames are filtered by the current project id,
+and the client reconnects one second after an error or close with a single-timer
+guard. Window focus refresh and the manual refresh control remain; there is no
+polling interval.
 
 The palette and all screens are client-side routes under `/p/<project>`; the
 server falls back to `index.html` for reloads. The theme is the fixed warm

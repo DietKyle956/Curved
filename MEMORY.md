@@ -2,7 +2,7 @@
 
 - **Last updated:** 2026-11-16
 - **Project:** curved
-- **Phase:** HTTP API and auth boundary complete (`LAS-148`), plus a working SPA prototype. Toolchain, Postgres 18, migrations, the projects resource, the issues resource (atomic keys, append-only events), comment events with the full timeline read path, the transition graph with its actor matrix, token-authenticated agents with the one-active-issue fence, agent block with human unblock, the MCP server over stdio, the authenticated HTTP API with its SPA fallback, and the React/Vite board, queue, detail, and palette are live.
+- **Phase:** HTTP API and auth boundary complete (`LAS-148`), plus a working SPA prototype and the SSE realtime stream (`LAS-150`). Toolchain, Postgres 18, migrations, the projects resource, the issues resource (atomic keys, append-only events), comment events with the full timeline read path, the transition graph with its actor matrix, token-authenticated agents with the one-active-issue fence, agent block with human unblock, the MCP server over stdio, the authenticated HTTP API with its SPA fallback, the React/Vite board, queue, detail, and palette, and the SSE stream that refreshes them are live.
 
 ## Current verified state
 
@@ -13,7 +13,7 @@
   `--no-install` skips only install; the database step still runs.
 - End-of-session gate: `./scripts/clean-state.sh`
 - Baseline: green. `npm run typecheck` covers server and web configs; `npm test`
-  runs 136 tests on the Node test runner.
+  runs 164 tests on the Node test runner.
 - Database: `docker compose up` starts `postgres:18-alpine` on host port 55432
   (user/password/db all `curved`, named volume mounted at `/var/lib/postgresql`).
   `scripts/db.sh` waits for readiness, then runs `node src/migrate.ts`.
@@ -157,6 +157,33 @@
   `/assets/*` is `public, max-age=31536000, immutable`. With no build the response
   is a 503 text naming `web/dist` and the build command; `/api` never falls back
   to HTML.
+- Schema (LAS-150): migration `0005_issue_notifications.sql` installs
+  `notify_issue_change()`, which fires `after insert` and `after update` on
+  `issues` and `after insert` on `issue_events`, calling
+  `pg_notify('issues_changed', project_id::text)` for the owning project.
+- Event hub: `src/http/event-hub.ts` opens one `pg.Client` lazily per app, runs
+  `LISTEN issues_changed`, parses numeric project ids, and fans them out to
+  subscribers. It reconnects once after 1s while subscribers remain and exposes
+  `stats()` and `close()`. Postgres shows exactly one LISTEN backend per process.
+- SSE: `src/http/sse.ts` serves `/api/events` as `text/event-stream; charset=utf-8`
+  with `cache-control: no-cache, no-transform` and `x-accel-buffering: no`. Frames
+  are `ready` after the hub subscription exists, `issues_changed` with the project
+  id as `data`, and `ping` every 25 seconds. Request abort or consumer cancel
+  clears the ping interval and subscription once.
+- SSE auth: `resolveSessionActor` authenticates `/api/events` by the
+  `curved_session` cookie only and ignores `Authorization`, because `EventSource`
+  cannot set request headers. No cookie or a bearer-only request is
+  `401 not_authenticated` JSON.
+- `createApp` now requires `databaseUrl`; it creates and owns the hub when none is
+  injected, and `close()` shuts the owned hub down. `src/server.ts` streams
+  event-stream responses chunked with backpressure instead of buffering, gives
+  each request an `AbortSignal` aborted on client disconnect, and closes the
+  app/hub and all connections on shutdown.
+- Web realtime: `web/src/lib/events.ts` opens one `EventSource("/api/events")`,
+  filters `issues_changed` by the current project id, refreshes the board and open
+  issue detail, and reconnects 1s after error or close with a single-timer guard.
+  The 20 second poll is removed; the window `focus` refresh and manual refresh
+  remain.
 - Service additions for the HTTP slice: `listIssues` accepts `{ project?, status? }`;
   `updateIssue(db, { key, title?, description?, priority?, actor?, agent? })` is
   human only (`forbidden_transition` otherwise), requires at least one field, trims
@@ -202,8 +229,8 @@
   unblock, issue detail as a centered modal with timeline, comment composer, field
   edits, label replacement, blocking relations and unblock, and a `Ctrl/Cmd+K`
   palette. The shell is `fixed inset-0`; sign-in and setup scroll normally. Data
-  refreshes on mutation, window focus, and a 20 second visible-tab poll (SSE is
-  still `LAS-150`).
+  refreshes on mutation, window focus, manual refresh, and the `/api/events`
+  stream; the 20 second visible-tab poll was removed in `LAS-150`.
 - Web design: fixed warm near-black palette (`canvas`, `panel`, `elevated`,
   `line`, parchment text, spice primary, semantic status accents), Instrument Sans
   + JetBrains Mono, one 5 px radius, no light mode. The visual verification matrix
@@ -212,11 +239,12 @@
 - Tests: isolated database from `TEST_DATABASE_URL` (name must start with
   `curved_test`), created and migrated by `test/helpers/db.ts`; its reset truncates
   `projects` and `agents` with cascade. The development database is never touched.
-  `npm test` runs 154 tests, including 22 agent/queue tests in
+  `npm test` runs 164 tests, including 22 agent/queue tests in
   `test/agents.test.ts`, 13 MCP-over-stdio tests in `test/mcp.test.ts`, the
   blocking suite in `test/blocking.test.ts`, the HTTP suite in `test/http.test.ts`,
   the label and relation suites in `test/labels.test.ts` and
-  `test/relations.test.ts`, the transition suite, comment ownership tests, and the
+  `test/relations.test.ts`, the event hub and SSE suites in `test/event-hub.test.ts`
+  and `test/sse.test.ts`, the transition suite, comment ownership tests, and the
   CLI sequence.
 - Git repository on branch `main`, remote `origin`
   (`https://github.com/DietKyle956/Curved.git`), public on GitHub.
@@ -268,6 +296,19 @@
 - The label and relation writes are human-only HTTP surfaces, not new CLI verbs
   or MCP tools: agents consume the results through the issue payload and the
   dependency-aware ready queue.
+- Realtime notifications are refetch hints, not payloads: `issues_changed` carries
+  only the numeric project id and the client decides what to reload. A row trigger
+  rather than a service hook keeps Postgres as the source of truth, so writes from
+  any entry point notify.
+- Issue updates notify through the `issues` row trigger even when no timeline
+  event kind exists, so a field edit still refreshes the board even though
+  `updateIssue` appends no event.
+- SSE auth is cookie-only because `EventSource` cannot set request headers; the
+  stream is a human-board feature rather than part of the agent surface.
+- One lazily opened shared LISTEN client per process with a guarded 1s reconnect
+  while subscribers remain. `createApp` creates and owns the hub unless one is
+  injected, in which case the caller owns it; `close()` shuts down only the owned
+  hub.
 - MCP targets the v2 `@modelcontextprotocol/server` 2.4.0 with `serveStdio`
   (default `legacy: "serve"`), not the v1 SDK: v2 serves the 2025 `initialize`
   handshake and the 2026 spec from the same factory, so no fallback was needed.
@@ -310,17 +351,16 @@
   `@modelcontextprotocol/server` package, no v1 fallback.
 - Blocking-relation cycles are permitted and simply keep the affected issues out
   of `ready`; no cycle detection was specified for `LAS-149`.
-- The SPA prototype covers the sign-in, setup, board, detail, and palette
-  acceptance criteria, but not SSE; `LAS-150` still owns the realtime stream and
-  `LAS-152`/`LAS-153`/`LAS-154` remain open until SSE and any acceptance tests land.
-  The HTTP server answers non-`/api` paths with a 503 naming `web/dist` only when
-  the build is absent.
+- Realtime limits: the hub keeps its single LISTEN client open after the last
+  subscriber until app shutdown, and there is no frontend test framework, so
+  browser coverage is a manual Chromium pass. `LAS-152`/`LAS-153`/`LAS-154` remain
+  open until their acceptance tests land. The HTTP server answers non-`/api` paths
+  with a 503 naming `web/dist` only when the build is absent.
 
 ## Next best step
 
-Execute `LAS-150` (SSE realtime stream) and wire the SPA's 20 second poll to it,
-then `LAS-151` (GitHub webhook and branch helper). Close `LAS-152`, `LAS-153`, and
-`LAS-154` once the stream and acceptance tests land. `LAS-155` remains the
+Execute `LAS-151` (GitHub webhook and branch helper), then close `LAS-152`,
+`LAS-153`, and `LAS-154` once their acceptance tests land. `LAS-155` remains the
 end-to-end gate.
 
 ## Tracker
@@ -340,11 +380,11 @@ end-to-end gate.
   - `LAS-147` MCP server over stdio (146) (done 2026-11-10)
   - `LAS-148` HTTP API and auth boundary (146) (done 2026-11-10)
   - `LAS-149` labels, relations, dependency-aware ready (148) (done 2026-11-10)
-  - `LAS-150` SSE realtime stream (148)
+  - `LAS-150` SSE realtime stream (148) (done 2026-11-16)
   - `LAS-151` GitHub webhook and branch helper (148)
-  - `LAS-152` SPA sign-in, setup, board (148, 149, 150) - prototyped, SSE pending
-  - `LAS-153` issue detail and human actions (152) - prototyped, SSE pending
-  - `LAS-154` command palette (153) - prototyped, SSE pending
+  - `LAS-152` SPA sign-in, setup, board (148, 149, 150) - prototyped, acceptance tests pending
+  - `LAS-153` issue detail and human actions (152) - prototyped, acceptance tests pending
+  - `LAS-154` command palette (153) - prototyped, acceptance tests pending
   - `LAS-155` end-to-end acceptance gate (147, 151, 153, 154)
 
 ## Session log
@@ -776,3 +816,52 @@ end-to-end gate.
 - Next best step: `LAS-150` SSE, then replace the poll with a stream and close the
   remaining SPA tickets.
 - Commits: 1 commit, `Open issue detail as a centered modal`.
+
+### Session 016
+
+- Date: 2026-11-16
+- Goal: execute `LAS-150` (SSE realtime stream).
+- Completed: migration `0005_issue_notifications.sql` with `notify_issue_change()`
+  firing `after insert` and `after update` on `issues` and `after insert` on
+  `issue_events`, calling `pg_notify('issues_changed', project_id::text)` for the
+  owning project; `src/http/event-hub.ts` with one lazily opened shared `pg.Client`
+  per app running `LISTEN issues_changed`, numeric project-id fan-out, a single
+  1s reconnect while subscribers remain, and `stats()`/`close()`; `src/http/sse.ts`
+  serving `GET /api/events` as `text/event-stream` with `ready`, `issues_changed`
+  (project id as `data`), and a 25 second `ping`; cookie-only session resolution for
+  the stream, which ignores `Authorization` so a bearer-only request is `401`;
+  `createApp` now requires `databaseUrl` and owns the hub when none is injected,
+  with `close()` shutting the owned hub down; `src/server.ts` streams event-stream
+  responses chunked with backpressure, gives each request an `AbortSignal` aborted
+  on client disconnect, and closes the app, hub, and connections on shutdown; the
+  web client's 20 second poll replaced by one `EventSource` in
+  `web/src/lib/events.ts` (project filter, board and open detail refresh, 1s
+  reconnect guard); new `test/event-hub.test.ts` and `test/sse.test.ts`, with
+  `test/http.test.ts` updated for `databaseUrl`/`close`; README, AGENTS, and this
+  memory entry.
+- Verification run: `npm run typecheck` green; targeted
+  `node --test --test-concurrency=1 test/event-hub.test.ts test/sse.test.ts
+  test/http.test.ts` 28 pass; `npm test` 164 pass, 0 fail; `npm run build` green;
+  live smoke against a real `node src/server.ts` on 4750 with a throwaway
+  `curved_test_smoke150` database. No-cookie and bearer-only `/api/events` both
+  returned `401` JSON; the cookie stream returned the SSE headers above with
+  `ready` as the first frame. A CLI `issue add` produced `issues_changed` with
+  `data: 1` 3 ms after the CLI exited; a `ping` arrived inside the 25 second
+  window; aborting curl left `/api/me` at 200; Postgres showed exactly one
+  `LISTEN` backend. A real Chromium board at 1440x900 showed the new card 109 ms
+  after the CLI created it and a CLI comment in the open detail 106 ms after it was
+  written, with one `/api/events` request and no page errors. Smoke database
+  dropped and server stopped.
+- Evidence captured: `text/event-stream; charset=utf-8`, `cache-control: no-cache,
+  no-transform`, and `x-accel-buffering: no`; `event: ready` before any change;
+  `event: issues_changed` / `data: 1` after the CLI write; the 25 second `ping`;
+  `401 not_authenticated` for no cookie and for bearer-only; one `LISTEN` row in
+  `pg_stat_activity`; Chromium timings of 109 ms for the board and 106 ms for the
+  open detail.
+- Known risk: browser coverage is a manual Chromium pass with no frontend test
+  framework; the hub keeps its single LISTEN client open after the last subscriber
+  until app shutdown; `updateIssue` still appends no timeline event, but its row
+  update fires the `issues` update trigger, so the board still refreshes.
+- Next best step: execute `LAS-151`, then close `LAS-152`/`LAS-153`/`LAS-154` once
+  their acceptance tests land.
+- Commits: not recorded in this entry.

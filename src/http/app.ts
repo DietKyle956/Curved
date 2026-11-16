@@ -18,12 +18,16 @@ import { addRelation } from "../services/relations.ts";
 import {
   constantTimeEqual,
   resolveActor,
+  resolveSessionActor,
   serializeClearedSessionCookie,
   serializeSessionCookie,
   sessionCookieValue,
 } from "./auth.ts";
 import type { AuthContext } from "./auth.ts";
+import { createEventHub } from "./event-hub.ts";
+import type { EventHub } from "./event-hub.ts";
 import { serveSpa } from "./spa.ts";
+import { createEventStreamResponse } from "./sse.ts";
 
 const JSON_BODY_LIMIT_BYTES = 1024 * 1024;
 const NOT_FOUND_BODY = {
@@ -32,13 +36,17 @@ const NOT_FOUND_BODY = {
 
 export interface CreateAppOptions {
   db: Database;
+  databaseUrl: string;
   uiToken: string;
   webDistDir?: string;
+  events?: EventHub;
+  eventPingIntervalMs?: number;
   logger?: (error: unknown) => void;
 }
 
 export interface App {
   handle(request: Request): Promise<Response>;
+  close(): Promise<void>;
 }
 
 function json(
@@ -199,6 +207,24 @@ export function createApp(options: CreateAppOptions): App {
       console.error(error);
     });
 
+  // An injected hub belongs to the caller; only a hub created here is closed here.
+  const injectedHub = options.events;
+  const events =
+    injectedHub ?? createEventHub({ databaseUrl: options.databaseUrl, logger });
+  const ownedHub = injectedHub === undefined ? events : null;
+
+  let closing: Promise<void> | null = null;
+  function close(): Promise<void> {
+    if (closing === null) {
+      closing = (async () => {
+        if (ownedHub !== null) {
+          await ownedHub.close();
+        }
+      })();
+    }
+    return closing;
+  }
+
   async function handleApi(request: Request, url: URL): Promise<Response> {
     const method = request.method;
     const segments = url.pathname.slice("/api/".length).split("/");
@@ -218,6 +244,21 @@ export function createApp(options: CreateAppOptions): App {
       bodyPromise ??= readJsonBody(request);
       return bodyPromise;
     };
+
+    if (resource === "events") {
+      if (key !== undefined || method !== "GET") {
+        return json(NOT_FOUND_BODY, 404);
+      }
+      // EventSource cannot send headers, so the stream only accepts the
+      // session cookie; a missing or wrong cookie is a plain 401.
+      resolveSessionActor(request, { uiToken });
+      return createEventStreamResponse({
+        request,
+        hub: events,
+        pingIntervalMs: options.eventPingIntervalMs,
+        logger,
+      });
+    }
 
     if (resource === "session") {
       if (key !== undefined) {
@@ -452,5 +493,5 @@ export function createApp(options: CreateAppOptions): App {
     }
   }
 
-  return { handle };
+  return { handle, close };
 }

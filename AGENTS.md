@@ -67,6 +67,19 @@ LAS-149 is live: migration `0004` adds project-scoped `labels`, `issue_labels`, 
 add a blocking relation; issue payloads carry `labels` and `relations` with
 `blocks` and `blockedBy`; and `ready` and claim skip issues whose blocking
 relation is not Done.
+LAS-150 is live: migration `0005` adds notification triggers that `pg_notify` the
+owning project id on issue insert/update and issue-event insert; `src/http/event-hub.ts`
+owns one lazily opened shared `pg.Client` per app running `LISTEN issues_changed`,
+fans numeric project ids out to subscribers, and reconnects once after 1s while
+subscribers remain; `GET /api/events` is a cookie-only `text/event-stream`
+(`ready`, `issues_changed` with the project id as `data`, and a 25 second `ping`)
+authenticated by the `curved_session` cookie because `EventSource` cannot set
+headers, so a bearer-only request is `401`; `createApp` now requires `databaseUrl`
+and owns the hub unless one is injected; `src/server.ts` streams event-stream
+responses chunked with backpressure and aborts each request's signal on client
+disconnect; and the SPA's 20 second poll is replaced by one `EventSource` that
+reconnects after 1s, filters by project, and refreshes the board and open issue
+detail.
 The SPA prototype is live in `web/`: Vite + React + Tailwind v4 built into
 `web/dist`, served by the HTTP process. It covers sign-in with the UI token,
 first-run project setup, a five-lane board with drag transitions gated by
@@ -75,10 +88,10 @@ issue detail with timeline, comments, edits, labels, and blocking relations, and
 `Ctrl/Cmd+K` palette. The warm near-black palette is fixed; there is no light
 mode. `npm run dev` proxies `/api` to 4747 for development.
 
-Tests: 154 pass, 0 fail, including `test/http.test.ts`, the label and relation
-suites in `test/labels.test.ts` and `test/relations.test.ts`, and the issue filter
-and human-only edit cases in `test/issues.test.ts`. Next frontier: LAS-150 and
-LAS-151.
+Tests: 164 pass, 0 fail, including `test/http.test.ts`, `test/event-hub.test.ts`,
+`test/sse.test.ts`, the label and relation suites in `test/labels.test.ts` and
+`test/relations.test.ts`, and the issue filter and human-only edit cases in
+`test/issues.test.ts`. Next frontier: LAS-151.
 
 ## Directory page
 
@@ -87,7 +100,7 @@ LAS-151.
 | `initial_idea.md` | Product intent and the design sketch. Source of truth for scope. |
 | `AGENTS.md` | This file: constraints and startup path. |
 | `MEMORY.md` | Verified state, decisions, session log. Update it every session. |
-| `src/http/` | HTTP router, auth boundary, and SPA fallback. |
+| `src/http/` | HTTP router, auth boundary, SSE hub and stream, and SPA fallback. |
 | `src/server.ts` | HTTP entry. Reads `PORT` and requires `CURVED_UI_TOKEN`. |
 | `web/` | Vite + React SPA. `npm run build` writes `web/dist`; `npm run dev` proxies `/api`. |
 | `scripts/init.sh` | Baseline runner: install, check, build. `--no-install` skips install. |

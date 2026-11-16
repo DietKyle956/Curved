@@ -93,6 +93,30 @@ export function parseCookies(header: string | null): Map<string, string> {
 }
 
 /**
+ * Resolves a UI session from the session cookie alone. EventSource cannot send
+ * an Authorization header, so this path never consults one: a bearer-only
+ * request is unauthenticated even when its token is valid.
+ */
+export function resolveSessionActor(
+  request: Request,
+  options: { uiToken: string },
+): AuthContext {
+  const cookies = parseCookies(request.headers.get("cookie"));
+  const cookie = cookies.get(SESSION_COOKIE_NAME);
+  if (
+    cookie !== undefined &&
+    constantTimeEqual(cookie, sessionCookieValue(options.uiToken))
+  ) {
+    return {
+      actor: { type: "human", name: null },
+      serviceActor: "human",
+      agentName: null,
+    };
+  }
+  throw new ServiceError("not_authenticated", "authentication required");
+}
+
+/**
  * Resolves the request identity. An Authorization header is authoritative:
  * when it is present but invalid the request is rejected even if a valid
  * session cookie accompanies it.

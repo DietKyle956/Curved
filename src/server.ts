@@ -5,7 +5,7 @@ import { loadConfig } from "./config.ts";
 import { createDatabase } from "./db.ts";
 import { createApp } from "./http/app.ts";
 
-function toRequest(request: IncomingMessage): Request {
+function toRequest(request: IncomingMessage, signal: AbortSignal): Request {
   const method = request.method ?? "GET";
   const host = request.headers.host ?? "127.0.0.1";
   const url = new URL(request.url ?? "/", `http://${host}`);
@@ -24,12 +24,74 @@ function toRequest(request: IncomingMessage): Request {
     }
   }
 
-  const init: RequestInit & { duplex?: "half" } = { method, headers };
+  const init: RequestInit & { duplex?: "half" } = { method, headers, signal };
   if (method !== "GET" && method !== "HEAD") {
     init.body = Readable.toWeb(request) as unknown as AsyncIterable<Uint8Array>;
     init.duplex = "half";
   }
   return new Request(url, init);
+}
+
+function waitForDrain(outgoing: ServerResponse): Promise<void> {
+  const { promise, resolve } = Promise.withResolvers<void>();
+  const settle = (): void => {
+    outgoing.off("drain", settle);
+    outgoing.off("close", settle);
+    resolve();
+  };
+  outgoing.on("drain", settle);
+  outgoing.on("close", settle);
+  return promise;
+}
+
+async function streamEventStream(
+  response: Response,
+  outgoing: ServerResponse,
+): Promise<void> {
+  const body = response.body;
+  if (body === null) {
+    outgoing.end();
+    return;
+  }
+
+  outgoing.flushHeaders();
+
+  const reader = body.getReader();
+  let closed = false;
+  const onClose = (): void => {
+    closed = true;
+  };
+  outgoing.once("close", onClose);
+
+  try {
+    while (!closed) {
+      const { done, value } = await reader.read();
+      if (closed) {
+        break;
+      }
+      if (done) {
+        break;
+      }
+      if (value === undefined) {
+        continue;
+      }
+      if (!outgoing.write(Buffer.from(value))) {
+        await waitForDrain(outgoing);
+      }
+    }
+  } finally {
+    outgoing.off("close", onClose);
+    try {
+      await reader.cancel();
+    } catch {
+      // The stream may already be closed or errored; nothing to clean up.
+    }
+    reader.releaseLock();
+  }
+
+  if (!outgoing.writableEnded && !outgoing.destroyed) {
+    outgoing.end();
+  }
 }
 
 async function writeResponse(
@@ -58,6 +120,12 @@ async function writeResponse(
     return;
   }
 
+  const contentType = response.headers.get("content-type") ?? "";
+  if (contentType.toLowerCase().startsWith("text/event-stream")) {
+    await streamEventStream(response, outgoing);
+    return;
+  }
+
   const body = Buffer.from(await response.arrayBuffer());
   if (!outgoing.hasHeader("content-length")) {
     outgoing.setHeader("content-length", String(body.byteLength));
@@ -75,11 +143,22 @@ async function main(): Promise<void> {
   }
 
   const db = createDatabase(config.databaseUrl);
-  const app = createApp({ db, uiToken: config.uiToken });
+  const app = createApp({
+    db,
+    databaseUrl: config.databaseUrl,
+    uiToken: config.uiToken,
+  });
 
   const server = createServer((incoming, outgoing) => {
+    const abort = new AbortController();
+    const onDisconnect = (): void => {
+      abort.abort();
+    };
+    incoming.once("aborted", onDisconnect);
+    outgoing.once("close", onDisconnect);
+
     void app
-      .handle(toRequest(incoming))
+      .handle(toRequest(incoming, abort.signal))
       .then((response) => writeResponse(response, outgoing))
       .catch((error: unknown) => {
         console.error(error);
@@ -90,6 +169,9 @@ async function main(): Promise<void> {
         } else {
           outgoing.destroy();
         }
+      })
+      .finally(() => {
+        incoming.off("aborted", onDisconnect);
       });
   });
 
@@ -110,7 +192,18 @@ async function main(): Promise<void> {
       return;
     }
     closing = true;
-    server.close(() => {
+    void (async () => {
+      try {
+        await app.close();
+      } catch (error: unknown) {
+        console.error(error);
+      }
+      const closed = Promise.withResolvers<void>();
+      server.close(() => {
+        closed.resolve();
+      });
+      server.closeAllConnections();
+      await closed.promise;
       void db.close().then(
         () => {
           process.exit(0);
@@ -119,7 +212,7 @@ async function main(): Promise<void> {
           process.exit(0);
         },
       );
-    });
+    })();
   };
   process.on("SIGINT", shutdown);
   process.on("SIGTERM", shutdown);
