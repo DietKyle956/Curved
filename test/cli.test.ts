@@ -1155,3 +1155,46 @@ test("block and unblock reject missing credentials, wrong actors, wrong status, 
   assert.match(blankReason.stderr, /^validation: /);
   assert.equal(blankReason.stdout, "");
 });
+
+test("git-branch prints the canonical branch name", async () => {
+  await createProject(testDb.db, { key: "TAC", name: "Tac" });
+  await createIssue(testDb.db, { project: "TAC", title: "Fix login" });
+
+  const result = await runCli(["git-branch", "TAC-1"]);
+
+  assert.equal(result.code, 0, result.stderr);
+  assert.equal(result.stdout, "TAC-1-fix-login\n");
+});
+
+test("git-branch resolves padded keys to the canonical key", async () => {
+  await createProject(testDb.db, { key: "TAC", name: "Tac" });
+  await createIssue(testDb.db, { project: "TAC", title: "Fix login" });
+
+  const result = await runCli(["git-branch", "TAC-001"]);
+
+  assert.equal(result.code, 0, result.stderr);
+  assert.equal(result.stdout, "TAC-1-fix-login\n");
+});
+
+test("git-branch --json prints the key and branch", async () => {
+  await createProject(testDb.db, { key: "TAC", name: "Tac" });
+  await createIssue(testDb.db, { project: "TAC", title: "Fix login" });
+
+  const result = await runCli(["git-branch", "TAC-1", "--json"]);
+
+  assert.equal(result.code, 0, result.stderr);
+  assert.deepEqual(JSON.parse(result.stdout), {
+    key: "TAC-1",
+    branch: "TAC-1-fix-login",
+  });
+});
+
+test("git-branch exits 1 for an unknown key", async () => {
+  await createProject(testDb.db, { key: "TAC", name: "Tac" });
+
+  const result = await runCli(["git-branch", "TAC-9"]);
+
+  assert.equal(result.code, 1);
+  assert.match(result.stderr, /^not_found: /);
+  assert.equal(result.stdout, "");
+});

@@ -86,12 +86,20 @@ first-run project setup, a five-lane board with drag transitions gated by
 `allowedTransitions`, the ready queue with in-flight agents and human unblock,
 issue detail with timeline, comments, edits, labels, and blocking relations, and a
 `Ctrl/Cmd+K` palette. The warm near-black palette is fixed; there is no light
-mode. `npm run dev` proxies `/api` to 4747 for development.
+mode. `npm run dev` proxies `/api` to 4747 for development. LAS-151 is live:
+`POST /webhooks/github` verifies the `x-hub-signature-256` HMAC of the raw body
+against `GITHUB_WEBHOOK_SECRET` before parsing, moves `pull_request` `opened` and
+`reopened` events to In Review and `closed` events with a merged pull request to
+Done as the `git` actor with a `pull request #<n> <action>` status event, answers
+`200 {"ok":true,"ignored":true}` for unknown keys, illegal transitions, replays,
+and non-PR events so GitHub never retries, and `node src/cli.ts git-branch <KEY>`
+prints the canonical branch name.
 
-Tests: 164 pass, 0 fail, including `test/http.test.ts`, `test/event-hub.test.ts`,
+Tests: 187 pass, 0 fail, including `test/http.test.ts`, `test/event-hub.test.ts`,
 `test/sse.test.ts`, the label and relation suites in `test/labels.test.ts` and
-`test/relations.test.ts`, and the issue filter and human-only edit cases in
-`test/issues.test.ts`. Next frontier: LAS-151.
+`test/relations.test.ts`, the webhook and branch suite in `test/github.test.ts`,
+and the issue filter and human-only edit cases in `test/issues.test.ts`. Next
+frontier: LAS-152.
 
 ## Directory page
 

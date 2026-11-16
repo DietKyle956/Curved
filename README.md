@@ -25,8 +25,9 @@ nobody can say who did what when. Curved moves those rules out of the prompt.
 - **Human board**: mobile-first SPA with five status lanes, a ready queue, an issue
   detail view with the full timeline, and a `Cmd/Ctrl+K` palette. Sign-in uses the
   UI token; the first run creates a project.
-- **Automation**: a GitHub webhook that moves issues on pull request open and
-  merge, and a branch-name helper. (planned)
+- **Automation**: `POST /webhooks/github`, which moves issues when a pull request
+  opens, reopens, or merges, and `node src/cli.ts git-branch <KEY>`, which names
+  the branch for an issue.
 - **Transport**: one process serving the HTTP API, the SPA, and the SSE stream.
 
 Target stack: Node with TypeScript, Postgres, Hono, React with Vite, and MCP over
@@ -83,7 +84,8 @@ authenticate as a human through the session cookie or the UI bearer token, or as
 an agent through a `crv_` bearer token; failures and service errors share one JSON
 error shape, and there is no CORS. The API covers projects, issues, comments,
 transitions, block/unblock, release, claims, labels, and relations, and serves the
-SPA from `web/dist` for every non-`/api` path. See "HTTP API" below.
+SPA from `web/dist` for other paths; `POST /webhooks/github` is the one non-`/api`
+route with its own HMAC gate. See "HTTP API" below.
 
 Realtime is live. Migration `0005` adds `notify_issue_change()`, which fires on
 `after insert` and `after update` of `issues` and on `after insert` of
@@ -131,6 +133,9 @@ issue payload carries `labels` and `relations: { blocks, blockedBy }`, where
   review; requires `CURVED_AGENT_TOKEN`.
 - `node src/cli.ts release <KEY>` - return a claimed issue to `todo`; requires
   `CURVED_AGENT_TOKEN`.
+- `node src/cli.ts git-branch <KEY> [--json]` - print the branch name for an
+  issue, the canonical key plus a slug of its title; `--json` prints
+  `{ "key": ..., "branch": ... }`.
 - `npm run db` - start Postgres and apply migrations.
 - `npm run dev` - run the Vite dev server on port 5173 and proxy `/api` to
   `http://127.0.0.1:4747`; start `npm start` in another terminal.
@@ -145,8 +150,9 @@ issue payload carries `labels` and `relations: { blocks, blockedBy }`, where
 
 ## HTTP API
 
-`node src/server.ts` (or `npm start`) serves the JSON API under `/api` and the SPA
-for every other path. One process owns both.
+`node src/server.ts` (or `npm start`) serves the JSON API under `/api`, the GitHub
+webhook at `/webhooks/github`, and the SPA for every other path. One process owns
+all of it.
 
 Prerequisites:
 
@@ -156,6 +162,9 @@ Prerequisites:
    without it and exits 1 with
    `CURVED_UI_TOKEN is required to start the HTTP server`.
 4. Agent tokens for `crv_` bearers: `node src/cli.ts agent add <name>`.
+5. For the GitHub webhook: export `GITHUB_WEBHOOK_SECRET`, the same secret you
+   give the repository webhook. `POST /webhooks/github` answers
+   `503 webhook_not_configured` until it is set.
 
 `PORT` defaults to 4747.
 
@@ -175,6 +184,13 @@ headers. A request with no cookie, including a bearer-only request, is
 `POST /api/session` is the only unauthenticated `/api` route; every other route,
 including `GET /api/projects`, rejects requests without valid credentials with
 `401 not_authenticated`.
+
+`POST /webhooks/github` is outside `/api` and takes neither lane. It reads no
+cookie and no bearer header and authenticates only as a GitHub delivery: the
+`x-hub-signature-256` header must match the HMAC-SHA256 of the raw body keyed by
+`GITHUB_WEBHOOK_SECRET`. A missing or mismatched signature is
+`401 not_authenticated`, and the route responds `{"ok":true}` when it moved an
+issue and `{"ok":true,"ignored":true}` otherwise, so GitHub never retries.
 
 | Method | Path | Auth | Result |
 |---|---|---|---|
@@ -197,10 +213,11 @@ including `GET /api/projects`, rejects requests without valid credentials with
 | `GET` | `/api/ready` | human or agent | `{ ready, busy }` |
 | `POST` | `/api/claims/next` | agent only | `{ issue }` |
 | `GET` | `/api/events` | human session cookie only | `text/event-stream`; `ready`, `issues_changed` (project id as `data`), and a 25 second `ping` |
+| `POST` | `/webhooks/github` | `x-hub-signature-256` HMAC of the raw body | Outside `/api`; `{"ok":true}` when an issue moved, `{"ok":true,"ignored":true}` otherwise |
 
-Mutating requests with a body must send `Content-Type: application/json`; anything
-else is `400 validation`. An empty body reads as `{}`. The API sends no CORS
-headers, so browser clients run on the same origin.
+Mutating `/api` requests with a body must send `Content-Type: application/json`;
+anything else is `400 validation`. An empty body reads as `{}`. The API sends no
+CORS headers, so browser clients run on the same origin.
 
 Errors share one shape, `{ "error": { "code", "message" } }`. `validation` maps to
 400, `not_authenticated` to 401, `forbidden_transition` to 403, `not_found` to
@@ -209,10 +226,69 @@ Errors share one shape, `{ "error": { "code", "message" } }`. `validation` maps 
 logged to stderr. An unknown `/api` path returns a JSON 404 and never falls back to
 HTML.
 
-Everything outside `/api` is served from `web/dist`: a matching file, otherwise
-`index.html` for client-side routes. The document is `cache-control: no-cache`;
-`/assets/*` is `public, max-age=31536000, immutable`. When no build exists the
-response is a 503 text naming `web/dist` and the build command.
+Everything outside `/api` other than `POST /webhooks/github` is served from
+`web/dist`: a matching file, otherwise `index.html` for client-side routes. The
+document is `cache-control: no-cache`; `/assets/*` is
+`public, max-age=31536000, immutable`. When no build exists the response is a 503
+text naming `web/dist` and the build command.
+
+## GitHub webhook
+
+`POST /webhooks/github` lets GitHub move issues, so a merged pull request retires
+the issue without a human touching the board. The route sits outside `/api` and
+shares no credential with it: a delivery is accepted only when the
+`x-hub-signature-256` header equals the HMAC-SHA256 of the raw request body keyed
+by `GITHUB_WEBHOOK_SECRET`. The raw body is read and checked before anything is
+parsed, and it is rejected above 1 MiB.
+
+Point the repository webhook at `https://<host>/webhooks/github`, use the same
+secret, select content type `application/json`, and subscribe only to the
+`pull_request` event. The `x-github-event` header must read `pull_request`;
+deliveries carrying any other event value are ignored. `GITHUB_WEBHOOK_SECRET`
+must be exported for the server process; until it is, the route answers
+`503 webhook_not_configured`. A missing or wrong signature is
+`401 not_authenticated`, and a body that is not valid JSON is `400 validation`.
+
+Only `pull_request` events act, and the payload's `action` with the
+`pull_request` object's `merged` decide the move. `opened` and `reopened` move
+the issue to In Review; `closed` moves it to Done only when the pull request
+merged. `closed` without a merge, every other action, and every other event are
+acknowledged with `200 {"ok":true,"ignored":true}` so GitHub does not retry the
+delivery. The same ignored response covers an unknown issue key, a key whose
+issue cannot take the move, and a replay of a move already made.
+
+The issue key is read from the pull request branch (`head.ref`) first and from
+the pull request title second, taking the first `ABC-123` shaped match and
+normalizing it without padding, so `TAC-014` resolves to `TAC-14`. Keys are
+uppercase, which means a lowercase branch name such as `tac-14-fix-the-thing`
+falls through to the title. A move the webhook makes is an ordinary status change
+by the `git` actor, so the same transition graph and actor matrix apply, and its
+timeline event body reads `pull request #<number> <action>`.
+
+To test locally, sign the exact bytes you send:
+
+```sh
+export GITHUB_WEBHOOK_SECRET=testsecret
+body='{"action":"opened","number":7,"pull_request":{"number":7,"title":"TAC-14 fix the thing","merged":false,"head":{"ref":"tac-14-fix-the-thing"}}}'
+sig="sha256=$(printf '%s' "$body" | openssl dgst -sha256 -hmac "$GITHUB_WEBHOOK_SECRET" -r | cut -d' ' -f1)"
+curl -sS -X POST http://127.0.0.1:4747/webhooks/github \
+  -H "content-type: application/json" \
+  -H "x-github-event: pull_request" \
+  -H "x-hub-signature-256: $sig" \
+  --data-binary "$body"
+```
+
+`node` computes the same signature when `openssl` is not at hand:
+
+```sh
+sig="sha256=$(node -e 'const c=require("node:crypto");process.stdout.write(c.createHmac("sha256",process.env.GITHUB_WEBHOOK_SECRET).update(process.argv[1],"utf8").digest("hex"))' "$body")"
+```
+
+A delivery whose key resolves to a movable issue replies `{"ok":true}` and the
+issue appears in In Review on the board. Repeating the same body replies
+`{"ok":true,"ignored":true}`, because the move has already been made. For the
+merge case send `"action":"closed"` at the top level with `"merged":true` inside
+`pull_request`.
 
 ## Web client
 

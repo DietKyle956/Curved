@@ -147,6 +147,7 @@ async function main(): Promise<void> {
     db,
     databaseUrl: config.databaseUrl,
     uiToken: config.uiToken,
+    webhookSecret: config.webhookSecret,
   });
 
   const server = createServer((incoming, outgoing) => {

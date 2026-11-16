@@ -28,6 +28,7 @@ import { createEventHub } from "./event-hub.ts";
 import type { EventHub } from "./event-hub.ts";
 import { serveSpa } from "./spa.ts";
 import { createEventStreamResponse } from "./sse.ts";
+import { handleGithubWebhook } from "./webhook.ts";
 
 const JSON_BODY_LIMIT_BYTES = 1024 * 1024;
 const NOT_FOUND_BODY = {
@@ -38,6 +39,7 @@ export interface CreateAppOptions {
   db: Database;
   databaseUrl: string;
   uiToken: string;
+  webhookSecret?: string;
   webDistDir?: string;
   events?: EventHub;
   eventPingIntervalMs?: number;
@@ -474,6 +476,13 @@ export function createApp(options: CreateAppOptions): App {
   async function handle(request: Request): Promise<Response> {
     try {
       const url = new URL(request.url);
+      if (url.pathname === "/webhooks/github") {
+        return await handleGithubWebhook(request, {
+          db,
+          secret: options.webhookSecret ?? "",
+          logger,
+        });
+      }
       if (url.pathname === "/api" || url.pathname.startsWith("/api/")) {
         return await handleApi(request, url);
       }

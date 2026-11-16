@@ -7,8 +7,10 @@ import { runMigrations } from "./migrate.ts";
 import { authenticateAgent, createAgent } from "./services/agents.ts";
 import { blockIssue, unblockIssue } from "./services/blocking.ts";
 import { commentOnIssue } from "./services/comments.ts";
+import { branchNameForIssue } from "./services/github.ts";
 import {
   createIssue,
+  getIssue,
   getIssueTimeline,
   listIssues,
   moveIssue,
@@ -44,6 +46,7 @@ Commands:
   claim [PROJECT]             Claim the next ready issue for the agent
   review <KEY> <summary...>   Submit a claimed issue for review
   release <KEY>               Return a claimed issue to the ready backlog
+  git-branch <KEY>            Print the git branch name for an issue
   help                        Show this help
 
 Agent commands (ready, claim, review, release, issue block) read the agent
@@ -660,6 +663,35 @@ async function runReleaseCommand(
   }
 }
 
+async function runGitBranchCommand(
+  rest: readonly string[],
+  json: boolean,
+): Promise<void> {
+  const positionals: string[] = [];
+  for (const arg of rest) {
+    if (arg.startsWith("--")) {
+      throw new UsageError(`unknown option "${arg}"`);
+    }
+    positionals.push(arg);
+  }
+  const [key, ...extra] = positionals;
+  if (key === undefined) {
+    throw new UsageError("git-branch requires <KEY>");
+  }
+  if (extra.length > 0) {
+    throw new UsageError("git-branch accepts exactly one KEY argument");
+  }
+  const issue = await withDatabase((db) =>
+    getIssue(db, key, { actor: "human" }),
+  );
+  const branch = branchNameForIssue(issue.key, issue.title);
+  if (json) {
+    printJson({ key: issue.key, branch });
+  } else {
+    process.stdout.write(`${branch}\n`);
+  }
+}
+
 async function main(argv: readonly string[]): Promise<void> {
   const json = argv.includes("--json");
   const args = argv.filter((arg) => arg !== "--json");
@@ -719,6 +751,11 @@ async function main(argv: readonly string[]): Promise<void> {
 
   if (command === "release") {
     await runReleaseCommand(args.slice(1), json);
+    return;
+  }
+
+  if (command === "git-branch") {
+    await runGitBranchCommand(args.slice(1), json);
     return;
   }
 

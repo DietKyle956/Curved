@@ -2,7 +2,7 @@
 
 - **Last updated:** 2026-11-16
 - **Project:** curved
-- **Phase:** HTTP API and auth boundary complete (`LAS-148`), plus a working SPA prototype and the SSE realtime stream (`LAS-150`). Toolchain, Postgres 18, migrations, the projects resource, the issues resource (atomic keys, append-only events), comment events with the full timeline read path, the transition graph with its actor matrix, token-authenticated agents with the one-active-issue fence, agent block with human unblock, the MCP server over stdio, the authenticated HTTP API with its SPA fallback, the React/Vite board, queue, detail, and palette, and the SSE stream that refreshes them are live.
+- **Phase:** HTTP API and auth boundary complete (`LAS-148`), plus a working SPA prototype, the SSE realtime stream (`LAS-150`), and the GitHub webhook with its branch helper (`LAS-151`). Toolchain, Postgres 18, migrations, the projects resource, the issues resource (atomic keys, append-only events), comment events with the full timeline read path, the transition graph with its actor matrix, token-authenticated agents with the one-active-issue fence, agent block with human unblock, the MCP server over stdio, the authenticated HTTP API with its SPA fallback, the React/Vite board, queue, detail, and palette, the SSE stream that refreshes them, and the HMAC-verified GitHub webhook that moves issues from pull requests are live.
 
 ## Current verified state
 
@@ -13,7 +13,7 @@
   `--no-install` skips only install; the database step still runs.
 - End-of-session gate: `./scripts/clean-state.sh`
 - Baseline: green. `npm run typecheck` covers server and web configs; `npm test`
-  runs 164 tests on the Node test runner.
+  runs 187 tests on the Node test runner.
 - Database: `docker compose up` starts `postgres:18-alpine` on host port 55432
   (user/password/db all `curved`, named volume mounted at `/var/lib/postgresql`).
   `scripts/db.sh` waits for readiness, then runs `node src/migrate.ts`.
@@ -157,6 +157,31 @@
   `/assets/*` is `public, max-age=31536000, immutable`. With no build the response
   is a 503 text naming `web/dist` and the build command; `/api` never falls back
   to HTML.
+- Webhook: `POST /webhooks/github` is handled in `src/http/webhook.ts` and routed
+  in `createApp`'s `handle` before the `/api` branch, so it never resolves a
+  session or a bearer. `githubSignature` returns `sha256=<hmac hex>`; the raw body
+  is read once with `request.text()` and compared via `constantTimeEqual` before
+  `JSON.parse`, and a body over 1 MiB is `validation`. A blank
+  `GITHUB_WEBHOOK_SECRET` (config field `webhookSecret`, passed by `server.ts`) is
+  `503 webhook_not_configured`; a missing or wrong `x-hub-signature-256` is
+  `401 not_authenticated`; malformed JSON is `400 validation`.
+- Webhook mapping: `applyPullRequestEvent(db, event, payload)` returns null unless
+  the `x-github-event` header is `pull_request`. The action resolves from the
+  top-level `payload.action` first, then `pull_request.action`; `opened` and
+  `reopened` target `in_review`, `closed` targets `done` only when
+  `pull_request.merged === true`, and everything else is ignored. The key comes
+  from `head.ref` first and the pull request title second through
+  `issueKeyFromText` (the first `ABC-123` match, normalized unpadded). Moves run
+  through `moveIssue` with actor `git` and body `pull request #<n> <action>`, so
+  the transition graph and actor matrix still gate them; `not_found`,
+  `illegal_transition`, and `forbidden_transition` fold into an ignored response,
+  which is what makes replays harmless. Applied deliveries answer
+  `200 {"ok":true}`; everything ignored answers `200 {"ok":true,"ignored":true}`.
+- Branch helper: `src/services/github.ts` also exports `issueKeyFromText` and
+  `branchNameForIssue` (canonical key plus a 60 character title slug). The CLI
+  `git-branch <KEY> [--json]` reads the issue as a human and prints
+  `<key>-<slug>`, or `{ key, branch }` with `--json`; an unknown key exits 1 with
+  `not_found`.
 - Schema (LAS-150): migration `0005_issue_notifications.sql` installs
   `notify_issue_change()`, which fires `after insert` and `after update` on
   `issues` and `after insert` on `issue_events`, calling
@@ -239,12 +264,13 @@
 - Tests: isolated database from `TEST_DATABASE_URL` (name must start with
   `curved_test`), created and migrated by `test/helpers/db.ts`; its reset truncates
   `projects` and `agents` with cascade. The development database is never touched.
-  `npm test` runs 164 tests, including 22 agent/queue tests in
+  `npm test` runs 187 tests, including 22 agent/queue tests in
   `test/agents.test.ts`, 13 MCP-over-stdio tests in `test/mcp.test.ts`, the
   blocking suite in `test/blocking.test.ts`, the HTTP suite in `test/http.test.ts`,
   the label and relation suites in `test/labels.test.ts` and
   `test/relations.test.ts`, the event hub and SSE suites in `test/event-hub.test.ts`
-  and `test/sse.test.ts`, the transition suite, comment ownership tests, and the
+  and `test/sse.test.ts`, the webhook and branch helper suite in
+  `test/github.test.ts`, the transition suite, comment ownership tests, and the
   CLI sequence.
 - Git repository on branch `main`, remote `origin`
   (`https://github.com/DietKyle956/Curved.git`), public on GitHub.
@@ -340,6 +366,23 @@
   open and restored to the trigger on close, and a Tab cycle inside the panel.
   `Dialog` and the issue detail share that shell; the palette keeps its own
   overlay at a higher layer so Escape closes it before the detail.
+- The GitHub webhook lives outside `/api` and outside both auth lanes: the HMAC of
+  the raw body is the only credential, so a delivery needs no cookie and no
+  bearer, and a valid HMAC with a bogus bearer still succeeds. Signature
+  verification runs before parsing, so a forged body never reaches `JSON.parse`.
+- Every webhook outcome that is not an applied move (unknown key, illegal or
+  forbidden transition, replay, closed-unmerged pull request, non-`pull_request`
+  event) returns `200 {"ok":true,"ignored":true}` rather than an error, because a
+  non-2xx makes GitHub retry a delivery that could never succeed. Replays need no
+  dedupe table: moving to the same status is already an illegal transition.
+- Webhook moves use the existing `git` actor, transition graph, and actor matrix
+  instead of a bypass path, so a pull request cannot claim work or move a `todo`
+  issue straight to review.
+- The action and number are read from the payload top level first (real GitHub
+  shape) with `pull_request.action` and `pull_request.number` as fallbacks;
+  `merged`, `head.ref`, and `title` stay inside `pull_request`.
+- `git-branch` prints the canonical key plus a lowercased, 60 character title slug
+  so the branch is readable by humans and parses back through `issueKeyFromText`.
 - No frontend test framework was added for the prototype. Verification was a real
   Chromium pass against a live server at 1440, 1024, and 390 px, including sign-in,
   setup, empty project, create, comment, move, drag, label, relation, unblock,
@@ -359,9 +402,8 @@
 
 ## Next best step
 
-Execute `LAS-151` (GitHub webhook and branch helper), then close `LAS-152`,
-`LAS-153`, and `LAS-154` once their acceptance tests land. `LAS-155` remains the
-end-to-end gate.
+Close `LAS-152`, `LAS-153`, and `LAS-154` once their acceptance tests land.
+`LAS-155` remains the end-to-end gate.
 
 ## Tracker
 
@@ -381,7 +423,7 @@ end-to-end gate.
   - `LAS-148` HTTP API and auth boundary (146) (done 2026-11-10)
   - `LAS-149` labels, relations, dependency-aware ready (148) (done 2026-11-10)
   - `LAS-150` SSE realtime stream (148) (done 2026-11-16)
-  - `LAS-151` GitHub webhook and branch helper (148)
+  - `LAS-151` GitHub webhook and branch helper (148) (done 2026-11-16)
   - `LAS-152` SPA sign-in, setup, board (148, 149, 150) - prototyped, acceptance tests pending
   - `LAS-153` issue detail and human actions (152) - prototyped, acceptance tests pending
   - `LAS-154` command palette (153) - prototyped, acceptance tests pending
@@ -865,3 +907,51 @@ end-to-end gate.
 - Next best step: execute `LAS-151`, then close `LAS-152`/`LAS-153`/`LAS-154` once
   their acceptance tests land.
 - Commits: 1 commit, `Add the SSE realtime stream` (`74be39b`).
+
+### Session 017
+
+- Date: 2026-11-16
+- Goal: execute `LAS-151` (GitHub webhook and branch helper).
+- Completed: `src/services/github.ts` with `issueKeyFromText` (first
+  `ABC-123` match, unpadded), `branchNameForIssue` (canonical key plus a 60
+  character title slug), and `applyPullRequestEvent` (event header filter,
+  top-level `action` with nested fallback, `opened`/`reopened` to `in_review`,
+  closed and merged to `done`, key from `head.ref` then title, `git` actor via
+  `moveIssue`, ignored-error mapping); `src/http/webhook.ts` with `githubSignature`
+  and `handleGithubWebhook` (raw body first, constant-time `sha256=` compare,
+  `webhook_not_configured` when `GITHUB_WEBHOOK_SECRET` is blank, `401` on
+  mismatch, `validation` on non-JSON, `{"ok":true}` / `{"ok":true,"ignored":true}`);
+  `CreateAppOptions.webhookSecret` and the `/webhooks/github` route placed before
+  the `/api` branch; `server.ts` passing `config.webhookSecret`; CLI
+  `git-branch <KEY> [--json]`; new `test/github.test.ts` and four `git-branch`
+  cases in `test/cli.test.ts`; README webhook section and AGENTS current state.
+- Verification run: `npm run typecheck` green; targeted
+  `node --test --test-concurrency=1 test/github.test.ts test/cli.test.ts` 55 pass;
+  `npm test` 187 pass, 0 fail; `npm run build` green; live smoke against a real
+  `node src/server.ts` with throwaway `curved_test_smoke151` on ports 4751 (no
+  secret) and 4752 (secret). Unconfigured server answered 503
+  `webhook_not_configured`; wrong and missing `x-hub-signature-256` answered 401
+  with the issue untouched; a valid HMAC with no cookie and no bearer moved
+  `SMK-1` `in_progress -> in_review` with a `status` event by `git`, body
+  `pull request #7 opened`; the replay was `{"ok":true,"ignored":true}` with no
+  new event; closed-unmerged was ignored; closed-merged moved `in_review -> done`;
+  a non-PR event and an unknown key were ignored; `head.ref` beat a conflicting
+  title; a valid HMAC with a bogus bearer still succeeded; `/api/issues` without
+  credentials stayed 401; `git-branch SMK-002` printed `SMK-2-other-target`;
+  smoke database dropped and server stopped.
+- Evidence captured: `503 {"error":{"code":"webhook_not_configured",...}}`;
+  `401 {"error":{"code":"not_authenticated","message":"webhook signature
+  mismatch"}}`; `{"ok":true}` and `{"ok":true,"ignored":true}` responses; the
+  timeline `status git in_progress>in_review "pull request #7 opened"` and
+  `status git in_review>done "pull request #7 closed"`; `git-branch` plain, padded,
+  `--json`, and `not_found` exit 1 outputs.
+- Coordination: five parallel slices (service helper, webhook route and wiring,
+  CLI, tests, docs), then one corrective pass after the docs slice flagged that
+  real GitHub deliveries put `action` and `number` at the payload top level.
+- Known risk: keys are uppercase, so a lowercase branch such as
+  `tac-14-fix` falls through to the pull request title; closed-unmerged is ignored
+  by design; the webhook has no delivery-id dedupe because a replay is already an
+  illegal transition.
+- Next best step: close `LAS-152`/`LAS-153`/`LAS-154` once their acceptance tests
+  land, then `LAS-155`.
+- Commits: 1 commit, `Add the GitHub webhook and branch helper`.
