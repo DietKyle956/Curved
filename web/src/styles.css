@@ -1,0 +1,183 @@
+@import "tailwindcss";
+
+/*
+  Curved palette. Warm near-black surfaces, parchment text, one primary accent
+  (spice). The remaining accents are semantic only: they encode status, priority,
+  blockers, and agent state. Shape is a single 5px radius everywhere; controls,
+  panels, chips, and marks all share it. Theme is locked dark by brief.
+*/
+@theme {
+  --color-canvas: #151313;
+  --color-panel: #1c1b1a;
+  --color-elevated: #282726;
+  --color-line: #343331;
+  --color-line-strong: #575653;
+
+  --color-fg: #e6dcc6;
+  --color-fg-secondary: #b7b5ac;
+  --color-fg-muted: #878580;
+
+  --color-spice: #e8b04b;
+  --color-ember: #cc6b49;
+  --color-teal: #5ac8d8;
+  --color-fremen: #5a96bc;
+  --color-oasis: #7fb069;
+  --color-storm: #e8806e;
+  --color-rose: #c17b8d;
+
+  --font-sans:
+    "Instrument Sans Variable", "Instrument Sans", ui-sans-serif, system-ui,
+    sans-serif;
+  --font-mono:
+    "JetBrains Mono Variable", "JetBrains Mono", ui-monospace, "SFMono-Regular",
+    monospace;
+
+  --radius-ui: 5px;
+  --shadow-float:
+    0 24px 70px rgb(8 6 4 / 0.55), 0 2px 8px rgb(8 6 4 / 0.35);
+}
+
+@layer base {
+  :root {
+    color-scheme: dark;
+  }
+
+  html {
+    overflow-x: clip;
+    background-color: var(--color-canvas);
+  }
+
+  body {
+    min-width: 320px;
+    overflow-x: clip;
+    margin: 0;
+    background-color: var(--color-canvas);
+    color: var(--color-fg);
+    font-family: var(--font-sans);
+    font-synthesis: none;
+    text-rendering: optimizeLegibility;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+  }
+
+  button,
+  input,
+  textarea,
+  select {
+    font: inherit;
+  }
+
+  button {
+    cursor: pointer;
+  }
+
+  button:disabled {
+    cursor: not-allowed;
+  }
+
+  input[type="search"]::-webkit-search-cancel-button {
+    appearance: none;
+  }
+
+  ::selection {
+    background-color: var(--color-spice);
+    color: var(--color-canvas);
+  }
+
+  :focus-visible {
+    outline: 2px solid var(--color-spice);
+    outline-offset: 2px;
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    *,
+    *::before,
+    *::after {
+      animation-duration: 0.01ms !important;
+      animation-iteration-count: 1 !important;
+      scroll-behavior: auto !important;
+      transition-duration: 0.01ms !important;
+    }
+  }
+}
+
+@layer components {
+  .field-input {
+    @apply w-full rounded-ui border border-line bg-panel px-3 py-2 text-[13px] text-fg transition-colors duration-150 placeholder:text-fg-muted hover:border-line-strong focus-visible:border-spice focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-spice/25;
+  }
+
+  .field-input:disabled {
+    @apply cursor-not-allowed opacity-60;
+  }
+
+  .scroll-area {
+    scrollbar-color: var(--color-line) transparent;
+    scrollbar-width: thin;
+  }
+
+  .scroll-area::-webkit-scrollbar {
+    width: 10px;
+    height: 10px;
+  }
+
+  .scroll-area::-webkit-scrollbar-thumb {
+    border: 3px solid transparent;
+    border-radius: 999px;
+    background-clip: content-box;
+    background-color: var(--color-line-strong);
+  }
+
+  .scroll-area::-webkit-scrollbar-track {
+    background: transparent;
+  }
+
+  .no-scrollbar {
+    scrollbar-width: none;
+  }
+
+  .no-scrollbar::-webkit-scrollbar {
+    display: none;
+  }
+
+  .skeleton {
+    position: relative;
+    overflow: hidden;
+    background-color: var(--color-elevated);
+  }
+
+  .skeleton::after {
+    position: absolute;
+    inset: 0;
+    content: "";
+    transform: translateX(-100%);
+    background-image: linear-gradient(
+      90deg,
+      transparent,
+      rgb(230 220 198 / 0.055),
+      transparent
+    );
+    animation: skeleton-sweep 1.6s infinite;
+  }
+
+  @keyframes skeleton-sweep {
+    100% {
+      transform: translateX(100%);
+    }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .skeleton::after {
+      animation: none;
+    }
+  }
+
+  .rule-grid {
+    background-image: linear-gradient(
+        to right,
+        rgb(230 220 198 / 0.035) 1px,
+        transparent 1px
+      ),
+      linear-gradient(to bottom, rgb(230 220 198 / 0.035) 1px, transparent 1px);
+    background-size: 56px 56px;
+  }
+}

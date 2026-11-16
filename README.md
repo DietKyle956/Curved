@@ -18,15 +18,17 @@ nobody can say who did what when. Curved moves those rules out of the prompt.
 - Agents use a small tool surface over MCP and the CLI. They never write SQL.
 - Per-project sequential keys such as `TAC-14`, assigned atomically.
 
-## Planned surface
+## Surface
 
 - **Agent tools**: `list_ready`, `claim_next`, `comment`, `submit_for_review`,
   `mark_blocked`, `release_claim`, plus issue reads and creates.
-- **Human board**: mobile-first SPA with five status tabs, an issue detail view
-  with the full timeline, and a `Cmd/Ctrl+K` palette.
+- **Human board**: mobile-first SPA with five status lanes, a ready queue, an issue
+  detail view with the full timeline, and a `Cmd/Ctrl+K` palette. Sign-in uses the
+  UI token; the first run creates a project.
 - **Automation**: a GitHub webhook that moves issues on pull request open and
-  merge, and a branch-name helper.
-- **Transport**: one process serving the HTTP API, the SSE stream, and the SPA.
+  merge, and a branch-name helper. (planned)
+- **Transport**: one process serving the HTTP API, the SPA, and, next, the SSE
+  stream.
 
 Target stack: Node with TypeScript, Postgres, Hono, React with Vite, and MCP over
 stdio. See `initial_idea.md` for the product intent.
@@ -75,7 +77,9 @@ and appends an `unblocked` event, leaving status and claim untouched. A blocked
 issue is absent from `ready` and cannot be claimed until it is unblocked.
 
 The authenticated HTTP boundary is live. `npm start` runs `node src/server.ts` on
-`PORT` (default 4747) and refuses to start without `CURVED_UI_TOKEN`. Requests
+`PORT` (default 4747) and refuses to start without `CURVED_UI_TOKEN`. The web
+client is a Vite + React + Tailwind app in `web/`, built into `web/dist` and served
+by the same process. Requests
 authenticate as a human through the session cookie or the UI bearer token, or as
 an agent through a `crv_` bearer token; failures and service errors share one JSON
 error shape, and there is no CORS. The API covers projects, issues, comments,
@@ -119,8 +123,11 @@ issue payload carries `labels` and `relations: { blocks, blockedBy }`, where
 - `node src/cli.ts release <KEY>` - return a claimed issue to `todo`; requires
   `CURVED_AGENT_TOKEN`.
 - `npm run db` - start Postgres and apply migrations.
+- `npm run dev` - run the Vite dev server on port 5173 and proxy `/api` to
+  `http://127.0.0.1:4747`; start `npm start` in another terminal.
+- `npm run build` - typecheck, then build the SPA into `web/dist`.
 - `npm start` - run the HTTP server and SPA on `PORT` (default 4747); requires
-  `CURVED_UI_TOKEN`.
+  `CURVED_UI_TOKEN`. Run `npm run build` first for the SPA.
 - `./scripts/init.sh` - install, database, check, build.
 - `./scripts/clean-state.sh` - end-of-session gate.
 - `npm test` - tests run against the isolated `curved_test` database.
@@ -191,6 +198,29 @@ Everything outside `/api` is served from `web/dist`: a matching file, otherwise
 `index.html` for client-side routes. The document is `cache-control: no-cache`;
 `/assets/*` is `public, max-age=31536000, immutable`. When no build exists the
 response is a 503 text naming `web/dist` and the build command.
+
+## Web client
+
+`npm run build` produces `web/dist`, and `npm start` serves it on the same origin
+as the API. Open `http://127.0.0.1:4747`, sign in with `CURVED_UI_TOKEN`, and the
+cookie keeps the session for 30 days. The first run starts with project setup.
+
+The client covers the core human loop:
+
+- Board and mobile status list, with drag-to-move on desktop. Drop targets come
+  from each issue's `allowedTransitions`, so the UI cannot invent an edge.
+- Ready queue with claim order, in-flight agents, and human unblock.
+- Issue detail with the append-only timeline, comment composer, status moves,
+  field edits, label replacement, and blocking relations.
+- Command palette (`Ctrl+K` or `Cmd+K`) for issue search and actions.
+- Loading, empty, error, and reduced-motion states throughout.
+
+The palette and all screens are client-side routes under `/p/<project>`; the
+server falls back to `index.html` for reloads. The theme is the fixed warm
+near-black palette; there is no light mode by design.
+
+For development, run `npm start` on 4747 and `npm run dev` on 5173. Vite proxies
+`/api` to the API server, so the session cookie and JSON calls work unchanged.
 
 ## MCP server (stdio)
 

@@ -1,8 +1,8 @@
 # MEMORY.md
 
-- **Last updated:** 2026-11-10
+- **Last updated:** 2026-11-16
 - **Project:** curved
-- **Phase:** HTTP API and auth boundary complete (`LAS-148`). Toolchain, Postgres 18, migrations, the projects resource, the issues resource (atomic keys, append-only events), comment events with the full timeline read path, the transition graph with its actor matrix, token-authenticated agents with the one-active-issue fence, agent block with human unblock, the MCP server over stdio, and the authenticated HTTP API with its SPA fallback are live.
+- **Phase:** HTTP API and auth boundary complete (`LAS-148`), plus a working SPA prototype. Toolchain, Postgres 18, migrations, the projects resource, the issues resource (atomic keys, append-only events), comment events with the full timeline read path, the transition graph with its actor matrix, token-authenticated agents with the one-active-issue fence, agent block with human unblock, the MCP server over stdio, the authenticated HTTP API with its SPA fallback, and the React/Vite board, queue, detail, and palette are live.
 
 ## Current verified state
 
@@ -191,8 +191,24 @@
 - Ready: `listReady` and `claimNext` exclude a `todo` issue while any issue
   blocking it is not `done`; it reappears in the queue and becomes claimable once
   the blocker reaches `done`.
-- CLI: `issue show` renders `labels:`, `blocks:`, and `blocked_by:` (`-` when
-  empty) between `parent:` and `blocked_reason:`.
+- Web: `web/` is a Vite 8 + React 19 + TypeScript SPA using Tailwind v4, Motion,
+  and Phosphor. `npm run build` runs the typechecks and then writes `web/dist`;
+  `npm start` serves that build; `npm run dev` runs Vite on 5173 with `/api`
+  proxied to 4747. `tsconfig.web.json` typechecks `web/src` only, so
+  `web/vite.config.ts` is validated by Vite at build time.
+- Web surface: sign-in with `CURVED_UI_TOKEN`, first-run project setup, five-lane
+  board with desktop drag-to-move gated by each issue's `allowedTransitions`,
+  mobile status list, ready queue with claim order, in-flight agents and human
+  unblock, issue detail with timeline, comment composer, field edits, label
+  replacement, blocking relations and unblock, and a `Ctrl/Cmd+K` palette. The
+  shell is `fixed inset-0`; sign-in and setup scroll normally. Data refreshes on
+  mutation, window focus, and a 20 second visible-tab poll (SSE is still
+  `LAS-150`).
+- Web design: fixed warm near-black palette (`canvas`, `panel`, `elevated`,
+  `line`, parchment text, spice primary, semantic status accents), Instrument Sans
+  + JetBrains Mono, one 5 px radius, no light mode. The visual verification matrix
+  covered 1440, 1024, and 390 px; text contrast was audited and returned no
+  failures; there are no em dashes.
 - Tests: isolated database from `TEST_DATABASE_URL` (name must start with
   `curved_test`), created and migrated by `test/helpers/db.ts`; its reset truncates
   `projects` and `agents` with cascade. The development database is never touched.
@@ -270,10 +286,18 @@
   then disjoint slices for database, services/CLI, tests, and baseline/docs.
 - Migrations take the session advisory lock before creating the ledger, so two
   concurrent first runs serialize instead of racing on `pg_type`.
-- `web/` is a real typecheck project with a minimal `web/src/main.ts`; the SPA
-  replaces it in `LAS-152`.
-- `build` currently equals the no-emit typecheck because the server runs from source
-  and the SPA is not bundled yet. `LAS-152` replaces it with the Vite build.
+- `web/` is a real Vite + React typecheck project. `npm run build` is the no-emit
+  server typecheck plus the web typecheck plus the Vite build, so `web/dist` is
+  always produced by the baseline.
+- The SPA uses the server payload's `allowedTransitions` as the only drag-and-drop
+  source of truth; it never re-implements the transition graph client-side.
+- The app shell is fixed to the viewport and the board owns its horizontal scroll.
+  The detail inspector overlays on `lg`, becomes a static 420 px panel on `xl`, and
+  is a full-screen sheet below `lg`.
+- No frontend test framework was added for the prototype. Verification was a real
+  Chromium pass against a live server at 1440, 1024, and 390 px, including sign-in,
+  setup, empty project, create, comment, move, drag, label, relation, unblock,
+  palette, browser back, and offline error states.
 
 ## Open questions
 
@@ -281,14 +305,18 @@
   `@modelcontextprotocol/server` package, no v1 fallback.
 - Blocking-relation cycles are permitted and simply keep the affected issues out
   of `ready`; no cycle detection was specified for `LAS-149`.
-- The SPA build remains `LAS-152`; until then the HTTP server answers non-`/api`
-  paths with the 503 naming `web/dist`.
+- The SPA prototype covers the sign-in, setup, board, detail, and palette
+  acceptance criteria, but not SSE; `LAS-150` still owns the realtime stream and
+  `LAS-152`/`LAS-153`/`LAS-154` remain open until SSE and any acceptance tests land.
+  The HTTP server answers non-`/api` paths with a 503 naming `web/dist` only when
+  the build is absent.
 
 ## Next best step
 
-Execute `LAS-150` (SSE realtime stream) and `LAS-151` (GitHub webhook and branch
-helper), both unblocked by `LAS-148`. `LAS-152` then needs `LAS-149` and
-`LAS-150`.
+Execute `LAS-150` (SSE realtime stream) and wire the SPA's 20 second poll to it,
+then `LAS-151` (GitHub webhook and branch helper). Close `LAS-152`, `LAS-153`, and
+`LAS-154` once the stream and acceptance tests land. `LAS-155` remains the
+end-to-end gate.
 
 ## Tracker
 
@@ -309,9 +337,9 @@ helper), both unblocked by `LAS-148`. `LAS-152` then needs `LAS-149` and
   - `LAS-149` labels, relations, dependency-aware ready (148) (done 2026-11-10)
   - `LAS-150` SSE realtime stream (148)
   - `LAS-151` GitHub webhook and branch helper (148)
-  - `LAS-152` SPA sign-in, setup, board (148, 149, 150)
-  - `LAS-153` issue detail and human actions (152)
-  - `LAS-154` command palette (153)
+  - `LAS-152` SPA sign-in, setup, board (148, 149, 150) - prototyped, SSE pending
+  - `LAS-153` issue detail and human actions (152) - prototyped, SSE pending
+  - `LAS-154` command palette (153) - prototyped, SSE pending
   - `LAS-155` end-to-end acceptance gate (147, 151, 153, 154)
 
 ## Session log
@@ -663,3 +691,45 @@ helper), both unblocked by `LAS-148`. `LAS-152` then needs `LAS-149` and
   relation writes are HTTP-only (no CLI or MCP verb), by design.
 - Next best step: execute `LAS-150` and `LAS-151`.
 - Commits: 1 commit, `Add labels, relations, and dependency-aware ready`.
+
+### Session 014
+
+- Date: 2026-11-16
+- Goal: prototype the Curved web client on the supplied warm dark palette.
+- Completed: Vite 8 + React 19 + Tailwind v4 SPA in `web/` with Motion and
+  Phosphor; `npm run build` now typechecks both trees and writes `web/dist`;
+  `npm run dev` proxies `/api`. Screens: UI-token sign-in, first-run project
+  setup, desktop five-lane board with drag transitions, mobile status list, ready
+  queue with claim order, in-flight agents and human unblock, issue detail with
+  timeline, comments, title/description/priority edits, label replacement,
+  blocking relations and unblock, `Ctrl/Cmd+K` palette, new issue dialog, toasts,
+  skeletons, empty states, and inline error handling. Design system: fixed warm
+  near-black palette, Instrument Sans + JetBrains Mono, 5 px radius, spice as the
+  only primary accent with semantic status accents, fixed dark theme. The app
+  shell is viewport-fixed with independent scroll regions; the inspector overlays
+  on `lg`, is static on `xl`, and is full-screen below `lg`. No em dashes.
+- Verification run: `npm run typecheck` green; `npm run build:web` green;
+  `npm test` not changed (154 tests, run in the final baseline). Live Chromium pass
+  against `node src/server.ts` on 4747 with a local demo project and agents at
+  1440, 1024, and 390 px: sign-in and mobile fold, first-run project creation and
+  empty board, new issue with labels, comment append, status transition and undo,
+  label save, relation add, drag from Backlog to Todo and back, queue unblock and
+  restore, palette search and Enter-to-open, browser Back closing the inspector,
+  offline refresh banner and recovery, empty filtered board, and no console
+  errors. A computed WCAG pass over board and detail text returned no failures.
+  The demo project (`CRV`, 26 issues, 5 agents) lives only in the local dev
+  database; the `curved_test` database was untouched.
+- Evidence captured: `Created CRV-26` toast and navigation to
+  `/p/CRV/i/CRV-26`; `Moved CRV-1 to Todo` after drag; `Unblocked CRV-10` and the
+  queue returning from 6 ready/1 blocked to 7/0; `CRV-25 now blocks CRV-26` in the
+  timeline; `Refresh failed: Could not reach the server` with the network off and
+  its disappearance after refresh; no horizontal page scroll at 1024 after fixing
+  the shell.
+- Known risk: no automated frontend tests; verification is a browser pass. The
+  production bundle is 519 kB minified (155 kB gzip) and Vite warns above 500 kB.
+  Real iOS safe-area and software-keyboard behavior were not exercised; the
+  composer uses `env(safe-area-inset-bottom)` and a fixed shell. SSE is not wired,
+  so the client polls every 20 seconds while visible.
+- Next best step: `LAS-150` SSE, then replace the poll with a stream and close the
+  remaining SPA tickets.
+- Commits: 1 commit, `Prototype the web client`.

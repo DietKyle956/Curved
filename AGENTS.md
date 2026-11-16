@@ -67,6 +67,14 @@ LAS-149 is live: migration `0004` adds project-scoped `labels`, `issue_labels`, 
 add a blocking relation; issue payloads carry `labels` and `relations` with
 `blocks` and `blockedBy`; and `ready` and claim skip issues whose blocking
 relation is not Done.
+The SPA prototype is live in `web/`: Vite + React + Tailwind v4 built into
+`web/dist`, served by the HTTP process. It covers sign-in with the UI token,
+first-run project setup, a five-lane board with drag transitions gated by
+`allowedTransitions`, the ready queue with in-flight agents and human unblock,
+issue detail with timeline, comments, edits, labels, and blocking relations, and a
+`Ctrl/Cmd+K` palette. The warm near-black palette is fixed; there is no light
+mode. `npm run dev` proxies `/api` to 4747 for development.
+
 Tests: 154 pass, 0 fail, including `test/http.test.ts`, the label and relation
 suites in `test/labels.test.ts` and `test/relations.test.ts`, and the issue filter
 and human-only edit cases in `test/issues.test.ts`. Next frontier: LAS-150 and
@@ -81,6 +89,7 @@ LAS-151.
 | `MEMORY.md` | Verified state, decisions, session log. Update it every session. |
 | `src/http/` | HTTP router, auth boundary, and SPA fallback. |
 | `src/server.ts` | HTTP entry. Reads `PORT` and requires `CURVED_UI_TOKEN`. |
+| `web/` | Vite + React SPA. `npm run build` writes `web/dist`; `npm run dev` proxies `/api`. |
 | `scripts/init.sh` | Baseline runner: install, check, build. `--no-install` skips install. |
 | `scripts/clean-state.sh` | End-of-session gate. Idempotent, writes nothing. |
 | `.codegraph/` | Local index, gitignored. Refresh with `codegraph sync`. |

@@ -3,9 +3,19 @@
   "compilerOptions": {
     "module": "ESNext",
     "moduleResolution": "Bundler",
-    "lib": ["ES2024", "DOM", "DOM.Iterable"],
-    "types": [],
-    "allowImportingTsExtensions": true
+    "lib": [
+      "ES2024",
+      "DOM",
+      "DOM.Iterable"
+    ],
+    "types": [
+      "vite/client"
+    ],
+    "allowImportingTsExtensions": true,
+    "jsx": "react-jsx"
   },
-  "include": ["web/**/*.ts", "web/**/*.tsx"]
+  "include": [
+    "web/src/**/*.ts",
+    "web/src/**/*.tsx"
+  ]
 }
