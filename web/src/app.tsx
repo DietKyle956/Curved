@@ -23,6 +23,8 @@ import { STATUS_LABEL } from "./lib/presentation.ts";
 import {
   boardPath,
   issuePath,
+  newIssuePath,
+  parseRoute,
   queuePath,
   useRoute,
 } from "./lib/router.ts";
@@ -106,10 +108,7 @@ export function App() {
   const [query, setQuery] = useState("");
   const [labelFilter, setLabelFilter] = useState<string | null>(null);
   const [paletteOpen, setPaletteOpen] = useState(false);
-  const [newIssue, setNewIssue] = useState<{ open: boolean; status: Status }>({
-    open: false,
-    status: "backlog",
-  });
+  const [newIssueStatus, setNewIssueStatus] = useState<Status>("backlog");
   const [toasts, setToasts] = useState<ToastItem[]>([]);
 
   const toastId = useRef(0);
@@ -207,8 +206,15 @@ export function App() {
     if (first === undefined) {
       return;
     }
+    if (route.kind === "new" && route.project === undefined) {
+      return;
+    }
     navigate(
-      route.kind === "queue" ? queuePath(first.key) : boardPath(first.key),
+      route.kind === "queue"
+        ? queuePath(first.key)
+        : route.kind === "new"
+          ? newIssuePath(first.key)
+          : boardPath(first.key),
       { replace: true },
     );
   }, [auth, projects, route, navigate]);
@@ -385,10 +391,25 @@ export function App() {
     [navigate, project],
   );
 
-  const openNewIssue = useCallback((status: Status = "backlog"): void => {
-    setPaletteOpen(false);
-    setNewIssue({ open: true, status });
-  }, []);
+  const openNewIssue = useCallback(
+    (status: Status = "backlog"): void => {
+      setPaletteOpen(false);
+      setNewIssueStatus(status);
+      navigate(newIssuePath(projectKeyFromRoute ?? undefined));
+    },
+    [navigate, projectKeyFromRoute],
+  );
+
+  const closeNewIssue = useCallback((): void => {
+    setNewIssueStatus("backlog");
+    if (projectKeyFromRoute === null) {
+      return;
+    }
+    if (parseRoute(window.location.pathname).kind !== "new") {
+      return;
+    }
+    navigate(boardPath(projectKeyFromRoute), { replace: true });
+  }, [navigate, projectKeyFromRoute]);
 
   const signOut = useCallback(async (): Promise<void> => {
     try {
@@ -746,13 +767,11 @@ export function App() {
       />
 
       <NewIssueDialog
-        open={newIssue.open}
+        open={route.kind === "new"}
         project={project}
-        defaultStatus={newIssue.status}
+        defaultStatus={newIssueStatus}
         allLabels={allLabels}
-        onClose={() => {
-          setNewIssue((current) => ({ ...current, open: false }));
-        }}
+        onClose={closeNewIssue}
         onCreate={createIssue}
       />
 

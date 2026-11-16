@@ -93,13 +93,25 @@ against `GITHUB_WEBHOOK_SECRET` before parsing, moves `pull_request` `opened` an
 Done as the `git` actor with a `pull request #<n> <action>` status event, answers
 `200 {"ok":true,"ignored":true}` for unknown keys, illegal transitions, replays,
 and non-PR events so GitHub never retries, and `node src/cli.ts git-branch <KEY>`
-prints the canonical branch name.
+prints the canonical branch name. LAS-152 is live: the hand-rolled history router
+(`web/src/lib/router.ts`) parses `/`, `/p/<KEY>`, `/p/<KEY>/queue`, `/p/<KEY>/i/<ISSUE>`,
+and `/new` or `/p/<KEY>/new`, writes history with `pushState`/`replaceState`, listens
+to `popstate`, and dispatches a `navigate` `CustomEvent` (`{ path, replace }`) for
+every one; the new-issue dialog is route-driven, so direct loads, browser Back, and
+the create redirect all agree. The board switches to five horizontally scrollable
+columns at 900 px (the `lg` breakpoint token is overridden to 900 px) and below that
+shows a card list with a sticky five-status tab bar above the shell nav, 44 px
+targets, and per-status counts derived client-side from the single `GET /api/issues`
+fetch. Cards carry key, title, a priority dot, label chips, a blocked badge, and
+claimer initials. The ticket's light/dark `prefers-color-scheme`, system-font, and
+8 px-spacing clause is a deliberate deviation: the warm near-black palette is fixed,
+there is no light mode, and the fonts are self-hosted (no CDN).
 
 Tests: 187 pass, 0 fail, including `test/http.test.ts`, `test/event-hub.test.ts`,
 `test/sse.test.ts`, the label and relation suites in `test/labels.test.ts` and
 `test/relations.test.ts`, the webhook and branch suite in `test/github.test.ts`,
 and the issue filter and human-only edit cases in `test/issues.test.ts`. Next
-frontier: LAS-152.
+frontier: LAS-153.
 
 ## Directory page
 

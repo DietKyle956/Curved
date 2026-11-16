@@ -207,6 +207,10 @@ export function Board({
       (labelFilter === null || issue.labels.includes(labelFilter)),
   );
   const counts = countByStatus(visible);
+  const mobileIssues =
+    mobileStatus === "all"
+      ? sortForMobile(visible)
+      : sortForColumn(visible.filter((issue) => issue.status === mobileStatus));
   if (loading) {
     return <BoardSkeleton />;
   }
@@ -247,7 +251,9 @@ export function Board({
     <>
       <div className="flex flex-wrap items-center gap-x-3 gap-y-1 border-b border-line px-4 py-2 lg:hidden">
         <span className="font-mono text-[10px] text-fg-muted">
-          {visible.length} visible
+          {mobileStatus === "all"
+            ? `${visible.length} visible`
+            : `${STATUS_LABEL[mobileStatus]} · ${counts[mobileStatus]}`}
         </span>
         {labelFilter !== null ? (
           <span className="inline-flex items-center gap-1 rounded-ui border border-line bg-panel px-1.5 py-0.5 font-mono text-[9px] text-fg-secondary">
@@ -264,50 +270,15 @@ export function Board({
         </button>
       </div>
 
-      <div className="no-scrollbar flex gap-0 overflow-x-auto border-b border-line px-3 lg:hidden">
-        <button
-          type="button"
-          onClick={() => {
-            setMobileStatus("all");
-          }}
-          aria-pressed={mobileStatus === "all"}
-          className={`flex h-10 shrink-0 items-center gap-1.5 border-b-2 px-2 text-[11px] transition-colors ${
-            mobileStatus === "all"
-              ? "border-spice text-fg"
-              : "border-transparent text-fg-muted"
-          }`}
-        >
-          All
-          <span className="font-mono text-[9px] text-fg-muted">{visible.length}</span>
-        </button>
-        {STATUS_ORDER.map((status) => (
-          <button
-            key={status}
-            type="button"
-            onClick={() => {
-              setMobileStatus(status);
-            }}
-            aria-pressed={mobileStatus === status}
-            className={`flex h-10 shrink-0 items-center gap-1.5 border-b-2 px-2 text-[11px] transition-colors ${
-              mobileStatus === status
-                ? "border-spice text-fg"
-                : "border-transparent text-fg-muted"
-            }`}
-          >
-            {STATUS_LABEL[status]}
-            <span className="font-mono text-[9px] text-fg-muted">
-              {counts[status]}
-            </span>
-          </button>
-        ))}
-      </div>
-
-      <div className="min-h-0 min-w-0 flex-1 overflow-y-auto px-3 pb-20 lg:hidden">
+      <div className="min-h-0 min-w-0 flex-1 overflow-y-auto px-3 pb-[calc(7.5rem+env(safe-area-inset-bottom))] lg:hidden">
         <div className="divide-y divide-line">
-          {(mobileStatus === "all"
-            ? sortForMobile(visible)
-            : sortForColumn(visible.filter((issue) => issue.status === mobileStatus))
-          ).map((issue) => (
+          {mobileIssues.length === 0 ? (
+            <p className="px-1 py-8 text-center text-[11.5px] text-fg-muted">
+              No issues in this status. Tap the active tab again to show all
+              issues.
+            </p>
+          ) : null}
+          {mobileIssues.map((issue) => (
             <button
               key={issue.key}
               type="button"
@@ -351,6 +322,54 @@ export function Board({
           ))}
         </div>
       </div>
+
+      {/* Sits directly above the shell's MobileNav (h-14 + safe area). */}
+      <nav
+        aria-label="Filter board by status"
+        className="fixed inset-x-0 bottom-[calc(3.5625rem+env(safe-area-inset-bottom))] z-20 border-t border-line bg-canvas/95 backdrop-blur-sm lg:hidden"
+      >
+        <div className="grid grid-cols-5">
+          {STATUS_ORDER.map((status) => {
+            const active = mobileStatus === status;
+            return (
+              <button
+                key={status}
+                type="button"
+                onClick={() => {
+                  setMobileStatus(active ? "all" : status);
+                }}
+                aria-pressed={active}
+                className={`relative flex min-h-11 flex-col items-center justify-center gap-0.5 px-1 text-[10px] transition-colors ${
+                  active
+                    ? "bg-elevated/60 text-fg"
+                    : "text-fg-muted hover:text-fg"
+                }`}
+              >
+                <span
+                  aria-hidden="true"
+                  className={`absolute inset-x-3 top-0 h-px transition-colors ${
+                    active ? "bg-spice" : "bg-transparent"
+                  }`}
+                />
+                <span className="px-0.5 text-center leading-tight">
+                  {STATUS_LABEL[status]}
+                </span>
+                <span className="flex items-center gap-1 leading-none">
+                  <span
+                    aria-hidden="true"
+                    className={`size-1.5 rounded-[1px] ${STATUS_TONE[status].mark} ${
+                      active ? "" : "opacity-60"
+                    }`}
+                  />
+                  <span className="font-mono text-[9px] tabular-nums">
+                    {counts[status]}
+                  </span>
+                </span>
+              </button>
+            );
+          })}
+        </div>
+      </nav>
 
       <div className="hidden min-h-0 min-w-0 flex-1 gap-4 overflow-x-auto px-4 pb-4 lg:flex lg:px-5">
         {STATUS_ORDER.map((status) => {

@@ -2,7 +2,7 @@
 
 - **Last updated:** 2026-11-16
 - **Project:** curved
-- **Phase:** HTTP API and auth boundary complete (`LAS-148`), plus a working SPA prototype, the SSE realtime stream (`LAS-150`), and the GitHub webhook with its branch helper (`LAS-151`). Toolchain, Postgres 18, migrations, the projects resource, the issues resource (atomic keys, append-only events), comment events with the full timeline read path, the transition graph with its actor matrix, token-authenticated agents with the one-active-issue fence, agent block with human unblock, the MCP server over stdio, the authenticated HTTP API with its SPA fallback, the React/Vite board, queue, detail, and palette, the SSE stream that refreshes them, and the HMAC-verified GitHub webhook that moves issues from pull requests are live.
+- **Phase:** HTTP API and auth boundary complete (`LAS-148`), plus a working SPA prototype, the SSE realtime stream (`LAS-150`), the GitHub webhook with its branch helper (`LAS-151`), and the SPA foundation ticket (`LAS-152`). Toolchain, Postgres 18, migrations, the projects resource, the issues resource (atomic keys, append-only events), comment events with the full timeline read path, the transition graph with its actor matrix, token-authenticated agents with the one-active-issue fence, agent block with human unblock, the MCP server over stdio, the authenticated HTTP API with its SPA fallback, the React/Vite board, queue, detail, and palette, the SSE stream that refreshes them, the HMAC-verified GitHub webhook that moves issues from pull requests, and the routed board with its mobile status bar are live.
 
 ## Current verified state
 
@@ -955,3 +955,64 @@ Close `LAS-152`, `LAS-153`, and `LAS-154` once their acceptance tests land.
 - Next best step: close `LAS-152`/`LAS-153`/`LAS-154` once their acceptance tests
   land, then `LAS-155`.
 - Commits: 1 commit, `Add the GitHub webhook and branch helper`.
+
+### Session 018
+
+- Date: 2026-11-16
+- Goal: close `LAS-152` (SPA foundation: sign-in, setup, and board).
+- Completed: `web/src/lib/router.ts` gains a `new` route (`/new`, `/p/<KEY>/new`),
+  `newIssuePath`, an exported `NAVIGATE_EVENT = "navigate"`, and a
+  `NavigateEventDetail { path, replace }` dispatched from `navigate()` and from the
+  `popstate` handler; `app.tsx` makes the new-issue dialog route-driven (direct
+  loads, Back, and the post-create redirect to the issue path all agree, with a
+  `parseRoute` guard so the create redirect is not clobbered on close) and keeps the
+  column-seeded default status in app state. `Board.tsx` replaces the top in-flow
+  mobile status strip with a fixed five-status bar above the shell's `MobileNav`
+  (`bottom-[calc(3.5625rem+env(safe-area-inset-bottom))]`, z-20, blurred, 5-column
+  grid, 44 px cells, per-status counts, tap-active-again to return to all issues)
+  and keeps the card list clear of both bars (`pb-[calc(7.5rem+env(...))]`).
+  `styles.css` overrides `--breakpoint-lg: 900px`, so five horizontally scrollable
+  columns appear at 900 px and the mobile list below it. `PriorityMark` in
+  `ui.tsx` now renders the priority as a colored dot (`bg-current` under the
+  existing priority tone) with the label kept in the title and `sr-only` text.
+- Acceptance matrix: AC1 passed (Vite build served by `src/server.ts`); AC2 passed
+  (routes plus `navigate` event); AC3 passed (cookie session, reload, wrong token
+  message); AC4 passed (empty install shows setup and creates a project); AC5
+  passed (390x844 bottom bar, 5 statuses, 44 px, counts, card list); AC6 passed
+  (900 px → five columns, 899 px → list); AC7 passed (key, title, priority dot,
+  label chips, blocked badge, claimer initials); AC8 passed (SSE refetch); AC9
+  partial by decision: CSS custom properties and safe-area insets hold, but the
+  theme stays locked dark, the fonts stay self-hosted `@fontsource`, and spacing
+  stays on Tailwind's 4 px scale, because `AGENTS.md` fixes the warm near-black
+  palette; AC10 passed (one `GET /api/issues?project=` per project, counts derived
+  client-side, no per-status requests).
+- Verification run: `npm run build` green (typecheck of server and web plus Vite);
+  `npm test` 187 pass, 0 fail; `./scripts/init.sh --no-install` green;
+  `./scripts/clean-state.sh` green. Live Chromium pass against `node src/server.ts`
+  on 4747 with the local `CRV` demo project, plus a throwaway
+  `curved_test_las152` database on 4753 for the empty install. Mobile 390x844:
+  status bar `fixed`, 44 px per cell, counts 9/9/2/2/6, zero overlap with the
+  primary nav, last card reachable at full scroll, no horizontal page scroll.
+  Desktop 900x700: five visible columns, scroller 1304 px wide in a 664 px
+  viewport (horizontal scroll), counts 7/9/2/2/6, sidebar visible, mobile bars
+  hidden; 899 px showed the mobile list only. Routes: direct `/p/CRV/new` opened
+  the dialog; Escape replaced to `/p/CRV`; Primary-nav New pushed `/p/CRV/new`
+  with event `{replace:false}`; cancel replaced to `/p/CRV` with `{replace:true}`;
+  Back fired a `popstate` navigate event; creating through the dialog moved to
+  `/p/CRV/i/CRV-28`; bare `/new` opened the dialog against the default project.
+  Sign-in: wrong token showed `token is not valid`, the correct token set the
+  cookie, and a reload stayed signed in. Empty install: setup screen, project
+  `AB` created, board empty. Cross-tab SSE: a CLI `issue add` appeared on a second
+  tab 57 ms later (limit one second). Board load made exactly one
+  `GET /api/issues?project=CRV` (plus `/api/ready`, `/api/me`, `/api/projects`,
+  `/api/events`).
+- Evidence captured: bar rects `{statusBar: 0..390 x 742..787, primaryNav: 787..844}`
+  with `overlapPx: 0`; cells `h:44 w:78` with counts; `overflowX: auto`,
+  `scrollWidth 1304 / clientWidth 664`; navigate event details above; `57 ms` SSE
+  delta; `apiReqs` list with a single issues request.
+- Known risk: no frontend test framework, so this stays a browser pass; AC9's
+  light-mode, system-font, and 8 px-scale clause is intentionally unmet and is
+  recorded on the ticket; the demo `CRV` project now holds `CRV-27` and `CRV-28`
+  from this pass.
+- Next best step: `LAS-153` (issue detail and human actions).
+- Commits: 1 commit, `Route the SPA and finish the mobile board`.

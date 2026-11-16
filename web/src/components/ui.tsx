@@ -156,7 +156,10 @@ export function PriorityMark({
       title={`Priority: ${PRIORITY_LABEL[priority]}`}
       className={`inline-flex items-center gap-1 font-mono text-[10px] leading-none ${PRIORITY_TONE[priority]}`}
     >
-      <span aria-hidden="true">P{priority}</span>
+      <span
+        aria-hidden="true"
+        className="block size-1.5 shrink-0 rounded-full bg-current"
+      />
       {showLabel ? (
         <span className="font-sans text-[11px] tracking-normal">
           {PRIORITY_LABEL[priority]}

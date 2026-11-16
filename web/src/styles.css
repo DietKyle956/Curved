@@ -32,6 +32,8 @@
     "JetBrains Mono Variable", "JetBrains Mono", ui-monospace, "SFMono-Regular",
     monospace;
 
+  --breakpoint-lg: 900px;
+
   --radius-ui: 5px;
   --shadow-float:
     0 24px 70px rgb(8 6 4 / 0.55), 0 2px 8px rgb(8 6 4 / 0.35);
