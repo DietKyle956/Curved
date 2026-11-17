@@ -1,15 +1,15 @@
 import assert from "node:assert/strict";
 import { after, before, beforeEach, test } from "node:test";
 import type { Db } from "../src/db.ts";
-import { ServiceError, type ErrorCode } from "../src/errors.ts";
-import { listEvents, type IssueEvent } from "../src/services/events.ts";
+import { ServiceError, type ErrorCode } from "../src/domain/errors.ts";
+import { listEvents } from "../src/services/events.ts";
 import {
   createIssue,
   getIssue,
   getIssueTimeline,
   listIssues,
-  type Issue,
 } from "../src/services/issues.ts";
+import type { Issue, IssueEvent } from "../src/domain/types.ts";
 import { setIssueLabels } from "../src/services/labels.ts";
 import { createProject } from "../src/services/projects.ts";
 import { addRelation } from "../src/services/relations.ts";

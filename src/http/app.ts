@@ -1,6 +1,7 @@
 import { resolve } from "node:path";
 import type { Database } from "../db.ts";
-import { ServiceError, errorBody, httpStatusFor } from "../errors.ts";
+import { ServiceError } from "../domain/errors.ts";
+import { errorBody, httpStatusFor } from "./errors.ts";
 import { blockIssue, unblockIssue } from "../services/blocking.ts";
 import { commentOnIssue } from "../services/comments.ts";
 import {
@@ -10,7 +11,7 @@ import {
   moveIssue,
   updateIssue,
 } from "../services/issues.ts";
-import type { IssueContext } from "../services/issues.ts";
+import type { IssueContext } from "../domain/actors.ts";
 import { setIssueLabels } from "../services/labels.ts";
 import { createProject, listProjects } from "../services/projects.ts";
 import { claimNext, listReady, releaseClaim } from "../services/queue.ts";

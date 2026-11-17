@@ -2,7 +2,7 @@
 
 - **Last updated:** 2026-11-17
 - **Project:** curved
-- **Phase:** HTTP API and auth boundary complete (`LAS-148`), plus a working SPA prototype, the SSE realtime stream (`LAS-150`), the GitHub webhook with its branch helper (`LAS-151`), the SPA foundation ticket (`LAS-152`), and the architecture contract (`LAS-168`, documentation only). Toolchain, Postgres 18, migrations, the projects resource, the issues resource (atomic keys, append-only events), comment events with the full timeline read path, the transition graph with its actor matrix, token-authenticated agents with the one-active-issue fence, agent block with human unblock, the MCP server over stdio, the authenticated HTTP API with its SPA fallback, the React/Vite board, queue, detail, and palette, the SSE stream that refreshes them, the HMAC-verified GitHub webhook that moves issues from pull requests, and the routed board with its mobile status bar are live.
+- **Phase:** HTTP API and auth boundary complete (`LAS-148`), plus a working SPA prototype, the SSE realtime stream (`LAS-150`), the GitHub webhook with its branch helper (`LAS-151`), the SPA foundation ticket (`LAS-152`), the architecture contract (`LAS-168`, documentation only), and the pure domain layer (`LAS-169`, no behavior change). Toolchain, Postgres 18, migrations, the projects resource, the issues resource (atomic keys, append-only events), comment events with the full timeline read path, the transition graph with its actor matrix, token-authenticated agents with the one-active-issue fence, agent block with human unblock, the MCP server over stdio, the authenticated HTTP API with its SPA fallback, the React/Vite board, queue, detail, and palette, the SSE stream that refreshes them, the HMAC-verified GitHub webhook that moves issues from pull requests, and the routed board with its mobile status bar are live.
 
 ## Current verified state
 
@@ -17,14 +17,38 @@
 - Architecture contract: `ARCH.md` (550 lines) codifies target hexagonal layers
   (domain, application, inbound and outbound adapters, composition roots), rule
   ownership with bounded mirrors, ports and transactions, error translation, web
-  layering, testing policy, and enforcement. It is per-ticket guidance, not
-  implemented: the refactor has not started, so its Current/Target markers matter.
+  layering, testing policy, and enforcement. Steps 1 and 2 are implemented;
+  steps 3 to 6 remain, so its Current/Target markers still matter.
 - Templates: `/home/dietkyle/projects/templates/ARCH.md` (111 lines) is the
   project-agnostic version of the same contract, listed as copy-first item 2 in
   that directory's `index.md`; `templates/AGENTS.md` now reads `ARCH.md` in its
   startup workflow and lists it under required artifacts. `templates/` is not a
   git repository, so those files are uncommitted. `LAS-177` tracks the wider
   template audit.
+- Domain layer (`LAS-169`): `src/domain/` owns every pure rule and type, and
+  `src/shared/status.ts` plus `src/errors.ts` are deleted. `status.ts` holds
+  `STATUSES`, `PRIORITIES`, `EVENT_KINDS`, `ACTOR_TYPES`, the four string-union
+  types, `DEFAULT_STATUS`, `DEFAULT_PRIORITY`, `isStatus`, `isPriority`, and
+  `isActorType`, and imports nothing. `transition.ts` holds `TRANSITIONS`,
+  `StatusEdge`, `LEGAL_EDGES` (every legal edge, derived from `TRANSITIONS`) and
+  `isLegalTransition`. `actors.ts` holds `ACTOR_TRANSITIONS` (its `human` row is
+  `LEGAL_EDGES`), `actorMayTransition`, `TransitionContext`, `allowedTransitions`,
+  `IssueContext`, `ResolvedContext`, `resolveContext`, and `validateActor`.
+  `claim.ts` holds `nextClaimedBy`; `move-policy.ts` holds `mayMove`; `keys.ts`
+  holds `PROJECT_KEY_PATTERN`, `ISSUE_KEY_PATTERN`, `ISSUE_KEY_IN_TEXT`,
+  `BRANCH_SLUG_MAX_LENGTH`, `parseIssueKey`, `issueKeyFromText`, and
+  `branchNameForIssue`; `validation.ts` holds every field validator and the
+  constants `TITLE_MAX_LENGTH` 500, `PROJECT_NAME_MAX_LENGTH` 200,
+  `AGENT_NAME_MAX_LENGTH` 100, `LABEL_NAME_MAX_LENGTH` 50, and
+  `BLOCKED_REASON_MAX_LENGTH` 2000; `errors.ts` holds `ERROR_CODES`, `ErrorCode`,
+  and `ServiceError`; `types.ts` holds `Issue`, `Project`, `Agent`, `CreatedAgent`,
+  `IssueEvent`, `IssueMeta`, `IssueRelations`, and `emptyMeta`.
+  `src/http/errors.ts` owns `HTTP_STATUS`, `httpStatusFor`, `ErrorBody`, and
+  `errorBody`. Services keep all SQL, the issue read model (`toIssue`,
+  `hydrateIssue`, `ISSUE_COLUMNS`, `IssueRow`), agent token mint/hash, and
+  orchestration, and import every rule from the domain. `src/domain/**` imports
+  only domain modules: no `pg`, no `node:*`, no HTTP/MCP/CLI, no filesystem, no
+  crypto, no React.
 - Database: `docker compose up` starts `postgres:18-alpine` on host port 55432
   (user/password/db all `curved`, named volume mounted at `/var/lib/postgresql`).
   `scripts/db.sh` waits for readiness, then runs `node src/migrate.ts`.
@@ -296,14 +320,18 @@
 - Issue creation allocates the number with one CTE statement that updates
   `projects.next_number` and inserts the row; the `created` event is appended in the
   same transaction, so a created issue never lacks history.
-- `src/shared/status.ts` is the single contract for statuses, priorities, event
+- `src/domain/status.ts` is the single contract for statuses, priorities, event
   kinds, and actor types; the schema constraints mirror it.
-- `src/shared/status.ts` is also the single contract for the transition map and
-  actor matrix (`TRANSITIONS`, `ACTOR_TRANSITIONS`, `isLegalTransition`,
-  `actorMayTransition`, `allowedTransitions`). The agent claim edge
-  (`todo -> in_progress`, unclaimed, named agent) is included because the
+- `src/domain/transition.ts` and `src/domain/actors.ts` are the single home of the
+  graph and the matrix (`TRANSITIONS`, `LEGAL_EDGES`, `ACTOR_TRANSITIONS`,
+  `isLegalTransition`, `actorMayTransition`, `allowedTransitions`). The agent claim
+  edge (`todo -> in_progress`, unclaimed, named agent) is included because the
   claim-column rule must be reachable; every other agent edge requires ownership.
-  `system` actors take no transitions.
+  `system` actors take no transitions. `allowedTransitions` and `TransitionContext`
+  live in `actors.ts` next to the matrix they are built from, so `transition.ts`
+  never imports the matrix, and `ACTOR_TRANSITIONS.human` is derived from
+  `TRANSITIONS` through `LEGAL_EDGES` instead of a second edge list; that is what
+  keeps the domain import graph acyclic.
 - `issues.claimed_by` references `agents(name)` (`LAS-145`). Migration `0003`
   backfills pre-fence names with unusable random hashes and demotes duplicate active
   claims before adding the FK and the partial unique index; the service maps the
@@ -359,7 +387,9 @@
   InvalidParams throw inside the tools/call handler. Tests assert that shape.
 - The MCP process exits when stdin ends (client disconnect) or on SIGINT/SIGTERM,
   closing the stdio transport and the pool once; `serveStdio` owns the transport.
-- The transition rules remain in `src/shared/status.ts` (`LAS-144`).
+- The transition rules live in `src/domain/transition.ts`,
+  `src/domain/actors.ts`, and `src/domain/move-policy.ts` (`LAS-144`, extracted
+  in `LAS-169`).
 - Foundation sequence: shared contract modules (`config`, `db`, `errors`) land first,
   then disjoint slices for database, services/CLI, tests, and baseline/docs.
 - Migrations take the session advisory lock before creating the ledger, so two
@@ -413,8 +443,10 @@
 
 ## Next best step
 
-Close `LAS-152`, `LAS-153`, and `LAS-154` once their acceptance tests land.
-`LAS-155` remains the end-to-end gate.
+`LAS-170` (ports and the projects resource) is the next refactor step: add
+`src/application/ports.ts`, the Postgres repositories, `transaction(fn)`, and
+`TokenCodec`, and move SQL behind ports. `LAS-152`, `LAS-153`, and `LAS-154`
+still need their acceptance tests, and `LAS-155` remains the end-to-end gate.
 
 ## Tracker
 
@@ -1078,3 +1110,50 @@ Close `LAS-152`, `LAS-153`, and `LAS-154` once their acceptance tests land.
 - Next best step: `LAS-169` (extract the pure domain layer).
 - Commits: 2 commits, `Codify the architecture contract` and
   `Record the template ARCH startup step`.
+
+### Session 020
+
+- Date: 2026-11-17
+- Goal: execute `LAS-169` (extract the pure domain layer), step 2 of the
+  `LAS-167` refactor. No observable behavior change.
+- Completed: `src/domain/` with `status.ts` (contract and guards), `transition.ts`
+  (`TRANSITIONS`, `LEGAL_EDGES`, `isLegalTransition`), `actors.ts`
+  (`ACTOR_TRANSITIONS` with `human` derived from `LEGAL_EDGES`, `actorMayTransition`,
+  `TransitionContext`, `allowedTransitions`, `resolveContext`, `validateActor`),
+  `claim.ts` (`nextClaimedBy`), `move-policy.ts` (`mayMove`), `keys.ts` (both key
+  patterns, `ISSUE_KEY_IN_TEXT`, `parseIssueKey`, `issueKeyFromText`,
+  `branchNameForIssue`), `validation.ts` (every field validator and max-length
+  constant including label normalization, block reason, comment body, and review
+  summary), `errors.ts` (`ERROR_CODES`, `ServiceError`), and `types.ts` (`Issue`,
+  `Project`, `Agent`, `CreatedAgent`, `IssueEvent`, `IssueMeta`, `IssueRelations`,
+  `emptyMeta`). `src/http/errors.ts` took `HTTP_STATUS`, `httpStatusFor`,
+  `errorBody`, and `ErrorBody` out of the domain. `src/shared/status.ts` and
+  `src/errors.ts` were deleted. Services, `src/mcp/*`, `src/http/auth.ts`,
+  `src/http/webhook.ts`, `src/cli.ts`, `src/migrate.ts`, `web/src/lib/{types,
+  presentation}.ts`, and every affected test import now point at the domain; the
+  duplicate key regexes in the MCP zod schemas, `issues.ts`, `projects.ts`, and
+  `github.ts` are gone. `ARCH.md` records step 2 and the acyclic ownership split;
+  `AGENTS.md` records the layer and moves the frontier to `LAS-170`.
+- Verification run: `npm run typecheck` green before and after deleting the old
+  modules; `npm test` 187 pass, 0 fail; `./scripts/init.sh --no-install` green
+  (database, check, build, codegraph sync: 10 added, 31 modified, 2 removed);
+  live HTTP smoke on a throwaway `curved_smoke169` database (migrate, server on
+  4757, `/api/me`, create project `SMK`, create issue `SMK-1` as `backlog` with
+  `allowedTransitions ["todo"]`, move to `todo` with `["backlog","in_progress"]`,
+  illegal `todo -> done` answered 409 `issue "SMK-1" cannot move from "todo" to
+  "done"`, timeline `created:human,status:human`), then the database dropped.
+- Evidence captured: the smoke payloads above; `grep` over `src/domain/**` shows
+  domain-only imports and no `pg`, `node:*`, `react`, `fetch`, or `process.env`;
+  `git diff src/services` contains no SQL line changes; `git diff test/` contains
+  import lines only; 455 lines deleted against 119 added outside the new domain
+  modules.
+- Coordination: two dispatch waves with subagents - four disjoint foundation
+  slices, then five disjoint consumer rewires, then one corrective import fix -
+  with typecheck and the full suite run by the orchestrator between waves.
+- Known risk: the MCP issue-key zod schema keeps its message as a pinned literal
+  (`^[A-Z][A-Z0-9]{1,9}-[0-9]{1,6}$`) because the domain pattern carries capture
+  groups and `parseIssueKey` already pins the grouped form; validation still uses
+  the domain regex, and the comment in `src/mcp/tools.ts` says so. The
+  import-direction check and steps 3 to 6 remain, so layering is still review-only.
+- Next best step: `LAS-170` (ports and the Postgres repositories).
+- Commits: 1 commit, `Extract the pure domain layer`.

@@ -2,19 +2,15 @@ import assert from "node:assert/strict";
 import { createHmac } from "node:crypto";
 import { after, afterEach, before, beforeEach, test } from "node:test";
 import { createApp } from "../src/http/app.ts";
+import { issueKeyFromText, branchNameForIssue } from "../src/domain/keys.ts";
+import type { Issue, IssueEvent } from "../src/domain/types.ts";
 import { createAgent } from "../src/services/agents.ts";
-import type { IssueEvent } from "../src/services/events.ts";
-import {
-  applyPullRequestEvent,
-  branchNameForIssue,
-  issueKeyFromText,
-} from "../src/services/github.ts";
+import { applyPullRequestEvent } from "../src/services/github.ts";
 import {
   createIssue,
   getIssue,
   getIssueTimeline,
 } from "../src/services/issues.ts";
-import type { Issue } from "../src/services/issues.ts";
 import { createProject } from "../src/services/projects.ts";
 import { claimNext } from "../src/services/queue.ts";
 import { openTestDatabase, type TestDatabase } from "./helpers/db.ts";

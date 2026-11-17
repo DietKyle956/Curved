@@ -6,9 +6,8 @@ import { join } from "node:path";
 import { after, afterEach, before, beforeEach, test } from "node:test";
 import { createApp } from "../src/http/app.ts";
 import { createAgent } from "../src/services/agents.ts";
-import type { IssueEvent } from "../src/services/events.ts";
 import { createIssue } from "../src/services/issues.ts";
-import type { Issue } from "../src/services/issues.ts";
+import type { Issue, IssueEvent } from "../src/domain/types.ts";
 import { createProject } from "../src/services/projects.ts";
 import { openTestDatabase, type TestDatabase } from "./helpers/db.ts";
 

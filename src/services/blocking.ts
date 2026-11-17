@@ -1,13 +1,14 @@
 import type { QueryResultRow } from "pg";
 import type { Database } from "../db.ts";
-import { ServiceError } from "../errors.ts";
-import type { Status } from "../shared/status.ts";
+import { resolveContext } from "../domain/actors.ts";
+import { ServiceError } from "../domain/errors.ts";
+import { parseIssueKey } from "../domain/keys.ts";
+import type { Status } from "../domain/status.ts";
+import type { Issue } from "../domain/types.ts";
+import { validateBlockReason } from "../domain/validation.ts";
 import { appendEvent } from "./events.ts";
 import { ensureAgentExists } from "./agents.ts";
-import { hydrateIssue, parseIssueKey, resolveContext } from "./issues.ts";
-import type { Issue } from "./issues.ts";
-
-export const BLOCKED_REASON_MAX_LENGTH = 2000;
+import { hydrateIssue } from "./issues.ts";
 
 export interface BlockIssueInput {
   key: string;
@@ -42,16 +43,7 @@ export async function blockIssue(
   db: Database,
   input: BlockIssueInput,
 ): Promise<Issue> {
-  const reason = input.reason.trim();
-  if (reason.length === 0) {
-    throw new ServiceError("validation", "blocked reason must not be empty");
-  }
-  if (reason.length > BLOCKED_REASON_MAX_LENGTH) {
-    throw new ServiceError(
-      "validation",
-      `blocked reason must be at most ${BLOCKED_REASON_MAX_LENGTH} characters, got ${reason.length}`,
-    );
-  }
+  const reason = validateBlockReason(input.reason);
   const agent = input.agent.trim();
   if (agent.length === 0) {
     throw new ServiceError(

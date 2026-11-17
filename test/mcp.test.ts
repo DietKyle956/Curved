@@ -6,7 +6,8 @@ import { after, before, beforeEach, test } from "node:test";
 import { Client, type CallToolResult } from "@modelcontextprotocol/client";
 import { StdioClientTransport } from "@modelcontextprotocol/client/stdio";
 import { createAgent } from "../src/services/agents.ts";
-import { createIssue, type Issue } from "../src/services/issues.ts";
+import { createIssue } from "../src/services/issues.ts";
+import type { Issue } from "../src/domain/types.ts";
 import { createProject } from "../src/services/projects.ts";
 import { openTestDatabase, type TestDatabase } from "./helpers/db.ts";
 

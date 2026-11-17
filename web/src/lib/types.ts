@@ -3,7 +3,7 @@ import type {
   EventKind,
   Priority,
   Status,
-} from "../../../src/shared/status.ts";
+} from "../../../src/domain/status.ts";
 
 export type { ActorType, EventKind, Priority, Status };
 

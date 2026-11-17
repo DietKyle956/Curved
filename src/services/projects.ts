@@ -1,18 +1,12 @@
 import type { QueryResultRow } from "pg";
 import type { Db } from "../db.ts";
 import { pgErrorCode } from "../db.ts";
-import { ServiceError } from "../errors.ts";
-
-const KEY_PATTERN = /^[A-Z][A-Z0-9]{1,9}$/;
-const NAME_MAX_LENGTH = 200;
-
-export interface Project {
-  id: number;
-  key: string;
-  name: string;
-  nextNumber: number;
-  createdAt: string;
-}
+import { ServiceError } from "../domain/errors.ts";
+import type { Project } from "../domain/types.ts";
+import {
+  validateProjectKey,
+  validateProjectName,
+} from "../domain/validation.ts";
 
 interface ProjectRow extends QueryResultRow {
   id: number;
@@ -32,32 +26,13 @@ function toProject(row: ProjectRow): Project {
   };
 }
 
-function validateName(raw: string): string {
-  const name = raw.trim();
-  if (name.length === 0) {
-    throw new ServiceError("validation", "project name must not be empty");
-  }
-  if (name.length > NAME_MAX_LENGTH) {
-    throw new ServiceError(
-      "validation",
-      `project name must be at most ${NAME_MAX_LENGTH} characters, got ${name.length}`,
-    );
-  }
-  return name;
-}
-
 export async function createProject(
   db: Db,
   input: { key: string; name: string },
 ): Promise<Project> {
   const { key } = input;
-  if (!KEY_PATTERN.test(key)) {
-    throw new ServiceError(
-      "validation",
-      `project key "${key}" must match ${KEY_PATTERN.source}`,
-    );
-  }
-  const name = validateName(input.name);
+  validateProjectKey(key);
+  const name = validateProjectName(input.name);
 
   try {
     const row = await db.one<ProjectRow>(

@@ -4,7 +4,7 @@ import { loadConfig } from "../config.ts";
 import type { Config } from "../config.ts";
 import { createDatabase } from "../db.ts";
 import type { Database } from "../db.ts";
-import { ServiceError } from "../errors.ts";
+import { ServiceError } from "../domain/errors.ts";
 import { authenticateAgent } from "../services/agents.ts";
 import {
   claimNext,

@@ -1,20 +1,7 @@
 import type { QueryResultRow } from "pg";
 import type { Db } from "../db.ts";
-
-export interface IssueRelations {
-  blocks: string[];
-  blockedBy: string[];
-}
-
-export interface IssueMeta {
-  labels: string[];
-  relations: IssueRelations;
-}
-
-/** Fresh arrays every call, so callers may fill them without aliasing. */
-export function emptyMeta(): IssueMeta {
-  return { labels: [], relations: { blocks: [], blockedBy: [] } };
-}
+import { emptyMeta } from "../domain/types.ts";
+import type { IssueMeta } from "../domain/types.ts";
 
 interface LabelRow extends QueryResultRow {
   issue_id: number;

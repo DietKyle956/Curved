@@ -106,13 +106,28 @@ fetch. Cards carry key, title, a priority dot, label chips, a blocked badge, and
 claimer initials. The ticket's light/dark `prefers-color-scheme`, system-font, and
 8 px-spacing clause is a deliberate deviation: the warm near-black palette is fixed,
 there is no light mode, and the fonts are self-hosted (no CDN).
+LAS-169 is live: step 2 of the `ARCH.md` refactor extracts the pure domain into
+`src/domain/`. `status.ts` owns the status, priority, event-kind, and actor-type
+contract plus its defaults; `transition.ts` owns the legal edge graph
+(`TRANSITIONS`, `LEGAL_EDGES`); `actors.ts` owns the actor matrix, actor-context
+resolution, and `allowedTransitions`; `claim.ts` owns `nextClaimedBy`;
+`move-policy.ts` owns `mayMove`; `validation.ts` owns every validator and
+max-length constant; `keys.ts` owns key parsing and branch naming; `errors.ts`
+owns `ServiceError` and `ERROR_CODES`; and `types.ts` owns the shared record
+types. Services keep all SQL, the issue read model, token mint and hash, and
+orchestration, and import every pure rule from the domain. The HTTP status
+mapping (`HTTP_STATUS`, `httpStatusFor`) lives in `src/http/errors.ts`. The old
+shared status module and the old root error module are deleted. Behavior is
+unchanged: 187 tests pass.
 
 Tests: 187 pass, 0 fail, including `test/http.test.ts`, `test/event-hub.test.ts`,
 `test/sse.test.ts`, the label and relation suites in `test/labels.test.ts` and
 `test/relations.test.ts`, the webhook and branch suite in `test/github.test.ts`,
-and the issue filter and human-only edit cases in `test/issues.test.ts`. Next
-frontier: LAS-153. `ARCH.md` now codifies the target layers and the one-way
-dependency rule, and that refactor has not started. `/home/dietkyle/projects/templates/ARCH.md`
+and the issue filter and human-only edit cases in `test/issues.test.ts`.
+`ARCH.md` codifies the target layers and the one-way dependency rule; step 2
+(domain extraction) has landed, steps 3 to 6 remain, and the next frontier is
+`LAS-170` (ports and the projects resource).
+`/home/dietkyle/projects/templates/ARCH.md`
 carries the same rules as a project-agnostic template.
 
 ## Directory page
@@ -123,6 +138,7 @@ carries the same rules as a project-agnostic template.
 | `ARCH.md` | Architecture contract: layer map, one-way dependency rule, rule ownership, ports and transactions, error translation, testing policy, review checklist. |
 | `AGENTS.md` | This file: constraints and startup path. |
 | `MEMORY.md` | Verified state, decisions, session log. Update it every session. |
+| `src/domain/` | Pure rules and types: status and transition contract, actor matrix, claim and move policy, validation, key parsing, domain errors, shared record types. |
 | `src/http/` | HTTP router, auth boundary, SSE hub and stream, and SPA fallback. |
 | `src/server.ts` | HTTP entry. Reads `PORT` and requires `CURVED_UI_TOKEN`. |
 | `web/` | Vite + React SPA. `npm run build` writes `web/dist`; `npm run dev` proxies `/api`. |

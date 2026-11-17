@@ -1,16 +1,6 @@
-export const ERROR_CODES = [
-  "validation",
-  "not_found",
-  "illegal_transition",
-  "forbidden_transition",
-  "agent_busy",
-  "no_ready_issue",
-  "duplicate",
-  "not_authenticated",
-  "webhook_not_configured",
-] as const;
-
-export type ErrorCode = (typeof ERROR_CODES)[number];
+// HTTP status mapping and the HTTP error body shape live in the HTTP adapter, never in the domain.
+import type { ErrorCode } from "../domain/errors.ts";
+import { ServiceError } from "../domain/errors.ts";
 
 const HTTP_STATUS: Record<ErrorCode, number> = {
   validation: 400,
@@ -23,20 +13,6 @@ const HTTP_STATUS: Record<ErrorCode, number> = {
   duplicate: 409,
   webhook_not_configured: 503,
 };
-
-/**
- * A failure with a stable, machine-readable code. Adapters (HTTP, MCP, CLI)
- * render the code and never invent their own error shape.
- */
-export class ServiceError extends Error {
-  readonly code: ErrorCode;
-
-  constructor(code: ErrorCode, message: string) {
-    super(message);
-    this.name = "ServiceError";
-    this.code = code;
-  }
-}
 
 export function httpStatusFor(code: ErrorCode): number {
   return HTTP_STATUS[code];

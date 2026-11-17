@@ -1,6 +1,6 @@
 import { createHmac } from "node:crypto";
 import type { Database } from "../db.ts";
-import { ServiceError } from "../errors.ts";
+import { ServiceError } from "../domain/errors.ts";
 import { applyPullRequestEvent } from "../services/github.ts";
 import { constantTimeEqual } from "./auth.ts";
 

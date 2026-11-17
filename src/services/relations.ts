@@ -1,9 +1,11 @@
 import type { QueryResultRow } from "pg";
 import type { Database } from "../db.ts";
-import { ServiceError } from "../errors.ts";
+import { resolveContext } from "../domain/actors.ts";
+import { ServiceError } from "../domain/errors.ts";
+import { parseIssueKey } from "../domain/keys.ts";
+import type { Issue } from "../domain/types.ts";
 import { appendEvent } from "./events.ts";
-import { hydrateIssue, parseIssueKey, resolveContext } from "./issues.ts";
-import type { Issue } from "./issues.ts";
+import { hydrateIssue } from "./issues.ts";
 
 export interface AddRelationInput {
   blocked: string;

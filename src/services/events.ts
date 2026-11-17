@@ -1,17 +1,7 @@
 import type { QueryResultRow } from "pg";
 import type { Db } from "../db.ts";
-import type { ActorType, EventKind, Status } from "../shared/status.ts";
-
-export interface IssueEvent {
-  id: number;
-  issueId: number;
-  kind: EventKind;
-  actorType: ActorType;
-  fromStatus: Status | null;
-  toStatus: Status | null;
-  body: string | null;
-  createdAt: string;
-}
+import type { ActorType, EventKind, Status } from "../domain/status.ts";
+import type { IssueEvent } from "../domain/types.ts";
 
 export interface AppendEventInput {
   issueId: number;

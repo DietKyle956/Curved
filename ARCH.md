@@ -6,10 +6,10 @@ rule. Read this before adding a module or moving one.
 This file is written in two tenses and marks them:
 
 - **Current** names paths that exist in the repository today.
-- **Target** names the layout the refactor is moving to. The refactor has not
-  started: there is no `src/domain/`, `src/application/`, `src/adapters/`, or
-  `src/composition/` directory yet. No claim below about a target path is a claim
-  of existing code.
+- **Target** names the layout the refactor is moving to. Step 2 of that
+  refactor (domain extraction, LAS-169) is done: `src/domain/` exists and holds
+  the pure rules. `src/application/`, `src/adapters/`, and `src/composition/` do
+  not exist yet. No claim below about a target path is a claim of existing code.
 
 The product constraints themselves (status machine, one active claim per agent,
 append-only history) are in `AGENTS.md` and `initial_idea.md`. This file is about
@@ -27,7 +27,7 @@ composition roots ->  adapters + application + domain
 
 | Layer | Owns | May import | Current home | Target home |
 |---|---|---|---|---|
-| Domain | Pure rules and types: status contract, transition graph, actor matrix, claim policy, validation, key parsing, domain errors, pure GitHub text helpers | Nothing but TypeScript and other domain modules | `src/shared/status.ts`, plus pure helpers inside `src/services/issues.ts` (`parseIssueKey`, `mayMove`, `nextClaimedBy`) and `src/services/github.ts` (`issueKeyFromText`, `branchNameForIssue`) | `src/domain/` |
+| Domain | Pure rules and types: status contract, transition graph, actor matrix, claim policy, validation, key parsing, domain errors, pure GitHub text helpers | Nothing but TypeScript and other domain modules | `src/domain/` (`status.ts`, `transition.ts`, `actors.ts`, `claim.ts`, `move-policy.ts`, `validation.ts`, `keys.ts`, `errors.ts`, `types.ts`) | `src/domain/` |
 | Application | Use cases, ports, transaction boundaries, authorization sequencing, error translation policy, the issue read model | Domain and its own ports | `src/services/*.ts` | `src/application/` |
 | Outbound adapters | Implement ports: Postgres repositories, token codec, LISTEN client | Domain; application (ports and use cases) | `src/db.ts` (pool, transactions, pg error helpers), SQL inside `src/services/*.ts` behind the ad-hoc `Db`/`Database` surface, token hashing in `src/services/agents.ts`, the `pg.Client` inside `src/http/event-hub.ts` | `src/adapters/postgres/`, `src/adapters/token-codec.ts` |
 | Inbound adapters | Translate external formats: HTTP routing plus cookies, MCP schemas plus results, CLI argv plus output, GitHub signature verification, SSE frames, static SPA files | Domain; application (ports and use cases); sanctioned peer adapters only | `src/http/*.ts`, `src/mcp/*.ts`, `src/cli.ts` | `src/adapters/http/`, `src/adapters/mcp/`, `src/adapters/cli/`, `src/adapters/github/`, `src/adapters/sse/`, `src/adapters/static/` |
@@ -94,26 +94,30 @@ composition module per entrypoint under `src/composition/`.
 
 ## 2. Where the rules live, and no second copy
 
-Each rule has exactly one owning module in the target. The table names the target
-owner, the current location, and the only mirror that is allowed. Today the
-single-owner claim is false: the duplicates listed under "No second copy" exist,
-and the migration deletes them.
+Each rule has exactly one owning module. The table names the target owner, the
+current location, and the only mirror that is allowed. Since step 2 each domain
+rule is defined once, at the current location shown; the issue read model is the
+one rule still owned by a service until step 3.
 
 | Rule | Target owner | Current location | Allowed mirror |
 |---|---|---|---|
-| Status, priority, event-kind, and actor-type contract; `isStatus`, `isPriority`, `isActorType`; `DEFAULT_STATUS`, `DEFAULT_PRIORITY` | `src/domain/status.ts` | `src/shared/status.ts` | Postgres CHECK constraints |
-| Legal transition graph `TRANSITIONS`, `isLegalTransition` | `src/domain/transition.ts` | `src/shared/status.ts` | None |
-| Actor matrix `ACTOR_TRANSITIONS`, `actorMayTransition` | `src/domain/actors.ts` | `src/shared/status.ts` | None |
-| Actor-context resolution: `resolveContext`, `validateActor`, deriving whether an agent owns the active claim | `src/domain/actors.ts` | `src/services/issues.ts` | None |
-| Shared domain types `Issue`, `Project`, `Agent`, `IssueEvent`, `IssueMeta`, `IssueRelations` | `src/domain/types.ts` | `src/services/issues.ts`, `src/services/projects.ts`, `src/services/events.ts`, `src/services/agents.ts`, `src/services/issue-meta.ts` | None |
-| `allowedTransitions` and `TransitionContext` | `src/domain/transition.ts` | `src/shared/status.ts` | None; the SPA reads `allowedTransitions` from the payload and never recomputes it |
-| Move authority (`mayMove`) | `src/domain/move-policy.ts` | private in `src/services/issues.ts` | None |
-| Claim-column policy (`nextClaimedBy`: clear on `todo`/`backlog`, set by an agent claim, keep otherwise) | `src/domain/claim.ts` | private in `src/services/issues.ts` | None |
-| One active issue per agent (the fence) | `src/domain/claim.ts` states the policy; the use case maps the conflict | partial unique index `issues_one_active_claim_per_agent` (`migrations/0003_agents.sql`), plus inline handling in `src/services/issues.ts` and `src/services/queue.ts` | The index is the enforcement mirror; it is not the policy source |
-| Validation: project key and name, issue title/priority/status, label normalization, block reason, agent name | `src/domain/validation.ts` | private helpers in `src/services/issues.ts`, `src/services/projects.ts`, `src/services/labels.ts`, `src/services/blocking.ts`, `src/services/agents.ts` | Postgres CHECK constraints; adapter shape checks |
-| Key parsing and normalization: `parseIssueKey`, `issueKeyFromText`, `branchNameForIssue` | `src/domain/keys.ts` | `src/services/issues.ts`, `src/services/github.ts` | None; adapter regexes must import these |
-| Domain errors `ServiceError`, `ERROR_CODES` | `src/domain/errors.ts` | `src/errors.ts` | None; HTTP status mapping is adapter-only |
+| Status, priority, event-kind, and actor-type contract; `isStatus`, `isPriority`, `isActorType`; `DEFAULT_STATUS`, `DEFAULT_PRIORITY` | `src/domain/status.ts` | `src/domain/status.ts` | Postgres CHECK constraints |
+| Legal transition graph `TRANSITIONS`, `LEGAL_EDGES`, `isLegalTransition` | `src/domain/transition.ts` | `src/domain/transition.ts` | None |
+| Actor matrix `ACTOR_TRANSITIONS`, `actorMayTransition` | `src/domain/actors.ts` | `src/domain/actors.ts` | None |
+| Actor-context resolution: `resolveContext`, `validateActor`, deriving whether an agent owns the active claim | `src/domain/actors.ts` | `src/domain/actors.ts` | None |
+| Shared domain types `Issue`, `Project`, `Agent`, `CreatedAgent`, `IssueEvent`, `IssueMeta`, `IssueRelations`, `emptyMeta` | `src/domain/types.ts` | `src/domain/types.ts` | None |
+| `allowedTransitions` and `TransitionContext` | `src/domain/actors.ts` | `src/domain/actors.ts` | None; the SPA reads `allowedTransitions` from the payload and never recomputes it |
+| Move authority (`mayMove`) | `src/domain/move-policy.ts` | `src/domain/move-policy.ts` | None |
+| Claim-column policy (`nextClaimedBy`: clear on `todo`/`backlog`, set by an agent claim, keep otherwise) | `src/domain/claim.ts` | `src/domain/claim.ts` | None |
+| One active issue per agent (the fence) | `src/domain/claim.ts` states the policy; the use case maps the conflict | partial unique index `issues_one_active_claim_per_agent` (`migrations/0003_agents.sql`), plus the conflict mapping in `src/services/issues.ts` and `src/services/queue.ts` | The index is the enforcement mirror; it is not the policy source |
+| Validation: project key and name, issue title/priority/status, label normalization, block reason, agent name, and their max-length constants | `src/domain/validation.ts` | `src/domain/validation.ts` | Postgres CHECK constraints; adapter shape checks |
+| Key parsing and normalization: `parseIssueKey`, `issueKeyFromText`, `branchNameForIssue` | `src/domain/keys.ts` | `src/domain/keys.ts` | None; adapter regexes must import these |
+| Domain errors `ServiceError`, `ERROR_CODES` | `src/domain/errors.ts` | `src/domain/errors.ts` | None; HTTP status mapping is adapter-only, in `src/http/errors.ts` |
 | Issue read model: project a stored row plus actor context plus meta, derive `allowedTransitions` | `src/application/issues/read-model.ts` | `toIssue`, `hydrateIssue` in `src/services/issues.ts` | None |
+
+`allowedTransitions` and `TransitionContext` live in `src/domain/actors.ts`, next
+to the actor matrix they are built from, so `src/domain/transition.ts` never
+imports the matrix; that keeps the domain import graph acyclic.
 
 ### No second copy
 
@@ -123,11 +127,13 @@ and the migration deletes them.
   `STATUSES` array in an adapter, a second `^[A-Z][A-Z0-9]{1,9}` regex, a copied
   edge list, a recomputed `allowedTransitions` in the SPA, or a second
   `ServiceError`-like class.
-- Known duplicates that the migration deletes: `PROJECT_KEY_PATTERN` and
-  `ISSUE_KEY_PATTERN` in `src/mcp/tools.ts` (zod schemas),
-  `ISSUE_KEY_PATTERN`/`PROJECT_KEY_PATTERN` in `src/services/issues.ts`,
-  `KEY_PATTERN` in `src/services/projects.ts`, and `ISSUE_KEY_IN_TEXT` in
-  `src/services/github.ts`. Each must become an import from `src/domain/keys.ts`.
+- Duplicates LAS-169 deleted, recorded so they do not return:
+  `PROJECT_KEY_PATTERN` and `ISSUE_KEY_PATTERN` in `src/mcp/tools.ts` (zod
+  schemas), `ISSUE_KEY_PATTERN`/`PROJECT_KEY_PATTERN` in
+  `src/services/issues.ts`, `KEY_PATTERN` in `src/services/projects.ts`, and
+  `ISSUE_KEY_IN_TEXT` in `src/services/github.ts`. Each of those sites now
+  imports from `src/domain/keys.ts`; a future adapter or service that needs a key
+  format imports it too and never declares its own.
 
 ### How legitimate mirrors are bounded
 
@@ -145,13 +151,12 @@ and the migration deletes them.
   the matching migration in the same commit.
 - **Web.** The SPA imports the backend contract instead of redeclaring enums:
   `web/src/lib/types.ts` imports `ActorType`, `EventKind`, `Priority`, `Status`
-  from `../../../src/shared/status.ts` and re-exports them, and
-  `web/src/lib/presentation.ts` imports `STATUSES` for ordering. Target: keep
-  that single import, pointed at `src/domain/status.ts`. Presentation maps
+  from `../../../src/domain/status.ts` and re-exports them, and
+  `web/src/lib/presentation.ts` imports `STATUSES` for ordering. Presentation maps
   (`STATUS_LABEL`, `STATUS_TONE`, `PRIORITY_LABEL`, `EVENT_LABEL`) are display
   data, not a copy of the contract, and are allowed in the web domain.
   The allowlist is the limit: the only backend module a web module may import is
-  `src/shared/status.ts` (later `src/domain/status.ts`). Importing
+  `src/domain/status.ts`. Importing
   `src/services/**` or any other backend module is forbidden.
 - **Adapter pre-filters.** MCP zod schemas and HTTP field checks may restate a
   numeric bound to produce a fast, well-shaped error at the edge. They may not
@@ -164,16 +169,18 @@ and the migration deletes them.
 
 ## 3. Current state and migration path
 
-The refactor is specified, not started. The old modules are the transitional
-home:
+Steps 1 and 2 of the migration are done: this contract exists, and the pure
+rules live in `src/domain/` with the services importing them. The remaining old
+modules are the transitional home for steps 3 to 6. Two former homes are gone:
+the old shared status module split into `src/domain/status.ts`,
+`src/domain/transition.ts`, and `src/domain/actors.ts`; the old root error module
+became `src/domain/errors.ts` plus the HTTP mapping in `src/http/errors.ts`.
 
 | Transitional home | Holds today | Target |
 |---|---|---|
-| `src/services/*.ts` | Use cases, SQL, validation, graph gating, transactions, and the read model, mixed (`issues.ts` is 597 lines) | Split into application use cases plus Postgres repositories plus domain rules |
-| `src/shared/status.ts` | The status contract, transition graph, actor matrix, `allowedTransitions` | `src/domain/` |
-| `src/errors.ts` | `ServiceError`, `ERROR_CODES`, and also `httpStatusFor` (an HTTP concern) | `src/domain/errors.ts` plus an HTTP mapping in the HTTP adapter |
+| `src/services/*.ts` | Use cases, SQL, transactions, token mint and hash, and the issue read model, mixed (`issues.ts` is the largest) | Split into application use cases plus Postgres repositories |
 | `src/db.ts` | Pool, `Db`/`Database` interfaces, transactions, `pgErrorCode`, `pgErrorConstraint` | `src/adapters/postgres/pool.ts` plus port implementations |
-| `src/services/github.ts` | Pure key helpers, signature verification, payload parsing, and `applyPullRequestEvent` | `src/domain/keys.ts` (pure key helpers); `src/adapters/github/{signature,payload}.ts` (signature and payload parsing); `src/application/github.ts` (`applyPullRequestEvent`, which calls `moveIssue`) |
+| `src/services/github.ts` | Signature verification, payload parsing, and `applyPullRequestEvent` | `src/adapters/github/{signature,payload}.ts` (signature and payload parsing); `src/application/github.ts` (`applyPullRequestEvent`, which calls `moveIssue`) |
 | `src/http/`, `src/mcp/`, `src/cli.ts` | Inbound adapters | `src/adapters/http/`, `src/adapters/mcp/`, `src/adapters/cli/` |
 | `src/config.ts` | `loadConfig`, called today by the four entrypoints and by `test/helpers/db.ts` | A config module consumed only by composition; `loadConfig` may be called only from composition |
 | `src/server.ts`, `src/migrate.ts`, `src/mcp/server.ts` | Composition, scattered; `server.ts` also holds the Node request/response bridge (`toRequest`, `writeResponse`, `streamEventStream`) | `src/composition/`, with the bridge moved to `src/adapters/http/transport.ts` and `src/migrate.ts` split: runner plus ledger SQL to `src/adapters/postgres/migrate.ts`, process entrypoint only to `src/composition/migrate.ts` |
@@ -186,10 +193,10 @@ Migration is expand-contract, one step per work item:
 
 | Step | Work | Exit criterion |
 |---|---|---|
-| 1. Codify | This file; a rule inventory; keep the existing suite green | Every rule in section 2 has one named owner |
-| 2. Extract domain | Create `src/domain/`, move the pure rules, make services import them | No domain rule remains defined inside `src/services/`; tests change only their import paths |
+| 1. Codify | Done: this file; a rule inventory; keep the existing suite green | Met: every rule in section 2 has one named owner |
+| 2. Extract domain | Done (LAS-169, 2026-11-17): created `src/domain/`, moved the pure rules, and made services import them | Met: no domain rule remains defined inside `src/services/`; tests changed only their import paths |
 | 3. Ports and Postgres | Add `src/application/ports.ts`, repositories under `src/adapters/postgres/`, `transaction(fn)`, `TokenCodec`; move SQL behind ports; move event-hub construction out of `createApp` (`src/http/app.ts` builds it via `createEventHub` when no hub is injected) into the composition root | Application modules import no `pg` and no `src/db.ts`; the HTTP adapter receives a hub it did not construct |
-| 4. Rewire inbound adapters, delete old modules | Move HTTP, MCP, CLI, GitHub, SSE, static; repoint `web/src/lib/{types,presentation}.ts` at `src/domain/status.ts` in the same work item (this already fits the web allowlist); add `src/composition/`; delete `src/services/`, `src/shared/`, `src/errors.ts`, `src/db.ts` | No import of a deleted path; behavior unchanged, 187 tests green |
+| 4. Rewire inbound adapters, delete old modules | Move HTTP, MCP, CLI, GitHub, SSE, static; add `src/composition/`; delete `src/services/`, `src/db.ts` (the web repoint to `src/domain/status.ts` already landed with step 2) | No import of a deleted path; behavior unchanged, 187 tests green |
 | 5. Web layering | Split `web/src` into `domain/`, `application/`, `adapters/`, `ui/`; move orchestration out of `app.tsx`; delete `web/src/lib/` and distribute its contents to domain, application, and adapters; remove `api` imports from components | Typecheck and build green; components import no transport; no module imports `web/src/lib/`; browser pass at 390x844 and desktop |
 | 6. Completion gate | Add the import-direction check and wire it into `npm run check` | `npm run check` green with no undocumented exception |
 
@@ -297,8 +304,8 @@ SQL invariants preserved literally:
 ## 5. Error translation policy
 
 1. Domain failures are `ServiceError` carrying a stable `ERROR_CODES` code
-   (today in `src/errors.ts`; target `src/domain/errors.ts`). The only other
-   error type that crosses a port is the port-level `ActiveClaimConflict`.
+   (`src/domain/errors.ts`). The only other error type that crosses a port is
+   the port-level `ActiveClaimConflict`.
 2. Each foreign error is translated once per crossing: adapters translate
    persistence and transport errors, use cases translate port errors
    (`ActiveClaimConflict` -> `agent_busy`), and adapters render transport
@@ -316,9 +323,9 @@ SQL invariants preserved literally:
    imported by `src/services/issues.ts` and `src/services/queue.ts`;
    `pgErrorCode` by `src/services/projects.ts` and `src/services/agents.ts`.
    That ends with step 3.
-6. HTTP status mapping lives only in the HTTP adapter. Today `httpStatusFor` is
-   exported from `src/errors.ts` and called by `src/http/app.ts`; target is
-   `src/adapters/http/errors.ts`.
+6. HTTP status mapping lives only in the HTTP adapter. Today `httpStatusFor` and
+   `HTTP_STATUS` live in `src/http/errors.ts`, which `src/http/app.ts` imports;
+   target is `src/adapters/http/errors.ts`.
 7. Rendering per transport: HTTP returns `{ error: { code, message } }`; MCP
    returns an `isError` text result `"<code>: <message>"` (`errorResult` in
    `src/mcp/tools.ts`); the CLI writes `"<code>: <message>"` to stderr with exit
@@ -333,7 +340,7 @@ SQL invariants preserved literally:
 9. Error codes and messages are API. Changing a message is a behavior change and
    needs the test that pins it updated in the same commit.
 
-Current code-to-HTTP status table (`HTTP_STATUS` in `src/errors.ts`):
+Current code-to-HTTP status table (`HTTP_STATUS` in `src/http/errors.ts`):
 
 | Error code | HTTP status |
 |---|---|
@@ -506,7 +513,7 @@ forbid exactly these directions:
 | `src/application/**` | `src/adapters/**`, `src/composition/**`, `pg`, `node:http`, `node:fs` |
 | `src/adapters/**` | `src/composition/**`, and any peer adapter outside the sanctioned set `http` -> `github`, `sse`, `static` |
 | anything under `src/**` outside `src/adapters/postgres/**` | `pg` |
-| `web/src/**` | every backend module except `src/shared/status.ts` (later `src/domain/status.ts`), so `src/services/**` is forbidden |
+| `web/src/**` | every backend module except `src/domain/status.ts`, so `src/services/**` is forbidden |
 | `web/src/domain/**` | `react`, `react-dom`, `web/src/adapters/**`, `web/src/application/**`, `web/src/ui/**` |
 | `web/src/application/**` | `web/src/adapters/**`, `web/src/ui/**` |
 | `web/src/ui/**` | `web/src/adapters/**` |

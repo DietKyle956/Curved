@@ -1,19 +1,16 @@
 import assert from "node:assert/strict";
 import { after, before, beforeEach, test } from "node:test";
-import { ServiceError, type ErrorCode } from "../src/errors.ts";
+import { ServiceError, type ErrorCode } from "../src/domain/errors.ts";
+import { BLOCKED_REASON_MAX_LENGTH } from "../src/domain/validation.ts";
 import { createAgent } from "../src/services/agents.ts";
-import {
-  BLOCKED_REASON_MAX_LENGTH,
-  blockIssue,
-  unblockIssue,
-} from "../src/services/blocking.ts";
-import { listEvents, type IssueEvent } from "../src/services/events.ts";
+import { blockIssue, unblockIssue } from "../src/services/blocking.ts";
+import { listEvents } from "../src/services/events.ts";
 import {
   createIssue,
   getIssue,
   listIssues,
-  type Issue,
 } from "../src/services/issues.ts";
+import type { Issue, IssueEvent } from "../src/domain/types.ts";
 import { createProject } from "../src/services/projects.ts";
 import {
   claimNext,

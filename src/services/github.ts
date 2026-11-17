@@ -1,11 +1,8 @@
 import type { Database } from "../db.ts";
-import { ServiceError } from "../errors.ts";
-import { moveIssue, parseIssueKey } from "./issues.ts";
-import type { Issue } from "./issues.ts";
-
-const ISSUE_KEY_IN_TEXT =
-  /(?:^|[^A-Za-z0-9])([A-Z][A-Z0-9]{1,9})-([0-9]{1,6})(?![A-Za-z0-9])/;
-const BRANCH_SLUG_MAX_LENGTH = 60;
+import { ServiceError } from "../domain/errors.ts";
+import { issueKeyFromText } from "../domain/keys.ts";
+import type { Issue } from "../domain/types.ts";
+import { moveIssue } from "./issues.ts";
 
 /** Narrows an unknown JSON value to a plain object, or null when it is not one. */
 function record(value: unknown): Record<string, unknown> | null {
@@ -13,35 +10,6 @@ function record(value: unknown): Record<string, unknown> | null {
     return null;
   }
   return value as Record<string, unknown>;
-}
-
-/**
- * Finds the first issue key in free text, such as a branch name. Returns the
- * canonical form (`TAC-014` -> `TAC-14`), or null when there is no match.
- */
-export function issueKeyFromText(input: string): string | null {
-  const match = ISSUE_KEY_IN_TEXT.exec(input);
-  if (match === null) {
-    return null;
-  }
-  const project = match[1];
-  const digits = match[2];
-  if (project === undefined || digits === undefined) {
-    return null;
-  }
-  return `${project}-${Number(digits)}`;
-}
-
-/** Builds `<canonical-key>-<title-slug>` for an issue branch. */
-export function branchNameForIssue(key: string, title: string): string {
-  const canonical = parseIssueKey(key).key;
-  const slug = title
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, "-")
-    .replace(/^-+/, "")
-    .slice(0, BRANCH_SLUG_MAX_LENGTH)
-    .replace(/-+$/, "");
-  return slug.length === 0 ? canonical : `${canonical}-${slug}`;
 }
 
 /** The status a pull request action targets, or null when it moves nothing. */

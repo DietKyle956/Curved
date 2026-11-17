@@ -4,7 +4,7 @@ import { pathToFileURL } from "node:url";
 import pg from "pg";
 import type { Client } from "pg";
 import { loadConfig } from "./config.ts";
-import { ServiceError } from "./errors.ts";
+import { ServiceError } from "./domain/errors.ts";
 
 export interface MigrateOptions {
   databaseUrl?: string;

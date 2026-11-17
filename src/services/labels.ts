@@ -1,11 +1,12 @@
 import type { QueryResultRow } from "pg";
 import type { Database } from "../db.ts";
-import { ServiceError } from "../errors.ts";
+import { resolveContext } from "../domain/actors.ts";
+import { ServiceError } from "../domain/errors.ts";
+import { parseIssueKey } from "../domain/keys.ts";
+import type { Issue } from "../domain/types.ts";
+import { normalizeLabels } from "../domain/validation.ts";
 import { appendEvent } from "./events.ts";
-import { hydrateIssue, parseIssueKey, resolveContext } from "./issues.ts";
-import type { Issue } from "./issues.ts";
-
-export const LABEL_NAME_MAX_LENGTH = 50;
+import { hydrateIssue } from "./issues.ts";
 
 export interface SetIssueLabelsInput {
   key: string;
@@ -17,38 +18,6 @@ export interface SetIssueLabelsInput {
 interface IssueProjectRow extends QueryResultRow {
   id: number;
   project_id: number;
-}
-
-/**
- * Normalizes a label set: every name must be a string, trims to a non-empty
- * name of at most `LABEL_NAME_MAX_LENGTH` characters, and duplicates collapse.
- * The result is sorted so the event body is deterministic.
- */
-function normalizeLabels(raw: readonly string[]): string[] {
-  if (!Array.isArray(raw)) {
-    throw new ServiceError("validation", "labels must be an array of strings");
-  }
-  const names = new Set<string>();
-  for (const [index, value] of raw.entries()) {
-    if (typeof value !== "string") {
-      throw new ServiceError(
-        "validation",
-        `label at index ${index} must be a string`,
-      );
-    }
-    const name = value.trim();
-    if (name.length === 0) {
-      throw new ServiceError("validation", `label at index ${index} is empty`);
-    }
-    if (name.length > LABEL_NAME_MAX_LENGTH) {
-      throw new ServiceError(
-        "validation",
-        `label must be at most ${LABEL_NAME_MAX_LENGTH} characters, got ${name.length}`,
-      );
-    }
-    names.add(name);
-  }
-  return [...names].sort();
 }
 
 /**

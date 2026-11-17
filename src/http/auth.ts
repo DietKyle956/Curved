@@ -1,8 +1,8 @@
 import { createHash, timingSafeEqual } from "node:crypto";
 import type { Db } from "../db.ts";
-import { ServiceError } from "../errors.ts";
+import { ServiceError } from "../domain/errors.ts";
+import type { ActorType } from "../domain/status.ts";
 import { authenticateAgent } from "../services/agents.ts";
-import type { ActorType } from "../shared/status.ts";
 
 export const SESSION_COOKIE_NAME = "curved_session";
 export const SESSION_MAX_AGE_SECONDS = 2592000;

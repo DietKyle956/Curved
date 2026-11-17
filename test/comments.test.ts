@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { after, before, beforeEach, test } from "node:test";
 import { pgErrorCode } from "../src/db.ts";
-import { ServiceError, type ErrorCode } from "../src/errors.ts";
+import { ServiceError, type ErrorCode } from "../src/domain/errors.ts";
 import { createAgent } from "../src/services/agents.ts";
 import { commentOnIssue } from "../src/services/comments.ts";
 import { listEvents } from "../src/services/events.ts";

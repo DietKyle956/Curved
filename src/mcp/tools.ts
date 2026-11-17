@@ -1,7 +1,8 @@
 import type { CallToolResult } from "@modelcontextprotocol/server";
 import { z } from "zod";
 import type { Database } from "../db.ts";
-import { ServiceError } from "../errors.ts";
+import { ServiceError } from "../domain/errors.ts";
+import { ISSUE_KEY_PATTERN, PROJECT_KEY_PATTERN } from "../domain/keys.ts";
 import { blockIssue } from "../services/blocking.ts";
 import { commentOnIssue } from "../services/comments.ts";
 import {
@@ -15,18 +16,20 @@ import {
   submitForReview as submitForReviewService,
 } from "../services/queue.ts";
 
-const PROJECT_KEY_PATTERN = /^[A-Z][A-Z0-9]{1,9}$/;
-const ISSUE_KEY_PATTERN = /^[A-Z][A-Z0-9]{1,9}-[0-9]{1,6}$/;
-
 export const projectSchema = z
   .string()
   .regex(
     PROJECT_KEY_PATTERN,
     `project key must match ${PROJECT_KEY_PATTERN.source}`,
   );
+// The pattern comes from the domain; the message is pinned API text and
+// deliberately spells the key format without the parsing capture groups.
 export const issueKeySchema = z
   .string()
-  .regex(ISSUE_KEY_PATTERN, `issue key must match ${ISSUE_KEY_PATTERN.source}`);
+  .regex(
+    ISSUE_KEY_PATTERN,
+    "issue key must match ^[A-Z][A-Z0-9]{1,9}-[0-9]{1,6}$",
+  );
 export const titleSchema = z.string().min(1).max(500);
 export const descriptionSchema = z.string();
 export const prioritySchema = z.number().int().min(1).max(4);

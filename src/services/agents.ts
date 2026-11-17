@@ -2,22 +2,12 @@ import { createHash, randomBytes } from "node:crypto";
 import type { QueryResultRow } from "pg";
 import type { Db } from "../db.ts";
 import { pgErrorCode } from "../db.ts";
-import { ServiceError } from "../errors.ts";
+import { ServiceError } from "../domain/errors.ts";
+import type { Agent, CreatedAgent } from "../domain/types.ts";
+import { validateAgentName } from "../domain/validation.ts";
 
-const NAME_MAX_LENGTH = 100;
 const TOKEN_PREFIX = "crv_";
 const TOKEN_BYTES = 24;
-
-export interface Agent {
-  id: number;
-  name: string;
-  createdAt: string;
-}
-
-export interface CreatedAgent {
-  agent: Agent;
-  token: string;
-}
 
 interface AgentRow extends QueryResultRow {
   id: number;
@@ -43,20 +33,6 @@ export function hashAgentToken(token: string): string {
   return createHash("sha256").update(token, "utf8").digest("hex");
 }
 
-function validateName(raw: string): string {
-  const name = raw.trim();
-  if (name.length === 0) {
-    throw new ServiceError("validation", "agent name must not be empty");
-  }
-  if (name.length > NAME_MAX_LENGTH) {
-    throw new ServiceError(
-      "validation",
-      `agent name must be at most ${NAME_MAX_LENGTH} characters, got ${name.length}`,
-    );
-  }
-  return name;
-}
-
 /**
  * Creates an agent and returns its token exactly once. The token is never
  * recoverable afterwards; a lost token means a new agent identity.
@@ -65,7 +41,7 @@ export async function createAgent(
   db: Db,
   name: string,
 ): Promise<CreatedAgent> {
-  const trimmed = validateName(name);
+  const trimmed = validateAgentName(name);
   const token = generateAgentToken();
 
   try {

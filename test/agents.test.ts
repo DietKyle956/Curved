@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { after, before, beforeEach, test } from "node:test";
 import { pgErrorCode, pgErrorConstraint } from "../src/db.ts";
-import { ServiceError, type ErrorCode } from "../src/errors.ts";
+import { ServiceError, type ErrorCode } from "../src/domain/errors.ts";
 import {
   authenticateAgent,
   createAgent,
@@ -9,13 +9,13 @@ import {
   hashAgentToken,
 } from "../src/services/agents.ts";
 import { commentOnIssue } from "../src/services/comments.ts";
-import { listEvents, type IssueEvent } from "../src/services/events.ts";
+import { listEvents } from "../src/services/events.ts";
 import {
   createIssue,
   getIssue,
   moveIssue,
-  type Issue,
 } from "../src/services/issues.ts";
+import type { Issue, IssueEvent } from "../src/domain/types.ts";
 import { createProject } from "../src/services/projects.ts";
 import {
   claimNext,
@@ -23,7 +23,7 @@ import {
   releaseClaim,
   submitForReview,
 } from "../src/services/queue.ts";
-import type { Status } from "../src/shared/status.ts";
+import type { Status } from "../src/domain/status.ts";
 import { openTestDatabase, type TestDatabase } from "./helpers/db.ts";
 
 let testDb: TestDatabase;

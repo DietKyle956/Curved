@@ -1,23 +1,18 @@
 import type { QueryResultRow } from "pg";
 import type { Db, Database } from "../db.ts";
 import { pgErrorConstraint } from "../db.ts";
-import { ServiceError } from "../errors.ts";
+import { resolveContext } from "../domain/actors.ts";
+import type { IssueContext, ResolvedContext } from "../domain/actors.ts";
+import { ServiceError } from "../domain/errors.ts";
+import { parseIssueKey } from "../domain/keys.ts";
+import { emptyMeta } from "../domain/types.ts";
+import type { Issue } from "../domain/types.ts";
+import { validateReviewSummary } from "../domain/validation.ts";
 import { appendEvent } from "./events.ts";
 import { ensureAgentExists } from "./agents.ts";
-import { emptyMeta, loadIssueMeta } from "./issue-meta.ts";
-import {
-  hydrateIssue,
-  parseIssueKey,
-  resolveContext,
-  ISSUE_COLUMNS,
-  toIssue,
-} from "./issues.ts";
-import type {
-  Issue,
-  IssueContext,
-  IssueRow,
-  ResolvedContext,
-} from "./issues.ts";
+import { loadIssueMeta } from "./issue-meta.ts";
+import { hydrateIssue, ISSUE_COLUMNS, toIssue } from "./issues.ts";
+import type { IssueRow } from "./issues.ts";
 
 export interface ReadyQueue {
   ready: Issue[];
@@ -212,10 +207,7 @@ export async function submitForReview(
 ): Promise<Issue> {
   const agent = input.agent.trim();
   await ensureAgentExists(db, agent);
-  const summary = input.summary.trim();
-  if (summary.length === 0) {
-    throw new ServiceError("validation", "review summary must not be empty");
-  }
+  const summary = validateReviewSummary(input.summary);
   const key = parseIssueKey(input.key).key;
 
   return db.tx(async (tx) => {

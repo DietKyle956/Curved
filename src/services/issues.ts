@@ -1,51 +1,30 @@
 import type { QueryResultRow } from "pg";
 import type { Database, Db } from "../db.ts";
 import { pgErrorConstraint } from "../db.ts";
-import { ServiceError } from "../errors.ts";
 import {
-  DEFAULT_PRIORITY,
-  DEFAULT_STATUS,
-  STATUSES,
-  actorMayTransition,
   allowedTransitions,
-  isActorType,
-  isLegalTransition,
-  isPriority,
-  isStatus,
-} from "../shared/status.ts";
-import type { ActorType, Priority, Status } from "../shared/status.ts";
+  resolveContext,
+  validateActor,
+} from "../domain/actors.ts";
+import type { IssueContext, ResolvedContext } from "../domain/actors.ts";
+import { nextClaimedBy } from "../domain/claim.ts";
+import { ServiceError } from "../domain/errors.ts";
+import { parseIssueKey } from "../domain/keys.ts";
+import { mayMove } from "../domain/move-policy.ts";
+import { DEFAULT_PRIORITY, DEFAULT_STATUS } from "../domain/status.ts";
+import type { Priority, Status } from "../domain/status.ts";
+import { isLegalTransition } from "../domain/transition.ts";
+import { emptyMeta } from "../domain/types.ts";
+import type { Issue, IssueEvent, IssueMeta } from "../domain/types.ts";
+import {
+  validatePriority,
+  validateProjectKey,
+  validateStatus,
+  validateTitle,
+} from "../domain/validation.ts";
 import { appendEvent, listEvents } from "./events.ts";
-import type { IssueEvent } from "./events.ts";
-import { emptyMeta, loadIssueMeta } from "./issue-meta.ts";
-import type { IssueMeta } from "./issue-meta.ts";
+import { loadIssueMeta } from "./issue-meta.ts";
 import { ensureAgentExists } from "./agents.ts";
-
-const ISSUE_KEY_PATTERN = /^([A-Z][A-Z0-9]{1,9})-([0-9]{1,6})$/;
-const PROJECT_KEY_PATTERN = /^[A-Z][A-Z0-9]{1,9}$/;
-const TITLE_MAX_LENGTH = 500;
-
-export interface Issue {
-  id: number;
-  key: string;
-  projectId: number;
-  projectKey: string;
-  number: number;
-  title: string;
-  description: string;
-  status: Status;
-  /** Transitions the reading actor may take from `status` right now. */
-  allowedTransitions: Status[];
-  priority: Priority;
-  parentId: number | null;
-  blockedReason: string | null;
-  claimedBy: string | null;
-  /** Label names in ascending order. */
-  labels: string[];
-  /** Issue keys in ascending order; `blocks` points out, `blockedBy` points in. */
-  relations: { blocks: string[]; blockedBy: string[] };
-  createdAt: string;
-  updatedAt: string;
-}
 
 export interface CreateIssueInput {
   project: string;
@@ -55,38 +34,6 @@ export interface CreateIssueInput {
   status?: string;
   parent?: string;
   actor?: string;
-}
-
-/**
- * Who is reading an issue. `actor` defaults to `human`; `agent` names the
- * agent identity and is only valid alongside `actor: "agent"`.
- */
-export interface IssueContext {
-  actor?: string;
-  agent?: string;
-}
-
-export interface ResolvedContext {
-  actor: ActorType;
-  agent: string | null;
-}
-
-export function resolveContext(context?: IssueContext): ResolvedContext {
-  const actor = validateActor(context?.actor ?? "human");
-  if (context?.agent === undefined) {
-    return { actor, agent: null };
-  }
-  const agent = context.agent.trim();
-  if (agent.length === 0) {
-    throw new ServiceError("validation", "agent identity must not be empty");
-  }
-  if (actor !== "agent") {
-    throw new ServiceError(
-      "validation",
-      `agent identity "${agent}" requires actor "agent", got "${actor}"`,
-    );
-  }
-  return { actor, agent };
 }
 
 export interface IssueRow extends QueryResultRow {
@@ -158,83 +105,6 @@ export async function hydrateIssue(
   }
   const meta = (await loadIssueMeta(db, [id])).get(id) ?? emptyMeta();
   return toIssue(row, context, meta);
-}
-
-export function parseIssueKey(input: string): {
-  project: string;
-  number: number;
-  key: string;
-} {
-  const match = ISSUE_KEY_PATTERN.exec(input);
-  if (match === null) {
-    throw new ServiceError(
-      "validation",
-      `issue key "${input}" must match ${ISSUE_KEY_PATTERN.source}`,
-    );
-  }
-  const project = match[1] ?? "";
-  const number = Number(match[2] ?? "");
-  if (number < 1) {
-    throw new ServiceError(
-      "validation",
-      `issue key "${input}" must have a number of at least 1, got ${number}`,
-    );
-  }
-  return { project, number, key: `${project}-${number}` };
-}
-
-function validateProjectKey(raw: string): string {
-  if (!PROJECT_KEY_PATTERN.test(raw)) {
-    throw new ServiceError(
-      "validation",
-      `project key "${raw}" must match ${PROJECT_KEY_PATTERN.source}`,
-    );
-  }
-  return raw;
-}
-
-function validateTitle(raw: string): string {
-  const title = raw.trim();
-  if (title.length === 0) {
-    throw new ServiceError("validation", "issue title must not be empty");
-  }
-  if (title.length > TITLE_MAX_LENGTH) {
-    throw new ServiceError(
-      "validation",
-      `issue title must be at most ${TITLE_MAX_LENGTH} characters, got ${title.length}`,
-    );
-  }
-  return title;
-}
-
-function validatePriority(raw: number): Priority {
-  if (!Number.isInteger(raw) || !isPriority(raw)) {
-    throw new ServiceError(
-      "validation",
-      `issue priority must be an integer between 1 and 4, got "${raw}"`,
-    );
-  }
-  return raw;
-}
-
-function validateStatus(raw: string): Status {
-  if (!isStatus(raw)) {
-    throw new ServiceError(
-      "validation",
-      `issue status "${raw}" must be one of: ${STATUSES.join(", ")}`,
-    );
-  }
-  return raw;
-}
-
-export function validateActor(raw: string): ActorType {
-  if (!isActorType(raw)) {
-    throw new ServiceError(
-      "validation",
-      `actor type "${raw}" must be one of: agent, human, git, system`,
-    );
-  }
-  return raw;
 }
 
 export async function createIssue(
@@ -457,56 +327,6 @@ interface LockedIssueRow extends QueryResultRow {
   id: number;
   status: Status;
   claimed_by: string | null;
-}
-
-/**
- * Whether a legal edge may be taken by this actor with this ownership.
- * The legal-edge gate runs first; this gate is strictly about authority.
- */
-function mayMove(
-  actor: ActorType,
-  agent: string | null,
-  from: Status,
-  to: Status,
-  claimedBy: string | null,
-): boolean {
-  if (actor === "human") {
-    return true;
-  }
-  if (actor === "agent") {
-    if (from === "todo" && to === "in_progress" && claimedBy === null) {
-      return agent !== null;
-    }
-    return (
-      agent !== null &&
-      claimedBy !== null &&
-      claimedBy === agent &&
-      actorMayTransition("agent", from, to)
-    );
-  }
-  if (actor === "system") {
-    return false;
-  }
-  return actorMayTransition(actor, from, to);
-}
-
-/**
- * The claim column after a move: leaving for the backlog clears it, an agent
- * claiming into `in_progress` takes it, and every other target keeps it.
- */
-function nextClaimedBy(
-  actor: ActorType,
-  agent: string | null,
-  to: Status,
-  current: string | null,
-): string | null {
-  if (to === "todo" || to === "backlog") {
-    return null;
-  }
-  if (to === "in_progress" && actor === "agent") {
-    return agent;
-  }
-  return current;
 }
 
 export async function moveIssue(

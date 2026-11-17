@@ -1,9 +1,11 @@
 import type { Database } from "../db.ts";
-import { ServiceError } from "../errors.ts";
+import { resolveContext } from "../domain/actors.ts";
+import { ServiceError } from "../domain/errors.ts";
+import type { IssueEvent } from "../domain/types.ts";
+import { validateCommentBody } from "../domain/validation.ts";
 import { appendEvent } from "./events.ts";
-import type { IssueEvent } from "./events.ts";
 import { ensureAgentExists } from "./agents.ts";
-import { getIssue, resolveContext } from "./issues.ts";
+import { getIssue } from "./issues.ts";
 
 export interface CommentInput {
   key: string;
@@ -16,10 +18,7 @@ export async function commentOnIssue(
   db: Database,
   input: CommentInput,
 ): Promise<IssueEvent> {
-  const body = input.body.trim();
-  if (body.length === 0) {
-    throw new ServiceError("validation", "comment body must not be empty");
-  }
+  const body = validateCommentBody(input.body);
   const { actor, agent } = resolveContext({
     actor: input.actor,
     agent: input.agent,

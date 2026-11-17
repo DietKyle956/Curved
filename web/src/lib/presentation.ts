@@ -1,4 +1,4 @@
-import { STATUSES } from "../../../src/shared/status.ts";
+import { STATUSES } from "../../../src/domain/status.ts";
 import type { EventKind, Issue, Priority, Status } from "./types.ts";
 
 export const STATUS_LABEL: Record<Status, string> = {
