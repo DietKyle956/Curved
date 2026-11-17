@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { after, before, beforeEach, test } from "node:test";
 import { ServiceError, type ErrorCode } from "../src/domain/errors.ts";
-import { createProject, listProjects } from "../src/services/projects.ts";
+import { createProject, listProjects } from "../src/application/projects.ts";
 import { openTestDatabase, type TestDatabase } from "./helpers/db.ts";
 
 let testDb: TestDatabase;
@@ -27,7 +27,7 @@ function rejectsWithServiceCode(code: ErrorCode): (error: unknown) => boolean {
 }
 
 test("createProject returns the new project with nextNumber 1 and an ISO timestamp", async () => {
-  const project = await createProject(testDb.db, { key: "TAC", name: "Tactics" });
+  const project = await createProject(testDb.ports, { key: "TAC", name: "Tactics" });
 
   assert.equal(project.key, "TAC");
   assert.equal(project.name, "Tactics");
@@ -38,11 +38,11 @@ test("createProject returns the new project with nextNumber 1 and an ISO timesta
 });
 
 test("listProjects returns projects ordered by key", async () => {
-  await createProject(testDb.db, { key: "ZZZ", name: "Last" });
-  await createProject(testDb.db, { key: "AAA", name: "First" });
-  await createProject(testDb.db, { key: "MMM", name: "Middle" });
+  await createProject(testDb.ports, { key: "ZZZ", name: "Last" });
+  await createProject(testDb.ports, { key: "AAA", name: "First" });
+  await createProject(testDb.ports, { key: "MMM", name: "Middle" });
 
-  const projects = await listProjects(testDb.db);
+  const projects = await listProjects(testDb.ports);
 
   assert.deepEqual(
     projects.map((project) => project.key),
@@ -55,14 +55,14 @@ test("listProjects returns projects ordered by key", async () => {
 });
 
 test("createProject rejects a duplicate key with a duplicate ServiceError", async () => {
-  await createProject(testDb.db, { key: "DUP", name: "Original" });
+  await createProject(testDb.ports, { key: "DUP", name: "Original" });
 
   await assert.rejects(
-    createProject(testDb.db, { key: "DUP", name: "Copy" }),
+    createProject(testDb.ports, { key: "DUP", name: "Copy" }),
     rejectsWithServiceCode("duplicate"),
   );
 
-  const projects = await listProjects(testDb.db);
+  const projects = await listProjects(testDb.ports);
   assert.equal(projects.length, 1);
   assert.equal(projects[0]?.name, "Original");
 });
@@ -70,7 +70,7 @@ test("createProject rejects a duplicate key with a duplicate ServiceError", asyn
 test("createProject rejects an invalid key with a validation ServiceError", async () => {
   for (const key of ["tac", "TAC-1", "", "A B"]) {
     await assert.rejects(
-      createProject(testDb.db, { key, name: "Invalid" }),
+      createProject(testDb.ports, { key, name: "Invalid" }),
       rejectsWithServiceCode("validation"),
       `expected key ${JSON.stringify(key)} to be rejected`,
     );
@@ -80,7 +80,7 @@ test("createProject rejects an invalid key with a validation ServiceError", asyn
 test("createProject rejects a blank name with a validation ServiceError", async () => {
   for (const name of ["", "   "]) {
     await assert.rejects(
-      createProject(testDb.db, { key: "BLK", name }),
+      createProject(testDb.ports, { key: "BLK", name }),
       rejectsWithServiceCode("validation"),
       `expected name ${JSON.stringify(name)} to be rejected`,
     );
@@ -89,12 +89,32 @@ test("createProject rejects a blank name with a validation ServiceError", async 
 
 test("a failing transaction rolls back its inserted project", async () => {
   await assert.rejects(
-    testDb.db.tx(async (db) => {
-      await createProject(db, { key: "ROLL", name: "Rollback" });
+    testDb.ports.transaction(async (txPorts) => {
+      await createProject(txPorts, { key: "ROLL", name: "Rollback" });
       throw new Error("boom");
     }),
     /boom/,
   );
 
-  assert.deepEqual(await listProjects(testDb.db), []);
+  assert.deepEqual(await listProjects(testDb.ports), []);
+});
+
+test("a committed transaction makes its project visible", async () => {
+  await testDb.ports.transaction(async (txPorts) => {
+    await createProject(txPorts, { key: "CMT", name: "Committed" });
+  });
+
+  const projects = await listProjects(testDb.ports);
+  assert.ok(
+    projects.some((project) => project.key === "CMT"),
+    "expected committed project to be visible",
+  );
+});
+
+test("the project repository port resolves projects by key", async () => {
+  await createProject(testDb.ports, { key: "TAC", name: "Tactics" });
+
+  const found = await testDb.ports.projects.findByKey("TAC");
+  assert.equal(found?.key, "TAC");
+  assert.equal(await testDb.ports.projects.findByKey("NOPE"), null);
 });

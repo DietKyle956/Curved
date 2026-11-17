@@ -1,4 +1,6 @@
 import pg from "pg";
+import { createPorts } from "../../src/adapters/postgres/ports.ts";
+import type { Ports } from "../../src/application/ports.ts";
 import { loadConfig } from "../../src/config.ts";
 import { createDatabase, type Database } from "../../src/db.ts";
 import { runMigrations } from "../../src/migrate.ts";
@@ -6,6 +8,7 @@ import { runMigrations } from "../../src/migrate.ts";
 export interface TestDatabase {
   db: Database;
   databaseUrl: string;
+  ports: Ports;
   reset(): Promise<void>;
   close(): Promise<void>;
 }
@@ -100,9 +103,11 @@ export async function openTestDatabase(): Promise<TestDatabase> {
   await runMigrations({ databaseUrl });
 
   const db = createDatabase(databaseUrl);
+  const ports = createPorts(db);
   return {
     db,
     databaseUrl,
+    ports,
     async reset(): Promise<void> {
       await db.query("TRUNCATE projects, agents RESTART IDENTITY CASCADE");
     },

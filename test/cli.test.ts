@@ -5,7 +5,7 @@ import { after, before, beforeEach, test } from "node:test";
 import { openTestDatabase, type TestDatabase } from "./helpers/db.ts";
 import { createIssue } from "../src/services/issues.ts";
 import { setIssueLabels } from "../src/services/labels.ts";
-import { createProject } from "../src/services/projects.ts";
+import { createProject } from "../src/application/projects.ts";
 import { addRelation } from "../src/services/relations.ts";
 
 const REPO_ROOT = resolve(import.meta.dirname, "..");
@@ -386,7 +386,7 @@ test("issue comment then issue show render the comment in human and JSON form", 
 });
 
 test("issue show renders labels and relations seeded through the service layer", async () => {
-  await createProject(testDb.db, { key: "TAC", name: "Tac" });
+  await createProject(testDb.ports, { key: "TAC", name: "Tac" });
   await createIssue(testDb.db, { project: "TAC", title: "Blocked work" });
   await createIssue(testDb.db, { project: "TAC", title: "Blocking work" });
   await setIssueLabels(testDb.db, { key: "TAC-1", labels: ["ui", "bug"] });
@@ -1157,7 +1157,7 @@ test("block and unblock reject missing credentials, wrong actors, wrong status, 
 });
 
 test("git-branch prints the canonical branch name", async () => {
-  await createProject(testDb.db, { key: "TAC", name: "Tac" });
+  await createProject(testDb.ports, { key: "TAC", name: "Tac" });
   await createIssue(testDb.db, { project: "TAC", title: "Fix login" });
 
   const result = await runCli(["git-branch", "TAC-1"]);
@@ -1167,7 +1167,7 @@ test("git-branch prints the canonical branch name", async () => {
 });
 
 test("git-branch resolves padded keys to the canonical key", async () => {
-  await createProject(testDb.db, { key: "TAC", name: "Tac" });
+  await createProject(testDb.ports, { key: "TAC", name: "Tac" });
   await createIssue(testDb.db, { project: "TAC", title: "Fix login" });
 
   const result = await runCli(["git-branch", "TAC-001"]);
@@ -1177,7 +1177,7 @@ test("git-branch resolves padded keys to the canonical key", async () => {
 });
 
 test("git-branch --json prints the key and branch", async () => {
-  await createProject(testDb.db, { key: "TAC", name: "Tac" });
+  await createProject(testDb.ports, { key: "TAC", name: "Tac" });
   await createIssue(testDb.db, { project: "TAC", title: "Fix login" });
 
   const result = await runCli(["git-branch", "TAC-1", "--json"]);
@@ -1190,7 +1190,7 @@ test("git-branch --json prints the key and branch", async () => {
 });
 
 test("git-branch exits 1 for an unknown key", async () => {
-  await createProject(testDb.db, { key: "TAC", name: "Tac" });
+  await createProject(testDb.ports, { key: "TAC", name: "Tac" });
 
   const result = await runCli(["git-branch", "TAC-9"]);
 

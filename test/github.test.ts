@@ -11,7 +11,7 @@ import {
   getIssue,
   getIssueTimeline,
 } from "../src/services/issues.ts";
-import { createProject } from "../src/services/projects.ts";
+import { createProject } from "../src/application/projects.ts";
 import { claimNext } from "../src/services/queue.ts";
 import { openTestDatabase, type TestDatabase } from "./helpers/db.ts";
 
@@ -60,6 +60,7 @@ after(async () => {
 function createTestApp(webhookSecret: string | null = SECRET): HttpApp {
   const created = createApp({
     db: testDb.db,
+    ports: testDb.ports,
     databaseUrl: testDb.databaseUrl,
     uiToken: UI_TOKEN,
     logger: () => {},
@@ -141,7 +142,7 @@ function pullRequestPayload(
 }
 
 async function seedProject(): Promise<void> {
-  await createProject(testDb.db, { key: "TAC", name: "Tactics" });
+  await createProject(testDb.ports, { key: "TAC", name: "Tactics" });
 }
 
 async function seedIssue(status?: string, title = "Seed issue"): Promise<Issue> {

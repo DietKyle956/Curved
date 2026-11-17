@@ -7,7 +7,7 @@ import { createApp, type App } from "../src/http/app.ts";
 import { createEventHub, type EventHub } from "../src/http/event-hub.ts";
 import { commentOnIssue } from "../src/services/comments.ts";
 import { createIssue, updateIssue } from "../src/services/issues.ts";
-import { createProject } from "../src/services/projects.ts";
+import { createProject } from "../src/application/projects.ts";
 import { openTestDatabase, type TestDatabase } from "./helpers/db.ts";
 
 const REPO_ROOT = resolve(import.meta.dirname, "..");
@@ -176,6 +176,7 @@ beforeEach(async () => {
   hubOpened = true;
   app = createApp({
     db: testDb.db,
+    ports: testDb.ports,
     databaseUrl: testDb.databaseUrl,
     uiToken: UI_TOKEN,
     events: hub,
@@ -294,7 +295,7 @@ test("the first frame is ready", async () => {
 });
 
 test("an issue created by the CLI wakes the open stream within 1000 ms of exiting", async () => {
-  const project = await createProject(testDb.db, { key: "TAC", name: "Tactics" });
+  const project = await createProject(testDb.ports, { key: "TAC", name: "Tactics" });
   const stream = await openStream();
   assert.equal((await stream.nextFrame()).event, "ready");
 
@@ -307,7 +308,7 @@ test("an issue created by the CLI wakes the open stream within 1000 ms of exitin
 });
 
 test("a comment and an issue field update each wake the stream", async () => {
-  const project = await createProject(testDb.db, { key: "TAC", name: "Tactics" });
+  const project = await createProject(testDb.ports, { key: "TAC", name: "Tactics" });
   const issue = await createIssue(testDb.db, {
     project: "TAC",
     title: "Watch me",

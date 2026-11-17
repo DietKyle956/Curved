@@ -6,7 +6,7 @@ import { createAgent } from "../src/services/agents.ts";
 import { commentOnIssue } from "../src/services/comments.ts";
 import { listEvents } from "../src/services/events.ts";
 import { createIssue, moveIssue } from "../src/services/issues.ts";
-import { createProject } from "../src/services/projects.ts";
+import { createProject } from "../src/application/projects.ts";
 import { openTestDatabase, type TestDatabase } from "./helpers/db.ts";
 
 let testDb: TestDatabase;
@@ -38,7 +38,7 @@ function assertIsoTimestamp(value: string): void {
 }
 
 async function seedIssue(): Promise<number> {
-  await createProject(testDb.db, { key: "TAC", name: "Tactics" });
+  await createProject(testDb.ports, { key: "TAC", name: "Tactics" });
   const issue = await createIssue(testDb.db, { project: "TAC", title: "Comment target" });
   return issue.id;
 }

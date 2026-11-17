@@ -13,7 +13,8 @@ import {
 } from "../services/issues.ts";
 import type { IssueContext } from "../domain/actors.ts";
 import { setIssueLabels } from "../services/labels.ts";
-import { createProject, listProjects } from "../services/projects.ts";
+import type { Ports } from "../application/ports.ts";
+import { createProject, listProjects } from "../application/projects.ts";
 import { claimNext, listReady, releaseClaim } from "../services/queue.ts";
 import { addRelation } from "../services/relations.ts";
 import {
@@ -38,6 +39,7 @@ const NOT_FOUND_BODY = {
 
 export interface CreateAppOptions {
   db: Database;
+  ports: Ports;
   databaseUrl: string;
   uiToken: string;
   webhookSecret?: string;
@@ -202,7 +204,7 @@ export function createApp(options: CreateAppOptions): App {
     throw new Error("CURVED_UI_TOKEN is required to start the HTTP app");
   }
 
-  const { db, uiToken } = options;
+  const { db, ports, uiToken } = options;
   const webDistDir = options.webDistDir ?? resolve(process.cwd(), "web/dist");
   const logger =
     options.logger ??
@@ -303,12 +305,12 @@ export function createApp(options: CreateAppOptions): App {
       }
       if (method === "GET") {
         await auth();
-        return json({ projects: await listProjects(db) });
+        return json({ projects: await listProjects(ports) });
       }
       if (method === "POST") {
         requireHuman(await auth());
         const body = await requestBody();
-        const project = await createProject(db, {
+        const project = await createProject(ports, {
           key: stringField(body, "key"),
           name: stringField(body, "name"),
         });

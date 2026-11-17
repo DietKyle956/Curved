@@ -11,7 +11,7 @@ import {
   listIssues,
 } from "../src/services/issues.ts";
 import type { Issue, IssueEvent } from "../src/domain/types.ts";
-import { createProject } from "../src/services/projects.ts";
+import { createProject } from "../src/application/projects.ts";
 import {
   claimNext,
   listReady,
@@ -45,7 +45,7 @@ function rejectsWithServiceCode(code: ErrorCode): (error: unknown) => boolean {
 }
 
 async function seedProject(key = "TAC"): Promise<void> {
-  await createProject(testDb.db, { key, name: key });
+  await createProject(testDb.ports, { key, name: key });
 }
 
 async function seedIssue(title = "Queue issue"): Promise<Issue> {

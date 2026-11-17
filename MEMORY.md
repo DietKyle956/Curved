@@ -2,7 +2,7 @@
 
 - **Last updated:** 2026-11-17
 - **Project:** curved
-- **Phase:** HTTP API and auth boundary complete (`LAS-148`), plus a working SPA prototype, the SSE realtime stream (`LAS-150`), the GitHub webhook with its branch helper (`LAS-151`), the SPA foundation ticket (`LAS-152`), the architecture contract (`LAS-168`, documentation only), and the pure domain layer (`LAS-169`, no behavior change). Toolchain, Postgres 18, migrations, the projects resource, the issues resource (atomic keys, append-only events), comment events with the full timeline read path, the transition graph with its actor matrix, token-authenticated agents with the one-active-issue fence, agent block with human unblock, the MCP server over stdio, the authenticated HTTP API with its SPA fallback, the React/Vite board, queue, detail, and palette, the SSE stream that refreshes them, the HMAC-verified GitHub webhook that moves issues from pull requests, and the routed board with its mobile status bar are live.
+- **Phase:** HTTP API and auth boundary complete (`LAS-148`), plus a working SPA prototype, the SSE realtime stream (`LAS-150`), the GitHub webhook with its branch helper (`LAS-151`), the SPA foundation ticket (`LAS-152`), the architecture contract (`LAS-168`, documentation only), the pure domain layer (`LAS-169`, no behavior change), and step 3's first slice, ports plus the projects resource (`LAS-170`, no behavior change). Toolchain, Postgres 18, migrations, the projects resource, the issues resource (atomic keys, append-only events), comment events with the full timeline read path, the transition graph with its actor matrix, token-authenticated agents with the one-active-issue fence, agent block with human unblock, the MCP server over stdio, the authenticated HTTP API with its SPA fallback, the React/Vite board, queue, detail, and palette, the SSE stream that refreshes them, the HMAC-verified GitHub webhook that moves issues from pull requests, and the routed board with its mobile status bar are live.
 
 ## Current verified state
 
@@ -13,12 +13,13 @@
   `--no-install` skips only install; the database step still runs.
 - End-of-session gate: `./scripts/clean-state.sh`
 - Baseline: green. `npm run typecheck` covers server and web configs; `npm test`
-  runs 187 tests on the Node test runner.
-- Architecture contract: `ARCH.md` (550 lines) codifies target hexagonal layers
-  (domain, application, inbound and outbound adapters, composition roots), rule
-  ownership with bounded mirrors, ports and transactions, error translation, web
-  layering, testing policy, and enforcement. Steps 1 and 2 are implemented;
-  steps 3 to 6 remain, so its Current/Target markers still matter.
+  runs 189 tests on the Node test runner.
+- Architecture contract: `ARCH.md` codifies target hexagonal layers (domain,
+  application, inbound and outbound adapters, composition roots), rule ownership
+  with bounded mirrors, ports and transactions, error translation, web layering,
+  testing policy, and enforcement. Steps 1 and 2, plus step 3's first slice
+  (`LAS-170`), are implemented; the rest of step 3 (`LAS-171` to `LAS-173`) and
+  steps 4 to 6 remain, so its Current/Target markers still matter.
 - Templates: `/home/dietkyle/projects/templates/ARCH.md` (111 lines) is the
   project-agnostic version of the same contract, listed as copy-first item 2 in
   that directory's `index.md`; `templates/AGENTS.md` now reads `ARCH.md` in its
@@ -44,11 +45,34 @@
   and `ServiceError`; `types.ts` holds `Issue`, `Project`, `Agent`, `CreatedAgent`,
   `IssueEvent`, `IssueMeta`, `IssueRelations`, and `emptyMeta`.
   `src/http/errors.ts` owns `HTTP_STATUS`, `httpStatusFor`, `ErrorBody`, and
-  `errorBody`. Services keep all SQL, the issue read model (`toIssue`,
-  `hydrateIssue`, `ISSUE_COLUMNS`, `IssueRow`), agent token mint/hash, and
+  `errorBody`. The services keep the SQL for the resources not yet migrated, the
+  issue read model (`toIssue`, `hydrateIssue`, `ISSUE_COLUMNS`, `IssueRow`), and
   orchestration, and import every rule from the domain. `src/domain/**` imports
   only domain modules: no `pg`, no `node:*`, no HTTP/MCP/CLI, no filesystem, no
   crypto, no React.
+- Application boundary (`LAS-170`): `src/application/ports.ts` owns
+  `ProjectRepository` (`create`, `list`, `findByKey`), `TokenCodec` (`mint`,
+  `hash`), `ActiveClaimConflict`, `TransactionPorts` (`projects`, `tokens`), and
+  `Ports` (`TransactionPorts` plus `transaction(fn)`). Ports carry no pg types.
+  `TransactionPorts` has no `transaction` member, so a nested transaction cannot
+  type-check. `src/application/projects.ts` holds `createProject(ports, input)`
+  (key validated, then name) and `listProjects(ports)`; neither file imports `pg`,
+  `src/db.ts`, or `node:*`.
+- Postgres adapter (`LAS-170`): `src/adapters/postgres/repositories/projects.ts`
+  implements the project port (insert with `23505` mapped to
+  `ServiceError("duplicate", 'project key "<key>" already exists')`, `list`
+  ordered by key asc, `findByKey` returning `null` when absent);
+  `src/adapters/postgres/ports.ts` exports `createPorts(database)`, binding the
+  repository and codec either to the pool or to `database.tx`'s connection. The
+  cardinally one token implementation is `src/adapters/token-codec.ts`
+  (`createTokenCodec()`: `crv_` plus 24 random bytes base64url, lowercase SHA-256
+  hex); `src/services/agents.ts` uses it and no longer exports
+  `generateAgentToken` or `hashAgentToken`.
+- Wiring (`LAS-170`): `createApp` requires a `ports: Ports` option;
+  `src/server.ts` and the CLI `project add`/`project list` branches build
+  `createPorts(db)`; `src/services/projects.ts` is deleted. `test/helpers/db.ts`
+  exposes `TestDatabase.ports`. Duplicate, validation, ordering, payload, and
+  output text are unchanged; only import paths and wiring moved.
 - Database: `docker compose up` starts `postgres:18-alpine` on host port 55432
   (user/password/db all `curved`, named volume mounted at `/var/lib/postgresql`).
   `scripts/db.sh` waits for readiness, then runs `node src/migrate.ts`.
@@ -299,8 +323,11 @@
 - Tests: isolated database from `TEST_DATABASE_URL` (name must start with
   `curved_test`), created and migrated by `test/helpers/db.ts`; its reset truncates
   `projects` and `agents` with cascade. The development database is never touched.
-  `npm test` runs 187 tests, including 22 agent/queue tests in
-  `test/agents.test.ts`, 13 MCP-over-stdio tests in `test/mcp.test.ts`, the
+  `npm test` runs 189 tests, including 22 agent/queue tests in
+  `test/agents.test.ts`, the projects suite in `test/projects.test.ts` (create,
+  list ordering, duplicate and validation errors, transaction-scoped commit and
+  rollback, repository find-by-key), 13 MCP-over-stdio tests in
+  `test/mcp.test.ts`, the
   blocking suite in `test/blocking.test.ts`, the HTTP suite in `test/http.test.ts`,
   the label and relation suites in `test/labels.test.ts` and
   `test/relations.test.ts`, the event hub and SSE suites in `test/event-hub.test.ts`
@@ -1157,3 +1184,47 @@ still need their acceptance tests, and `LAS-155` remains the end-to-end gate.
   import-direction check and steps 3 to 6 remain, so layering is still review-only.
 - Next best step: `LAS-170` (ports and the Postgres repositories).
 - Commits: 1 commit, `Extract the pure domain layer`.
+
+### Session 021
+
+- Date: 2026-11-17
+- Goal: execute `LAS-170` (introduce ports and migrate the projects resource),
+  step 3's first slice of the `LAS-167` refactor. No observable behavior change.
+- Completed: `src/application/ports.ts` with `ProjectRepository` (`create`,
+  `list`, `findByKey`), `TokenCodec` (`mint`, `hash`), `ActiveClaimConflict`,
+  `TransactionPorts` (`projects`, `tokens`), and `Ports` (`transaction(fn)`), none
+  of them carrying pg types or a nested transaction member;
+  `src/application/projects.ts` with SQL-free `createProject`/`listProjects`;
+  `src/adapters/postgres/repositories/projects.ts` (the three preserved project
+  statements, key-ordered list, `findByKey`, `23505` to `duplicate` with the
+  identical message); `src/adapters/postgres/ports.ts` (`createPorts` binding the
+  repository and codec to the pool or `Database.tx`); and
+  `src/adapters/token-codec.ts` (`createTokenCodec`) now backing
+  `src/services/agents.ts`. `src/services/projects.ts` is deleted.
+  `createApp` requires `ports: Ports`; `src/server.ts` and both CLI project
+  branches build it. `test/helpers/db.ts` exposes `TestDatabase.ports`.
+- Verification run: `npm run typecheck` green; the project-path suites
+  (`projects`, `agents`, `http`, `cli`, `mcp`, `github`, `sse`) 122 pass, 0 fail;
+  full `npm test` 189 pass, 0 fail; live smoke on a throwaway `curved_smoke170`
+  database (migrate; CLI `project add SMK`, duplicate `1 duplicate: project key
+  "SMK" already exists`, list `SMK\tSmoke Project`, invalid key `1 validation:
+  project key "bad" must match ^[A-Z][A-Z0-9]{1,9}$`; server on 4758: `POST
+  /api/projects` 201 with the full project payload, duplicate 409, invalid key
+  400, list ordered `API` then `SMK`, bearer-only mismatch 401
+  `not_authenticated`), then the database dropped.
+- Evidence captured: the smoke payloads above; `grep` over `src/application/`
+  finds no `pg`, `src/db.ts`, SQL keyword, or `node:*`; no file still imports
+  `services/projects.ts` or the deleted token helpers.
+- Coordination: five parallel subagents (ports core, Postgres adapter, inbound
+  wiring, core tests, test sweep), then two documentation subagents, with the
+  orchestrator running typecheck, the targeted suites, the full suite, and the
+  live smoke between waves.
+- Known risk: `Ports` intentionally wires only the migrated resource plus the
+  token codec; `IssueRepository`, `AgentRepository`, `EventRepository`,
+  `IssueMetaRepository`, `LabelRepository`, and `RelationRepository` arrive with
+  `LAS-171` to `LAS-173`, so `ARCH.md` section 4's full inventory is still
+  target-only. The import-direction check remains planned, so layering stays
+  review-only; `ActiveClaimConflict` is declared but no adapter throws it until
+  the claim migration.
+- Next best step: `LAS-171` (issue lifecycle and read model on ports).
+- Commit: `Introduce ports and migrate the projects resource`.

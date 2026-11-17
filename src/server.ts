@@ -3,6 +3,7 @@ import type { IncomingMessage, ServerResponse } from "node:http";
 import { Readable } from "node:stream";
 import { loadConfig } from "./config.ts";
 import { createDatabase } from "./db.ts";
+import { createPorts } from "./adapters/postgres/ports.ts";
 import { createApp } from "./http/app.ts";
 
 function toRequest(request: IncomingMessage, signal: AbortSignal): Request {
@@ -143,8 +144,10 @@ async function main(): Promise<void> {
   }
 
   const db = createDatabase(config.databaseUrl);
+  const ports = createPorts(db);
   const app = createApp({
     db,
+    ports,
     databaseUrl: config.databaseUrl,
     uiToken: config.uiToken,
     webhookSecret: config.webhookSecret,

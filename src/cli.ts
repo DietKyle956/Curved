@@ -15,7 +15,8 @@ import {
   listIssues,
   moveIssue,
 } from "./services/issues.ts";
-import { createProject, listProjects } from "./services/projects.ts";
+import { createProject, listProjects } from "./application/projects.ts";
+import { createPorts } from "./adapters/postgres/ports.ts";
 import {
   claimNext,
   listReady,
@@ -106,7 +107,7 @@ async function runProjectCommand(
     }
     const name = words.join(" ");
     const project = await withDatabase((db) =>
-      createProject(db, { key, name }),
+      createProject(createPorts(db), { key, name }),
     );
     if (json) {
       printJson(project);
@@ -117,7 +118,7 @@ async function runProjectCommand(
   }
 
   if (subcommand === "list") {
-    const projects = await withDatabase((db) => listProjects(db));
+    const projects = await withDatabase((db) => listProjects(createPorts(db)));
     if (json) {
       printJson(projects);
     } else {

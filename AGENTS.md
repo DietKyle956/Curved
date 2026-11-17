@@ -114,19 +114,31 @@ resolution, and `allowedTransitions`; `claim.ts` owns `nextClaimedBy`;
 `move-policy.ts` owns `mayMove`; `validation.ts` owns every validator and
 max-length constant; `keys.ts` owns key parsing and branch naming; `errors.ts`
 owns `ServiceError` and `ERROR_CODES`; and `types.ts` owns the shared record
-types. Services keep all SQL, the issue read model, token mint and hash, and
-orchestration, and import every pure rule from the domain. The HTTP status
-mapping (`HTTP_STATUS`, `httpStatusFor`) lives in `src/http/errors.ts`. The old
-shared status module and the old root error module are deleted. Behavior is
-unchanged: 187 tests pass.
+types. Services keep the SQL for the resources not yet migrated, the issue read
+model, and orchestration, and import every pure rule from the domain. The HTTP
+status mapping (`HTTP_STATUS`, `httpStatusFor`) lives in `src/http/errors.ts`. The
+old shared status module and the old root error module are deleted. Behavior is
+unchanged; the baseline stays green.
+LAS-170 is live: step 3's first slice adds `src/application/ports.ts`
+(`ProjectRepository`, `TokenCodec`, `ActiveClaimConflict`, `Ports`,
+`TransactionPorts`), `src/application/projects.ts` (create and list use cases with
+no SQL), `src/adapters/postgres/ports.ts` (`createPorts`, flat transactions over
+`Database.tx`), `src/adapters/postgres/repositories/projects.ts` (ordered list,
+find by key, `23505` to `duplicate`), and `src/adapters/token-codec.ts`;
+`src/services/projects.ts` is deleted, the HTTP app takes a required `ports`
+aggregate, the CLI builds ports, and the agent token helpers use the codec.
+Behavior is unchanged: 189 tests pass.
 
-Tests: 187 pass, 0 fail, including `test/http.test.ts`, `test/event-hub.test.ts`,
+Tests: 189 pass, 0 fail, including `test/http.test.ts`, `test/event-hub.test.ts`,
 `test/sse.test.ts`, the label and relation suites in `test/labels.test.ts` and
 `test/relations.test.ts`, the webhook and branch suite in `test/github.test.ts`,
-and the issue filter and human-only edit cases in `test/issues.test.ts`.
+the issue filter and human-only edit cases in `test/issues.test.ts`, and
+`test/projects.test.ts` for create and list, duplicate and validation, the
+transaction-scoped ports commit and rollback, and repository find by key.
 `ARCH.md` codifies the target layers and the one-way dependency rule; step 2
-(domain extraction) has landed, steps 3 to 6 remain, and the next frontier is
-`LAS-170` (ports and the projects resource).
+(domain extraction) and step 3's first slice (ports plus the projects resource)
+have landed, the rest of step 3 and steps 4 to 6 remain, and the next frontier is
+`LAS-171` (issue lifecycle and read model on ports).
 `/home/dietkyle/projects/templates/ARCH.md`
 carries the same rules as a project-agnostic template.
 
@@ -139,6 +151,8 @@ carries the same rules as a project-agnostic template.
 | `AGENTS.md` | This file: constraints and startup path. |
 | `MEMORY.md` | Verified state, decisions, session log. Update it every session. |
 | `src/domain/` | Pure rules and types: status and transition contract, actor matrix, claim and move policy, validation, key parsing, domain errors, shared record types. |
+| `src/application/` | Ports (`ports.ts`) and the migrated use cases (`projects.ts`); the rest of the resources still live in `src/services/`. |
+| `src/adapters/` | Outbound adapters: `postgres/` (pool, ports factory, project repository) and `token-codec.ts`. |
 | `src/http/` | HTTP router, auth boundary, SSE hub and stream, and SPA fallback. |
 | `src/server.ts` | HTTP entry. Reads `PORT` and requires `CURVED_UI_TOKEN`. |
 | `web/` | Vite + React SPA. `npm run build` writes `web/dist`; `npm run dev` proxies `/api`. |

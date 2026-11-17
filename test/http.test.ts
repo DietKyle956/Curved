@@ -8,7 +8,7 @@ import { createApp } from "../src/http/app.ts";
 import { createAgent } from "../src/services/agents.ts";
 import { createIssue } from "../src/services/issues.ts";
 import type { Issue, IssueEvent } from "../src/domain/types.ts";
-import { createProject } from "../src/services/projects.ts";
+import { createProject } from "../src/application/projects.ts";
 import { openTestDatabase, type TestDatabase } from "./helpers/db.ts";
 
 const UI_TOKEN = "test-ui-token";
@@ -81,6 +81,7 @@ beforeEach(async () => {
   await testDb.reset();
   app = createApp({
     db: testDb.db,
+    ports: testDb.ports,
     databaseUrl: testDb.databaseUrl,
     uiToken: UI_TOKEN,
     logger: () => {},
@@ -115,7 +116,7 @@ function assertJson(response: Response): void {
 }
 
 async function seedProject(): Promise<void> {
-  await createProject(testDb.db, { key: "TAC", name: "Tactics" });
+  await createProject(testDb.ports, { key: "TAC", name: "Tactics" });
 }
 
 async function seedIssue(status?: string): Promise<Issue> {
@@ -132,6 +133,7 @@ test("createApp rejects an empty ui token with a message naming CURVED_UI_TOKEN"
     () =>
       createApp({
         db: testDb.db,
+        ports: testDb.ports,
         databaseUrl: testDb.databaseUrl,
         uiToken: "",
         logger: () => {},
@@ -245,7 +247,7 @@ test("bearer tokens resolve humans and agents, and an invalid bearer wins over a
 });
 
 test("projects list, create, human-only rule, and duplicate keys", async () => {
-  await createProject(testDb.db, { key: "TAC", name: "Tactics" });
+  await createProject(testDb.ports, { key: "TAC", name: "Tactics" });
 
   const list = await request(app, "/api/projects", { headers: HUMAN_BEARER });
   assert.equal(list.status, 200);
@@ -856,6 +858,7 @@ test("SPA serving uses the fixture build, caches by kind, and rejects traversal"
 
     spa = createApp({
       db: testDb.db,
+      ports: testDb.ports,
       databaseUrl: testDb.databaseUrl,
       uiToken: UI_TOKEN,
       webDistDir: dist,
@@ -897,6 +900,7 @@ test("a missing web build returns 503 text explaining how to build", async () =>
   const missingDir = join(tmpdir(), `curved-http-missing-${process.pid}-${Date.now()}`);
   const spa = createApp({
     db: testDb.db,
+    ports: testDb.ports,
     databaseUrl: testDb.databaseUrl,
     uiToken: UI_TOKEN,
     webDistDir: missingDir,

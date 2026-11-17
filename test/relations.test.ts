@@ -9,7 +9,7 @@ import {
   moveIssue,
 } from "../src/services/issues.ts";
 import type { Issue, IssueEvent } from "../src/domain/types.ts";
-import { createProject } from "../src/services/projects.ts";
+import { createProject } from "../src/application/projects.ts";
 import { claimNext, listReady } from "../src/services/queue.ts";
 import { addRelation } from "../src/services/relations.ts";
 import { openTestDatabase, type TestDatabase } from "./helpers/db.ts";
@@ -40,7 +40,7 @@ function rejectsWithServiceCode(code: ErrorCode): (error: unknown) => boolean {
 }
 
 async function seedProject(key = "TAC"): Promise<void> {
-  await createProject(testDb.db, { key, name: key });
+  await createProject(testDb.ports, { key, name: key });
 }
 
 async function seedIssue(

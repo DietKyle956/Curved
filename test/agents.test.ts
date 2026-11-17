@@ -6,7 +6,6 @@ import {
   authenticateAgent,
   createAgent,
   ensureAgentExists,
-  hashAgentToken,
 } from "../src/services/agents.ts";
 import { commentOnIssue } from "../src/services/comments.ts";
 import { listEvents } from "../src/services/events.ts";
@@ -16,7 +15,8 @@ import {
   moveIssue,
 } from "../src/services/issues.ts";
 import type { Issue, IssueEvent } from "../src/domain/types.ts";
-import { createProject } from "../src/services/projects.ts";
+import { createTokenCodec } from "../src/adapters/token-codec.ts";
+import { createProject } from "../src/application/projects.ts";
 import {
   claimNext,
   listReady,
@@ -52,7 +52,7 @@ function rejectsWithServiceCode(code: ErrorCode): (error: unknown) => boolean {
 }
 
 async function seedProject(key = "TAC"): Promise<void> {
-  await createProject(testDb.db, { key, name: key });
+  await createProject(testDb.ports, { key, name: key });
 }
 
 interface SeedIssueOptions {
@@ -127,7 +127,7 @@ test("createAgent mints a prefixed token, stores only its hash, and authenticate
     ["alpha"],
   );
   assert.ok(row, "created agent row is missing");
-  assert.equal(row.token_hash, hashAgentToken(created.token));
+  assert.equal(row.token_hash, createTokenCodec().hash(created.token));
   assert.match(row.token_hash, /^[0-9a-f]{64}$/);
   assert.notEqual(row.token_hash, created.token);
 

@@ -1,13 +1,12 @@
-import { createHash, randomBytes } from "node:crypto";
 import type { QueryResultRow } from "pg";
 import type { Db } from "../db.ts";
 import { pgErrorCode } from "../db.ts";
+import { createTokenCodec } from "../adapters/token-codec.ts";
 import { ServiceError } from "../domain/errors.ts";
 import type { Agent, CreatedAgent } from "../domain/types.ts";
 import { validateAgentName } from "../domain/validation.ts";
 
-const TOKEN_PREFIX = "crv_";
-const TOKEN_BYTES = 24;
+const codec = createTokenCodec();
 
 interface AgentRow extends QueryResultRow {
   id: number;
@@ -23,16 +22,6 @@ function toAgent(row: AgentRow): Agent {
   };
 }
 
-/** Mints a fresh plaintext token; only its hash is ever stored. */
-export function generateAgentToken(): string {
-  return `${TOKEN_PREFIX}${randomBytes(TOKEN_BYTES).toString("base64url")}`;
-}
-
-/** The stored form of a token: its lowercase SHA-256 hex digest. */
-export function hashAgentToken(token: string): string {
-  return createHash("sha256").update(token, "utf8").digest("hex");
-}
-
 /**
  * Creates an agent and returns its token exactly once. The token is never
  * recoverable afterwards; a lost token means a new agent identity.
@@ -42,14 +31,14 @@ export async function createAgent(
   name: string,
 ): Promise<CreatedAgent> {
   const trimmed = validateAgentName(name);
-  const token = generateAgentToken();
+  const token = codec.mint();
 
   try {
     const row = await db.one<AgentRow>(
       `insert into agents (name, token_hash)
        values ($1, $2)
        returning id, name, created_at`,
-      [trimmed, hashAgentToken(token)],
+      [trimmed, codec.hash(token)],
     );
     if (row === null) {
       throw new Error("agent insert returned no row");
@@ -79,7 +68,7 @@ export async function authenticateAgent(
     `select id, name, created_at
      from agents
      where token_hash = $1`,
-    [hashAgentToken(trimmed)],
+    [codec.hash(trimmed)],
   );
   if (row === null) {
     throw new ServiceError("not_authenticated", "agent token is not valid");

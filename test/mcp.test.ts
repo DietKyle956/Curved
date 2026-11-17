@@ -8,7 +8,7 @@ import { StdioClientTransport } from "@modelcontextprotocol/client/stdio";
 import { createAgent } from "../src/services/agents.ts";
 import { createIssue } from "../src/services/issues.ts";
 import type { Issue } from "../src/domain/types.ts";
-import { createProject } from "../src/services/projects.ts";
+import { createProject } from "../src/application/projects.ts";
 import { openTestDatabase, type TestDatabase } from "./helpers/db.ts";
 
 const REPO_ROOT = resolve(import.meta.dirname, "..");
@@ -83,7 +83,7 @@ interface McpSession {
 }
 
 async function seedProject(key = "TAC", name = "Tac"): Promise<void> {
-  await createProject(testDb.db, { key, name });
+  await createProject(testDb.ports, { key, name });
 }
 
 async function seedAgentToken(name = AGENT_NAME): Promise<string> {

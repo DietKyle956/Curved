@@ -10,7 +10,7 @@ import {
   updateIssue,
   type CreateIssueInput,
 } from "../src/services/issues.ts";
-import { createProject } from "../src/services/projects.ts";
+import { createProject } from "../src/application/projects.ts";
 import { openTestDatabase, type TestDatabase } from "./helpers/db.ts";
 
 let testDb: TestDatabase;
@@ -40,7 +40,7 @@ function assertIsoTimestamp(value: string): void {
 }
 
 async function seedProject(key: string): Promise<number> {
-  const project = await createProject(testDb.db, { key, name: key });
+  const project = await createProject(testDb.ports, { key, name: key });
   return project.id;
 }
 
