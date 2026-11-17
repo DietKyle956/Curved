@@ -2,14 +2,13 @@ import assert from "node:assert/strict";
 import { after, before, beforeEach, test } from "node:test";
 import { ServiceError, type ErrorCode } from "../src/domain/errors.ts";
 import { createAgent } from "../src/services/agents.ts";
-import { listEvents } from "../src/services/events.ts";
 import {
   createIssue,
   getIssue,
   getIssueTimeline,
   listIssues,
   moveIssue,
-} from "../src/services/issues.ts";
+} from "../src/application/issues.ts";
 import type { Issue, IssueEvent } from "../src/domain/types.ts";
 import { createProject } from "../src/application/projects.ts";
 import type { Status } from "../src/domain/status.ts";
@@ -44,7 +43,7 @@ async function seedProject(key = "TAC"): Promise<void> {
 }
 
 async function seedIssue(status: Status = "todo", title = "Transition target"): Promise<Issue> {
-  return createIssue(testDb.db, { project: "TAC", title, status });
+  return createIssue(testDb.ports, { project: "TAC", title, status });
 }
 
 interface MoveOptions {
@@ -54,7 +53,7 @@ interface MoveOptions {
 }
 
 async function move(key: string, to: string, options: MoveOptions = {}): Promise<Issue> {
-  return moveIssue(testDb.db, { key, to, ...options });
+  return moveIssue(testDb.ports, { key, to, ...options });
 }
 
 function eventAt(events: IssueEvent[], index: number): IssueEvent {
@@ -67,7 +66,7 @@ async function transitionsFor(
   key: string,
   context: { actor?: string; agent?: string },
 ): Promise<Status[]> {
-  const issue = await getIssue(testDb.db, key, context);
+  const issue = await getIssue(testDb.ports, key, context);
   return issue.allowedTransitions;
 }
 
@@ -80,10 +79,10 @@ test("moveIssue rejects todo -> done for a human as illegal_transition and appen
     rejectsWithServiceCode("illegal_transition"),
   );
 
-  const current = await getIssue(testDb.db, issue.key);
+  const current = await getIssue(testDb.ports, issue.key);
   assert.equal(current.status, "todo");
 
-  const events = await listEvents(testDb.db, issue.id);
+  const events = await testDb.ports.events.list(issue.id);
   assert.equal(events.length, 1);
   assert.deepEqual(
     events.map((event) => event.kind),
@@ -104,7 +103,7 @@ test("a legal human move appends exactly one status event with from, to, actor, 
   assert.equal(moved.status, "in_progress");
   assert.equal(moved.claimedBy, null);
 
-  const events = await listEvents(testDb.db, issue.id);
+  const events = await testDb.ports.events.list(issue.id);
   assert.equal(events.length, 2);
   assert.equal(eventAt(events, 0).kind, "created");
 
@@ -141,7 +140,7 @@ test("a human can move done -> todo and the agent claim is cleared", async () =>
   assert.equal(reopened.status, "todo");
   assert.equal(reopened.claimedBy, null);
 
-  const events = await listEvents(testDb.db, issue.id);
+  const events = await testDb.ports.events.list(issue.id);
   assert.equal(events.length, 5);
   assert.deepEqual(
     events.map((event) => event.kind),
@@ -163,11 +162,11 @@ test("an agent cannot move its own in_review issue to done", async () => {
     rejectsWithServiceCode("forbidden_transition"),
   );
 
-  const current = await getIssue(testDb.db, issue.key);
+  const current = await getIssue(testDb.ports, issue.key);
   assert.equal(current.status, "in_review");
   assert.equal(current.claimedBy, "agent-1");
 
-  const events = await listEvents(testDb.db, issue.id);
+  const events = await testDb.ports.events.list(issue.id);
   assert.equal(events.length, 3);
   assert.equal(events.at(-1)?.toStatus, "in_review");
 });
@@ -181,11 +180,11 @@ test("an agent cannot move an unclaimed in_progress issue", async () => {
     rejectsWithServiceCode("forbidden_transition"),
   );
 
-  const current = await getIssue(testDb.db, issue.key);
+  const current = await getIssue(testDb.ports, issue.key);
   assert.equal(current.status, "in_progress");
   assert.equal(current.claimedBy, null);
 
-  const events = await listEvents(testDb.db, issue.id);
+  const events = await testDb.ports.events.list(issue.id);
   assert.equal(events.length, 1);
 });
 
@@ -200,7 +199,7 @@ test("an agent cannot touch another agent's claim, while the owner can release i
     rejectsWithServiceCode("forbidden_transition"),
   );
 
-  const held = await getIssue(testDb.db, issue.key);
+  const held = await getIssue(testDb.ports, issue.key);
   assert.equal(held.status, "in_progress");
   assert.equal(held.claimedBy, "agent-1");
 
@@ -208,7 +207,7 @@ test("an agent cannot touch another agent's claim, while the owner can release i
   assert.equal(released.status, "todo");
   assert.equal(released.claimedBy, null);
 
-  const events = await listEvents(testDb.db, issue.id);
+  const events = await testDb.ports.events.list(issue.id);
   assert.equal(events.length, 3);
   assert.deepEqual(
     events.map((event) => event.kind),
@@ -258,7 +257,7 @@ test("the git actor can move in_progress -> in_review and in_review -> done but 
   const done = await move(inProgress.key, "done", { actor: "git" });
   assert.equal(done.status, "done");
 
-  const events = await listEvents(testDb.db, inProgress.id);
+  const events = await testDb.ports.events.list(inProgress.id);
   assert.equal(events.length, 3);
   assert.equal(eventAt(events, 1).actorType, "git");
   assert.equal(eventAt(events, 1).fromStatus, "in_progress");
@@ -273,11 +272,11 @@ test("the git actor can move in_progress -> in_review and in_review -> done but 
     rejectsWithServiceCode("forbidden_transition"),
   );
 
-  const current = await getIssue(testDb.db, todo.key);
+  const current = await getIssue(testDb.ports, todo.key);
   assert.equal(current.status, "todo");
   assert.equal(current.claimedBy, null);
 
-  const todoEvents = await listEvents(testDb.db, todo.id);
+  const todoEvents = await testDb.ports.events.list(todo.id);
   assert.equal(todoEvents.length, 1);
 });
 
@@ -295,20 +294,20 @@ test("the system actor is rejected with forbidden_transition even on a legal edg
     rejectsWithServiceCode("forbidden_transition"),
   );
 
-  const current = await getIssue(testDb.db, issue.key);
+  const current = await getIssue(testDb.ports, issue.key);
   assert.equal(current.status, "todo");
 
-  const events = await listEvents(testDb.db, issue.id);
+  const events = await testDb.ports.events.list(issue.id);
   assert.equal(events.length, 1);
 });
 
 test("allowedTransitions reflects the actor, the claim, and the current status across every read", async () => {
   await seedProject();
 
-  const backlog = await createIssue(testDb.db, { project: "TAC", title: "Backlog" });
+  const backlog = await createIssue(testDb.ports, { project: "TAC", title: "Backlog" });
   assert.deepEqual(backlog.allowedTransitions, ["todo"]);
 
-  const todo = await createIssue(testDb.db, {
+  const todo = await createIssue(testDb.ports, {
     project: "TAC",
     title: "Todo",
     status: "todo",
@@ -354,7 +353,7 @@ test("allowedTransitions reflects the actor, the claim, and the current status a
   assert.deepEqual(await transitionsFor(gitInProgress.key, { actor: "git" }), ["done"]);
 
   const agentList = await listIssues(
-    testDb.db,
+    testDb.ports,
     { project: "TAC" },
     { actor: "agent", agent: "agent-1" },
   );
@@ -367,16 +366,16 @@ test("allowedTransitions reflects the actor, the claim, and the current status a
   assert.deepEqual(byKey.get(gitTodo.key), ["in_progress"]);
   assert.deepEqual(byKey.get(gitInProgress.key), []);
 
-  const humanList = await listIssues(testDb.db, { project: "TAC" }, { actor: "human" });
+  const humanList = await listIssues(testDb.ports, { project: "TAC" }, { actor: "human" });
   const humanByKey = new Map(humanList.map((issue) => [issue.key, issue.allowedTransitions]));
   assert.deepEqual(humanByKey.get(backlog.key), ["todo"]);
   assert.deepEqual(humanByKey.get(todo.key), ["backlog", "in_progress"]);
   assert.deepEqual(humanByKey.get(gitInProgress.key), ["done", "in_progress"]);
 
-  const backlogTimeline = await getIssueTimeline(testDb.db, backlog.key);
+  const backlogTimeline = await getIssueTimeline(testDb.ports, backlog.key);
   assert.deepEqual(backlogTimeline.issue.allowedTransitions, ["todo"]);
 
-  const claimedTimeline = await getIssueTimeline(testDb.db, claimed.key, {
+  const claimedTimeline = await getIssueTimeline(testDb.ports, claimed.key, {
     actor: "agent",
     agent: "agent-1",
   });
@@ -410,11 +409,11 @@ test("concurrent human moves of one todo issue settle one success and one illega
   assert.ok(loser.reason instanceof ServiceError);
   assert.equal(loser.reason.code, "illegal_transition");
 
-  const current = await getIssue(testDb.db, issue.key);
+  const current = await getIssue(testDb.ports, issue.key);
   assert.equal(current.status, "in_progress");
   assert.equal(current.claimedBy, null);
 
-  const events = await listEvents(testDb.db, issue.id);
+  const events = await testDb.ports.events.list(issue.id);
   assert.equal(events.length, 2);
   assert.deepEqual(
     events.map((event) => event.kind),
@@ -453,9 +452,9 @@ test("moveIssue rejects unknown keys, statuses, actors, and mismatched agent ide
     rejectsWithServiceCode("validation"),
   );
 
-  const current = await getIssue(testDb.db, issue.key);
+  const current = await getIssue(testDb.ports, issue.key);
   assert.equal(current.status, "todo");
 
-  const events = await listEvents(testDb.db, issue.id);
+  const events = await testDb.ports.events.list(issue.id);
   assert.equal(events.length, 1);
 });

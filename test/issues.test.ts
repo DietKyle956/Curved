@@ -1,7 +1,6 @@
 import assert from "node:assert/strict";
 import { after, before, beforeEach, test } from "node:test";
 import { ServiceError, type ErrorCode } from "../src/domain/errors.ts";
-import { listEvents } from "../src/services/events.ts";
 import {
   createIssue,
   getIssue,
@@ -9,7 +8,7 @@ import {
   listIssues,
   updateIssue,
   type CreateIssueInput,
-} from "../src/services/issues.ts";
+} from "../src/application/issues.ts";
 import { createProject } from "../src/application/projects.ts";
 import { openTestDatabase, type TestDatabase } from "./helpers/db.ts";
 
@@ -47,7 +46,7 @@ async function seedProject(key: string): Promise<number> {
 test("createIssue applies defaults and stores a trimmed title", async () => {
   const projectId = await seedProject("TAC");
 
-  const issue = await createIssue(testDb.db, {
+  const issue = await createIssue(testDb.ports, {
     project: "TAC",
     title: "  Fix the thing  ",
     description: "details",
@@ -70,12 +69,12 @@ test("createIssue applies defaults and stores a trimmed title", async () => {
 
 test("createIssue appends exactly one created event", async () => {
   await seedProject("TAC");
-  const issue = await createIssue(testDb.db, {
+  const issue = await createIssue(testDb.ports, {
     project: "TAC",
     title: "Log the creation",
   });
 
-  const events = await listEvents(testDb.db, issue.id);
+  const events = await testDb.ports.events.list(issue.id);
   assert.equal(events.length, 1);
 
   const [event] = events;
@@ -106,7 +105,7 @@ test("createIssue rejects invalid input with validation ServiceErrors", async ()
 
   for (const [label, input] of cases) {
     await assert.rejects(
-      createIssue(testDb.db, input),
+      createIssue(testDb.ports, input),
       rejectsWithServiceCode("validation"),
       label,
     );
@@ -117,21 +116,21 @@ test("createIssue rejects an unknown project and an unknown parent", async () =>
   await seedProject("TAC");
 
   await assert.rejects(
-    createIssue(testDb.db, { project: "ZZZ", title: "Missing project" }),
+    createIssue(testDb.ports, { project: "ZZZ", title: "Missing project" }),
     rejectsWithServiceCode("not_found"),
   );
 
   await assert.rejects(
-    createIssue(testDb.db, { project: "TAC", title: "Missing parent", parent: "TAC-99" }),
+    createIssue(testDb.ports, { project: "TAC", title: "Missing parent", parent: "TAC-99" }),
     rejectsWithServiceCode("not_found"),
   );
 });
 
 test("createIssue honors explicit status, priority, and a padded parent key", async () => {
   await seedProject("TAC");
-  const parent = await createIssue(testDb.db, { project: "TAC", title: "Parent" });
+  const parent = await createIssue(testDb.ports, { project: "TAC", title: "Parent" });
 
-  const child = await createIssue(testDb.db, {
+  const child = await createIssue(testDb.ports, {
     project: "TAC",
     title: "Child",
     status: "todo",
@@ -150,7 +149,7 @@ test("25 concurrent createIssue calls allocate 25 distinct sequential keys", asy
 
   const issues = await Promise.all(
     Array.from({ length: 25 }, (_, index) =>
-      createIssue(testDb.db, { project: "TAC", title: `Concurrent ${index + 1}` }),
+      createIssue(testDb.ports, { project: "TAC", title: `Concurrent ${index + 1}` }),
     ),
   );
 
@@ -174,31 +173,31 @@ test("25 concurrent createIssue calls allocate 25 distinct sequential keys", asy
 test("getIssue accepts padded keys and rejects malformed or unknown keys", async () => {
   await seedProject("TAC");
   for (let index = 1; index <= 14; index += 1) {
-    await createIssue(testDb.db, { project: "TAC", title: `Issue ${index}` });
+    await createIssue(testDb.ports, { project: "TAC", title: `Issue ${index}` });
   }
 
-  const issue = await getIssue(testDb.db, "TAC-014");
+  const issue = await getIssue(testDb.ports, "TAC-014");
   assert.equal(issue.key, "TAC-14");
   assert.equal(issue.number, 14);
 
   await assert.rejects(
-    getIssue(testDb.db, "tac-1"),
+    getIssue(testDb.ports, "tac-1"),
     rejectsWithServiceCode("validation"),
   );
   await assert.rejects(
-    getIssue(testDb.db, "TAC-99"),
+    getIssue(testDb.ports, "TAC-99"),
     rejectsWithServiceCode("not_found"),
   );
 });
 
 test("getIssueTimeline returns the issue and exactly its created event", async () => {
   await seedProject("TAC");
-  const created = await createIssue(testDb.db, {
+  const created = await createIssue(testDb.ports, {
     project: "TAC",
     title: "Timeline target",
   });
 
-  const timeline = await getIssueTimeline(testDb.db, created.key);
+  const timeline = await getIssueTimeline(testDb.ports, created.key);
 
   assert.deepEqual(timeline.issue, created);
   assert.equal(timeline.events.length, 1);
@@ -214,7 +213,7 @@ test("getIssueTimeline returns the issue and exactly its created event", async (
   assertIsoTimestamp(event.createdAt);
 
   await assert.rejects(
-    getIssueTimeline(testDb.db, "TAC-99"),
+    getIssueTimeline(testDb.ports, "TAC-99"),
     rejectsWithServiceCode("not_found"),
   );
 });
@@ -223,28 +222,28 @@ test("listIssues orders by project key then number and filters by project", asyn
   await seedProject("TAC");
   await seedProject("AAA");
 
-  await createIssue(testDb.db, { project: "TAC", title: "TAC first" });
-  await createIssue(testDb.db, { project: "TAC", title: "TAC second" });
-  await createIssue(testDb.db, { project: "AAA", title: "AAA first" });
+  await createIssue(testDb.ports, { project: "TAC", title: "TAC first" });
+  await createIssue(testDb.ports, { project: "TAC", title: "TAC second" });
+  await createIssue(testDb.ports, { project: "AAA", title: "AAA first" });
 
-  const all = await listIssues(testDb.db);
+  const all = await listIssues(testDb.ports);
   assert.deepEqual(
     all.map((issue) => issue.key),
     ["AAA-1", "TAC-1", "TAC-2"],
   );
 
-  const tac = await listIssues(testDb.db, { project: "TAC" });
+  const tac = await listIssues(testDb.ports, { project: "TAC" });
   assert.deepEqual(
     tac.map((issue) => issue.key),
     ["TAC-1", "TAC-2"],
   );
 
   await assert.rejects(
-    listIssues(testDb.db, { project: "ZZZ" }),
+    listIssues(testDb.ports, { project: "ZZZ" }),
     rejectsWithServiceCode("not_found"),
   );
   await assert.rejects(
-    listIssues(testDb.db, { project: "tac" }),
+    listIssues(testDb.ports, { project: "tac" }),
     rejectsWithServiceCode("validation"),
   );
 });
@@ -253,42 +252,42 @@ test("listIssues filters by status and rejects an invalid status", async () => {
   await seedProject("TAC");
   await seedProject("AAA");
 
-  const backlog = await createIssue(testDb.db, {
+  const backlog = await createIssue(testDb.ports, {
     project: "TAC",
     title: "Backlog issue",
   });
-  await createIssue(testDb.db, { project: "TAC", title: "Todo issue", status: "todo" });
-  await createIssue(testDb.db, { project: "AAA", title: "AAA todo", status: "todo" });
+  await createIssue(testDb.ports, { project: "TAC", title: "Todo issue", status: "todo" });
+  await createIssue(testDb.ports, { project: "AAA", title: "AAA todo", status: "todo" });
 
-  const todo = await listIssues(testDb.db, { status: "todo" });
+  const todo = await listIssues(testDb.ports, { status: "todo" });
   assert.deepEqual(
     todo.map((issue) => issue.key),
     ["AAA-1", "TAC-2"],
   );
 
-  const tacTodo = await listIssues(testDb.db, { project: "TAC", status: "todo" });
+  const tacTodo = await listIssues(testDb.ports, { project: "TAC", status: "todo" });
   assert.deepEqual(
     tacTodo.map((issue) => issue.key),
     ["TAC-2"],
   );
 
-  const backlogIssues = await listIssues(testDb.db, { status: "backlog" });
+  const backlogIssues = await listIssues(testDb.ports, { status: "backlog" });
   assert.deepEqual(
     backlogIssues.map((issue) => issue.key),
     [backlog.key],
   );
 
   await assert.rejects(
-    listIssues(testDb.db, { status: "nope" }),
+    listIssues(testDb.ports, { status: "nope" }),
     rejectsWithServiceCode("validation"),
   );
 });
 
 test("updateIssue trims the title, persists it, and appends no event", async () => {
   await seedProject("TAC");
-  const created = await createIssue(testDb.db, { project: "TAC", title: "Original" });
+  const created = await createIssue(testDb.ports, { project: "TAC", title: "Original" });
 
-  const updated = await updateIssue(testDb.db, {
+  const updated = await updateIssue(testDb.ports, {
     key: created.key,
     title: "  Revised title  ",
   });
@@ -299,23 +298,23 @@ test("updateIssue trims the title, persists it, and appends no event", async () 
   assert.equal(updated.description, created.description);
   assertIsoTimestamp(updated.updatedAt);
 
-  const reloaded = await getIssue(testDb.db, created.key);
+  const reloaded = await getIssue(testDb.ports, created.key);
   assert.equal(reloaded.title, "Revised title");
 
-  const events = await listEvents(testDb.db, created.id);
+  const events = await testDb.ports.events.list(created.id);
   assert.equal(events.length, 1);
   assert.equal(events[0]?.kind, "created");
 });
 
 test("updateIssue stores an empty description and a new priority", async () => {
   await seedProject("TAC");
-  const created = await createIssue(testDb.db, {
+  const created = await createIssue(testDb.ports, {
     project: "TAC",
     title: "Editable fields",
     description: "old description",
   });
 
-  const updated = await updateIssue(testDb.db, {
+  const updated = await updateIssue(testDb.ports, {
     key: "TAC-0001",
     description: "",
     priority: 1,
@@ -325,17 +324,17 @@ test("updateIssue stores an empty description and a new priority", async () => {
   assert.equal(updated.priority, 1);
   assert.equal(updated.title, "Editable fields");
 
-  const reloaded = await getIssue(testDb.db, created.key);
+  const reloaded = await getIssue(testDb.ports, created.key);
   assert.equal(reloaded.description, "");
   assert.equal(reloaded.priority, 1);
 });
 
 test("updateIssue rejects non-human actors with forbidden_transition", async () => {
   await seedProject("TAC");
-  const created = await createIssue(testDb.db, { project: "TAC", title: "Locked" });
+  const created = await createIssue(testDb.ports, { project: "TAC", title: "Locked" });
 
   await assert.rejects(
-    updateIssue(testDb.db, {
+    updateIssue(testDb.ports, {
       key: created.key,
       title: "Agent edit",
       actor: "agent",
@@ -344,20 +343,20 @@ test("updateIssue rejects non-human actors with forbidden_transition", async () 
     rejectsWithServiceCode("forbidden_transition"),
   );
   await assert.rejects(
-    updateIssue(testDb.db, { key: created.key, title: "System edit", actor: "system" }),
+    updateIssue(testDb.ports, { key: created.key, title: "System edit", actor: "system" }),
     rejectsWithServiceCode("forbidden_transition"),
   );
 
-  const unchanged = await getIssue(testDb.db, created.key);
+  const unchanged = await getIssue(testDb.ports, created.key);
   assert.equal(unchanged.title, "Locked");
 });
 
 test("updateIssue requires at least one editable field", async () => {
   await seedProject("TAC");
-  const created = await createIssue(testDb.db, { project: "TAC", title: "No fields" });
+  const created = await createIssue(testDb.ports, { project: "TAC", title: "No fields" });
 
   await assert.rejects(
-    updateIssue(testDb.db, { key: created.key }),
+    updateIssue(testDb.ports, { key: created.key }),
     rejectsWithServiceCode("validation"),
   );
 });
@@ -366,7 +365,7 @@ test("updateIssue rejects an unknown key", async () => {
   await seedProject("TAC");
 
   await assert.rejects(
-    updateIssue(testDb.db, { key: "TAC-99", title: "Missing" }),
+    updateIssue(testDb.ports, { key: "TAC-99", title: "Missing" }),
     rejectsWithServiceCode("not_found"),
   );
 });

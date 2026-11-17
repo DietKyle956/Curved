@@ -1,14 +1,14 @@
 import assert from "node:assert/strict";
 import { after, before, beforeEach, test } from "node:test";
 import type { Db } from "../src/db.ts";
+import { bindPorts } from "../src/adapters/postgres/ports.ts";
 import { ServiceError, type ErrorCode } from "../src/domain/errors.ts";
-import { listEvents } from "../src/services/events.ts";
 import {
   createIssue,
   getIssue,
   getIssueTimeline,
   listIssues,
-} from "../src/services/issues.ts";
+} from "../src/application/issues.ts";
 import type { Issue, IssueEvent } from "../src/domain/types.ts";
 import { setIssueLabels } from "../src/services/labels.ts";
 import { createProject } from "../src/application/projects.ts";
@@ -48,7 +48,7 @@ async function seedIssue(
   project = "TAC",
   title = "Issue",
 ): Promise<Issue> {
-  return createIssue(testDb.db, {
+  return createIssue(testDb.ports, {
     project,
     title,
     status: "todo",
@@ -97,7 +97,7 @@ test("setIssueLabels replaces the label set and returns names ascending", async 
   });
   assert.deepEqual(second.labels, ["beta", "gamma"]);
 
-  const reloaded = await getIssue(testDb.db, issue.key);
+  const reloaded = await getIssue(testDb.ports, issue.key);
   assert.deepEqual(reloaded.labels, ["beta", "gamma"]);
 
   const rows = await testDb.db.query<{ name: string }>(
@@ -124,7 +124,7 @@ test("setIssueLabels trims names and collapses duplicates in one call", async ()
   });
   assert.deepEqual(updated.labels, ["bug", "ui"]);
 
-  const events = withKind(await listEvents(testDb.db, issue.id), "labels");
+  const events = withKind(await testDb.ports.events.list(issue.id), "labels");
   assert.equal(events.length, 1);
   const [event] = events;
   assert.ok(event, "expected a labels event");
@@ -157,8 +157,8 @@ test("labels are upserted per project and reused across projects", async () => {
   );
   assert.equal(linkRows[0]?.count, 3);
 
-  assert.deepEqual((await getIssue(testDb.db, first.key)).labels, ["ui"]);
-  assert.deepEqual((await getIssue(testDb.db, other.key)).labels, ["ui"]);
+  assert.deepEqual((await getIssue(testDb.ports, first.key)).labels, ["ui"]);
+  assert.deepEqual((await getIssue(testDb.ports, other.key)).labels, ["ui"]);
 });
 
 // --- Events ---------------------------------------------------------------
@@ -173,7 +173,7 @@ test("each label replacement appends one labels event with a JSON body", async (
   });
   await setIssueLabels(testDb.db, { key: issue.key, labels: ["gamma"] });
 
-  const events = withKind(await listEvents(testDb.db, issue.id), "labels");
+  const events = withKind(await testDb.ports.events.list(issue.id), "labels");
   assert.equal(events.length, 2);
   const [firstEvent, secondEvent] = events;
   assert.ok(firstEvent, "expected a first labels event");
@@ -196,9 +196,9 @@ test("an empty label array clears the set and still appends one event", async ()
     labels: [],
   });
   assert.deepEqual(cleared.labels, []);
-  assert.deepEqual((await getIssue(testDb.db, issue.key)).labels, []);
+  assert.deepEqual((await getIssue(testDb.ports, issue.key)).labels, []);
 
-  const events = withKind(await listEvents(testDb.db, issue.id), "labels");
+  const events = withKind(await testDb.ports.events.list(issue.id), "labels");
   assert.equal(events.length, 2);
   const [firstEvent, secondEvent] = events;
   assert.ok(firstEvent, "expected the first labels event");
@@ -259,9 +259,9 @@ test("setIssueLabels rejects an unknown issue and an agent actor", async () => {
     rejectsWithServiceCode("forbidden_transition"),
   );
 
-  assert.deepEqual((await getIssue(testDb.db, issue.key)).labels, []);
+  assert.deepEqual((await getIssue(testDb.ports, issue.key)).labels, []);
   assert.deepEqual(
-    withKind(await listEvents(testDb.db, issue.id), "labels"),
+    withKind(await testDb.ports.events.list(issue.id), "labels"),
     [],
   );
 });
@@ -277,16 +277,16 @@ test("getIssue, listIssues, and the timeline expose labels", async () => {
     labels: ["ui", "bug"],
   });
 
-  const read = await getIssue(testDb.db, labelled.key);
+  const read = await getIssue(testDb.ports, labelled.key);
   assert.deepEqual(read.labels, ["bug", "ui"]);
 
-  const listed = await listIssues(testDb.db, { project: "TAC" });
+  const listed = await listIssues(testDb.ports, { project: "TAC" });
   assert.deepEqual(
     listed.map((issue) => issue.labels),
     [["bug", "ui"], []],
   );
 
-  const timeline = await getIssueTimeline(testDb.db, labelled.key);
+  const timeline = await getIssueTimeline(testDb.ports, labelled.key);
   assert.deepEqual(timeline.issue.labels, ["bug", "ui"]);
 });
 
@@ -301,7 +301,7 @@ test("listIssues loads a whole project in three statements", async () => {
   await addRelation(testDb.db, { blocked: third.key, blocking: first.key });
 
   const { db, statements } = countingDb(testDb.db);
-  const issues = await listIssues(db, { project: "TAC" });
+  const issues = await listIssues(bindPorts(db), { project: "TAC" });
 
   assert.equal(statements.length, 3);
   assert.equal(

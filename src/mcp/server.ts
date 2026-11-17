@@ -4,6 +4,7 @@ import { loadConfig } from "../config.ts";
 import type { Config } from "../config.ts";
 import { createDatabase } from "../db.ts";
 import type { Database } from "../db.ts";
+import { createPorts } from "../adapters/postgres/ports.ts";
 import { ServiceError } from "../domain/errors.ts";
 import { authenticateAgent } from "../services/agents.ts";
 import {
@@ -149,6 +150,7 @@ export async function main(): Promise<void> {
     () =>
       createCurvedMcpServer({
         db,
+        ports: createPorts(db),
         resolveAgent: () => resolveAgentFromToken(db, config),
       }),
     {

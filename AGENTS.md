@@ -128,6 +128,29 @@ find by key, `23505` to `duplicate`), and `src/adapters/token-codec.ts`;
 `src/services/projects.ts` is deleted, the HTTP app takes a required `ports`
 aggregate, the CLI builds ports, and the agent token helpers use the codec.
 Behavior is unchanged: 189 tests pass.
+LAS-171 is live: the issue lifecycle and read model sit on ports.
+`src/application/issues.ts` holds `createIssue`, `listIssues`, `getIssue`,
+`getIssueTimeline`, `updateIssue`, and `moveIssue` with no SQL;
+`src/application/issue-read-model.ts` holds `toIssue` (which derives
+`allowedTransitions`) and `hydrateIssue`. `src/application/ports.ts` adds
+`IssueRecord`, `LockedIssueRecord`, `IssueRepository` (create with atomic
+per-project allocation, find by id, find by key, lock by key, list, update
+fields, update status, find the active claim key, list ready),
+`IssueEventRepository`, `IssueMetaRepository` (at most two statements), and
+`AgentRepository.exists`, and `TransactionPorts` carries projects, issues,
+events, meta, agents, and tokens. They are implemented in
+`src/adapters/postgres/repositories/issues.ts`, `issue-events.ts`,
+`issue-meta.ts`, and `agents.ts`, and `src/adapters/postgres/ports.ts` exports
+`bindPorts` (`createPorts` delegates to it). `src/services/issues.ts`,
+`src/services/events.ts`, and `src/services/issue-meta.ts` are deleted. The
+transitional services (`queue.ts`, `blocking.ts`, `comments.ts`, `labels.ts`,
+`relations.ts`, `github.ts`) bind ports for shared work while their own SQL
+stays until LAS-172 (queue and blocking) and LAS-173 (labels and relations).
+The HTTP issue routes, the webhook, the CLI issue commands and `git-branch`, and
+MCP `ToolDeps` all pass `ports`. A violation of the
+`issues_one_active_claim_per_agent` constraint surfaces as `ActiveClaimConflict`
+and keeps the `agent_busy` message naming the active key. Behavior is unchanged:
+189 tests pass.
 
 Tests: 189 pass, 0 fail, including `test/http.test.ts`, `test/event-hub.test.ts`,
 `test/sse.test.ts`, the label and relation suites in `test/labels.test.ts` and
@@ -136,9 +159,9 @@ the issue filter and human-only edit cases in `test/issues.test.ts`, and
 `test/projects.test.ts` for create and list, duplicate and validation, the
 transaction-scoped ports commit and rollback, and repository find by key.
 `ARCH.md` codifies the target layers and the one-way dependency rule; step 2
-(domain extraction) and step 3's first slice (ports plus the projects resource)
-have landed, the rest of step 3 and steps 4 to 6 remain, and the next frontier is
-`LAS-171` (issue lifecycle and read model on ports).
+(domain extraction) and step 3's first two slices (ports plus the projects
+resource, then the issue lifecycle and read model) have landed, the rest of
+step 3 and steps 4 to 6 remain, and the next frontier is `LAS-172`.
 `/home/dietkyle/projects/templates/ARCH.md`
 carries the same rules as a project-agnostic template.
 

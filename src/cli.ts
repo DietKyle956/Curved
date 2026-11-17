@@ -14,7 +14,7 @@ import {
   getIssueTimeline,
   listIssues,
   moveIssue,
-} from "./services/issues.ts";
+} from "./application/issues.ts";
 import { createProject, listProjects } from "./application/projects.ts";
 import { createPorts } from "./adapters/postgres/ports.ts";
 import {
@@ -331,7 +331,7 @@ async function runIssueCommand(
     }
     const title = words.join(" ");
     const issue = await withDatabase((db) =>
-      createIssue(db, {
+      createIssue(createPorts(db), {
         project,
         title,
         description: flags.description,
@@ -354,7 +354,9 @@ async function runIssueCommand(
       throw new UsageError("issue list accepts at most one PROJECT argument");
     }
     const filter = project === undefined ? undefined : { project };
-    const issues = await withDatabase((db) => listIssues(db, filter));
+    const issues = await withDatabase((db) =>
+      listIssues(createPorts(db), filter),
+    );
     if (json) {
       printJson(issues);
     } else {
@@ -443,7 +445,7 @@ async function runIssueCommand(
       throw new UsageError("issue show accepts exactly one KEY argument");
     }
     const { issue, events } = await withDatabase((db) =>
-      getIssueTimeline(db, key),
+      getIssueTimeline(createPorts(db), key),
     );
     if (json) {
       printJson({ ...issue, events });
@@ -485,7 +487,7 @@ async function runIssueCommand(
       throw new UsageError("issue move requires exactly <KEY> <status>");
     }
     const issue = await withDatabase((db) =>
-      moveIssue(db, { key, to: status, actor, agent, body }),
+      moveIssue(createPorts(db), { key, to: status, actor, agent, body }),
     );
     if (json) {
       printJson(issue);
@@ -683,7 +685,7 @@ async function runGitBranchCommand(
     throw new UsageError("git-branch accepts exactly one KEY argument");
   }
   const issue = await withDatabase((db) =>
-    getIssue(db, key, { actor: "human" }),
+    getIssue(createPorts(db), key, { actor: "human" }),
   );
   const branch = branchNameForIssue(issue.key, issue.title);
   if (json) {

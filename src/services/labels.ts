@@ -1,12 +1,12 @@
 import type { QueryResultRow } from "pg";
+import { bindPorts } from "../adapters/postgres/ports.ts";
+import { hydrateIssue } from "../application/issue-read-model.ts";
 import type { Database } from "../db.ts";
 import { resolveContext } from "../domain/actors.ts";
 import { ServiceError } from "../domain/errors.ts";
 import { parseIssueKey } from "../domain/keys.ts";
 import type { Issue } from "../domain/types.ts";
 import { normalizeLabels } from "../domain/validation.ts";
-import { appendEvent } from "./events.ts";
-import { hydrateIssue } from "./issues.ts";
 
 export interface SetIssueLabelsInput {
   key: string;
@@ -63,13 +63,15 @@ export async function setIssueLabels(
       [issue.id, labelIds.map((row) => row.id)],
     );
 
-    await appendEvent(tx, {
+    const ports = bindPorts(tx);
+
+    await ports.events.append({
       issueId: issue.id,
       kind: "labels",
       actorType: "human",
       body: JSON.stringify({ labels: names }),
     });
 
-    return hydrateIssue(tx, issue.id, { actor: "human", agent: null });
+    return hydrateIssue(ports, issue.id, { actor: "human", agent: null });
   });
 }

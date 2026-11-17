@@ -10,7 +10,7 @@ import {
   listIssues,
   moveIssue,
   updateIssue,
-} from "../services/issues.ts";
+} from "../application/issues.ts";
 import type { IssueContext } from "../domain/actors.ts";
 import { setIssueLabels } from "../services/labels.ts";
 import type { Ports } from "../application/ports.ts";
@@ -324,7 +324,7 @@ export function createApp(options: CreateAppOptions): App {
         if (method === "GET") {
           const authContext = await auth();
           const issues = await listIssues(
-            db,
+            ports,
             {
               project: queryParam(url, "project"),
               status: queryParam(url, "status"),
@@ -336,7 +336,7 @@ export function createApp(options: CreateAppOptions): App {
         if (method === "POST") {
           const authContext = await auth();
           const body = await requestBody();
-          const issue = await createIssue(db, {
+          const issue = await createIssue(ports, {
             project: stringField(body, "project"),
             title: stringField(body, "title"),
             description: optionalStringField(body, "description"),
@@ -353,12 +353,14 @@ export function createApp(options: CreateAppOptions): App {
       if (action === undefined) {
         const authContext = await auth();
         if (method === "GET") {
-          return json(await getIssueTimeline(db, key, issueContext(authContext)));
+          return json(
+            await getIssueTimeline(ports, key, issueContext(authContext)),
+          );
         }
         if (method === "PATCH") {
           requireHuman(authContext);
           const body = await requestBody();
-          const issue = await updateIssue(db, {
+          const issue = await updateIssue(ports, {
             key,
             title: optionalStringField(body, "title"),
             description: optionalStringField(body, "description"),
@@ -374,7 +376,7 @@ export function createApp(options: CreateAppOptions): App {
       if (action === "transition" && method === "POST") {
         const authContext = await auth();
         const body = await requestBody();
-        const issue = await moveIssue(db, {
+        const issue = await moveIssue(ports, {
           key,
           to: stringField(body, "to"),
           body: optionalStringField(body, "body"),
@@ -481,7 +483,7 @@ export function createApp(options: CreateAppOptions): App {
       const url = new URL(request.url);
       if (url.pathname === "/webhooks/github") {
         return await handleGithubWebhook(request, {
-          db,
+          ports,
           secret: options.webhookSecret ?? "",
           logger,
         });

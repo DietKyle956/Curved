@@ -4,8 +4,7 @@ import { pgErrorCode } from "../src/db.ts";
 import { ServiceError, type ErrorCode } from "../src/domain/errors.ts";
 import { createAgent } from "../src/services/agents.ts";
 import { commentOnIssue } from "../src/services/comments.ts";
-import { listEvents } from "../src/services/events.ts";
-import { createIssue, moveIssue } from "../src/services/issues.ts";
+import { createIssue, moveIssue } from "../src/application/issues.ts";
 import { createProject } from "../src/application/projects.ts";
 import { openTestDatabase, type TestDatabase } from "./helpers/db.ts";
 
@@ -39,7 +38,7 @@ function assertIsoTimestamp(value: string): void {
 
 async function seedIssue(): Promise<number> {
   await createProject(testDb.ports, { key: "TAC", name: "Tactics" });
-  const issue = await createIssue(testDb.db, { project: "TAC", title: "Comment target" });
+  const issue = await createIssue(testDb.ports, { project: "TAC", title: "Comment target" });
   return issue.id;
 }
 
@@ -79,7 +78,7 @@ test("commentOnIssue appends interleaved agent and human comments in insertion o
   assert.equal(humanAgain.actorType, "human");
   assert.equal(humanAgain.body, "third from human");
 
-  const events = await listEvents(testDb.db, issueId);
+  const events = await testDb.ports.events.list(issueId);
   assert.deepEqual(
     events.map((event) => event.kind),
     ["created", "comment", "comment", "comment"],
@@ -113,7 +112,7 @@ test("commentOnIssue rejects empty and whitespace-only bodies without appending 
     );
   }
 
-  const events = await listEvents(testDb.db, issueId);
+  const events = await testDb.ports.events.list(issueId);
   assert.deepEqual(
     events.map((event) => event.kind),
     ["created"],
@@ -136,7 +135,7 @@ test("commentOnIssue rejects an unknown key, a malformed key, and an invalid act
     rejectsWithServiceCode("validation"),
   );
 
-  const events = await listEvents(testDb.db, issueId);
+  const events = await testDb.ports.events.list(issueId);
   assert.deepEqual(
     events.map((event) => event.kind),
     ["created"],
@@ -157,21 +156,21 @@ test("issue_events rejects updates and deletes on a comment row and keeps the st
     (error: unknown) => pgErrorCode(error) === "23001",
   );
 
-  const afterUpdate = (await listEvents(testDb.db, issueId)).find(
+  const afterUpdate = (await testDb.ports.events.list(issueId)).find(
     (event) => event.id === comment.id,
   );
   assert.ok(afterUpdate, "comment event missing after rejected update");
   assert.equal(afterUpdate.body, "original comment");
   assert.equal(afterUpdate.actorType, "agent");
 
-  const beforeDelete = await listEvents(testDb.db, issueId);
+  const beforeDelete = await testDb.ports.events.list(issueId);
 
   await assert.rejects(
     testDb.db.query("delete from issue_events"),
     (error: unknown) => pgErrorCode(error) === "23001",
   );
 
-  const afterDelete = await listEvents(testDb.db, issueId);
+  const afterDelete = await testDb.ports.events.list(issueId);
   assert.deepEqual(
     afterDelete.map((event) => event.id),
     beforeDelete.map((event) => event.id),
@@ -191,15 +190,15 @@ test("there is no separate comments table", async () => {
 
 test("commentOnIssue forbids an agent from commenting on another agent's claim without appending events", async () => {
   const issueId = await seedIssue();
-  await moveIssue(testDb.db, { key: "TAC-1", to: "todo", actor: "human" });
-  await moveIssue(testDb.db, {
+  await moveIssue(testDb.ports, { key: "TAC-1", to: "todo", actor: "human" });
+  await moveIssue(testDb.ports, {
     key: "TAC-1",
     to: "in_progress",
     actor: "agent",
     agent: "agent-1",
   });
 
-  const before = await listEvents(testDb.db, issueId);
+  const before = await testDb.ports.events.list(issueId);
 
   await assert.rejects(
     commentOnIssue(testDb.db, {
@@ -211,7 +210,7 @@ test("commentOnIssue forbids an agent from commenting on another agent's claim w
     rejectsWithServiceCode("forbidden_transition"),
   );
 
-  const events = await listEvents(testDb.db, issueId);
+  const events = await testDb.ports.events.list(issueId);
   assert.deepEqual(
     events.map((event) => event.id),
     before.map((event) => event.id),
@@ -220,8 +219,8 @@ test("commentOnIssue forbids an agent from commenting on another agent's claim w
 
 test("commentOnIssue lets the owning agent and a human comment on a claimed issue", async () => {
   const issueId = await seedIssue();
-  await moveIssue(testDb.db, { key: "TAC-1", to: "todo", actor: "human" });
-  await moveIssue(testDb.db, {
+  await moveIssue(testDb.ports, { key: "TAC-1", to: "todo", actor: "human" });
+  await moveIssue(testDb.ports, {
     key: "TAC-1",
     to: "in_progress",
     actor: "agent",
@@ -244,7 +243,7 @@ test("commentOnIssue lets the owning agent and a human comment on a claimed issu
   assert.equal(human.actorType, "human");
   assert.equal(human.body, "human note");
 
-  const events = await listEvents(testDb.db, issueId);
+  const events = await testDb.ports.events.list(issueId);
   assert.deepEqual(
     events.map((event) => event.kind),
     ["created", "status", "status", "comment", "comment"],
@@ -270,7 +269,7 @@ test("commentOnIssue rejects an agent comment without an identity", async () => 
     rejectsWithServiceCode("validation"),
   );
 
-  const events = await listEvents(testDb.db, issueId);
+  const events = await testDb.ports.events.list(issueId);
   assert.deepEqual(
     events.map((event) => event.kind),
     ["created"],
@@ -290,7 +289,7 @@ test("commentOnIssue rejects an unregistered agent identity", async () => {
     rejectsWithServiceCode("not_found"),
   );
 
-  const events = await listEvents(testDb.db, issueId);
+  const events = await testDb.ports.events.list(issueId);
   assert.deepEqual(
     events.map((event) => event.kind),
     ["created"],

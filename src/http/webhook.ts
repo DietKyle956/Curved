@@ -1,5 +1,5 @@
 import { createHmac } from "node:crypto";
-import type { Database } from "../db.ts";
+import type { Ports } from "../application/ports.ts";
 import { ServiceError } from "../domain/errors.ts";
 import { applyPullRequestEvent } from "../services/github.ts";
 import { constantTimeEqual } from "./auth.ts";
@@ -10,7 +10,7 @@ const NOT_FOUND_BODY = {
 } as const;
 
 export interface GithubWebhookOptions {
-  db: Database;
+  ports: Ports;
   secret: string;
   logger?: (error: unknown) => void;
 }
@@ -71,7 +71,7 @@ export async function handleGithubWebhook(
   }
 
   const issue = await applyPullRequestEvent(
-    options.db,
+    options.ports,
     request.headers.get("x-github-event"),
     payload,
   );

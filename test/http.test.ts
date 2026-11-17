@@ -6,7 +6,7 @@ import { join } from "node:path";
 import { after, afterEach, before, beforeEach, test } from "node:test";
 import { createApp } from "../src/http/app.ts";
 import { createAgent } from "../src/services/agents.ts";
-import { createIssue } from "../src/services/issues.ts";
+import { createIssue } from "../src/application/issues.ts";
 import type { Issue, IssueEvent } from "../src/domain/types.ts";
 import { createProject } from "../src/application/projects.ts";
 import { openTestDatabase, type TestDatabase } from "./helpers/db.ts";
@@ -121,7 +121,7 @@ async function seedProject(): Promise<void> {
 
 async function seedIssue(status?: string): Promise<Issue> {
   await seedProject();
-  return createIssue(testDb.db, {
+  return createIssue(testDb.ports, {
     project: "TAC",
     title: "Seed issue",
     ...(status === undefined ? {} : { status }),
@@ -628,12 +628,12 @@ test("issue labels are human-only, sorted, replaced, and recorded once", async (
 
 test("issue relations are human-only, expose both directions, and ignore duplicates", async () => {
   await seedProject();
-  await createIssue(testDb.db, {
+  await createIssue(testDb.ports, {
     project: "TAC",
     title: "Blocked issue",
     status: "todo",
   });
-  await createIssue(testDb.db, {
+  await createIssue(testDb.ports, {
     project: "TAC",
     title: "Blocking issue",
     status: "todo",
@@ -725,12 +725,12 @@ test("issue relations are human-only, expose both directions, and ignore duplica
 
 test("the ready queue and claims skip a todo issue with an open blocker", async () => {
   await seedProject();
-  await createIssue(testDb.db, {
+  await createIssue(testDb.ports, {
     project: "TAC",
     title: "Blocked issue",
     status: "todo",
   });
-  await createIssue(testDb.db, {
+  await createIssue(testDb.ports, {
     project: "TAC",
     title: "Blocking issue",
     status: "todo",

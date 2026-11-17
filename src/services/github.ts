@@ -1,8 +1,8 @@
-import type { Database } from "../db.ts";
+import { moveIssue } from "../application/issues.ts";
+import type { Ports } from "../application/ports.ts";
 import { ServiceError } from "../domain/errors.ts";
 import { issueKeyFromText } from "../domain/keys.ts";
 import type { Issue } from "../domain/types.ts";
-import { moveIssue } from "./issues.ts";
 
 /** Narrows an unknown JSON value to a plain object, or null when it is not one. */
 function record(value: unknown): Record<string, unknown> | null {
@@ -32,7 +32,7 @@ function targetForAction(
  * illegal transition, so it resolves to null instead of an error.
  */
 export async function applyPullRequestEvent(
-  db: Database,
+  ports: Ports,
   event: string | null,
   payload: unknown,
 ): Promise<Issue | null> {
@@ -79,7 +79,7 @@ export async function applyPullRequestEvent(
       : `pull request ${String(action)}`;
 
   try {
-    return await moveIssue(db, { key, to, actor: "git", body: summary });
+    return await moveIssue(ports, { key, to, actor: "git", body: summary });
   } catch (error) {
     if (
       error instanceof ServiceError &&

@@ -10,7 +10,7 @@ import {
   createIssue,
   getIssue,
   getIssueTimeline,
-} from "../src/services/issues.ts";
+} from "../src/application/issues.ts";
 import { createProject } from "../src/application/projects.ts";
 import { claimNext } from "../src/services/queue.ts";
 import { openTestDatabase, type TestDatabase } from "./helpers/db.ts";
@@ -147,7 +147,7 @@ async function seedProject(): Promise<void> {
 
 async function seedIssue(status?: string, title = "Seed issue"): Promise<Issue> {
   await seedProject();
-  return createIssue(testDb.db, {
+  return createIssue(testDb.ports, {
     project: "TAC",
     title,
     ...(status === undefined ? {} : { status }),
@@ -155,12 +155,12 @@ async function seedIssue(status?: string, title = "Seed issue"): Promise<Issue> 
 }
 
 async function issueStatus(key: string): Promise<string> {
-  const issue = await getIssue(testDb.db, key);
+  const issue = await getIssue(testDb.ports, key);
   return issue.status;
 }
 
 async function statusEvents(key: string): Promise<IssueEvent[]> {
-  const { events } = await getIssueTimeline(testDb.db, key);
+  const { events } = await getIssueTimeline(testDb.ports, key);
   return events.filter((event) => event.kind === "status");
 }
 
@@ -382,12 +382,12 @@ test("a non pull_request event is ignored", async () => {
 
 test("the head ref key wins over a title naming another issue", async () => {
   await seedProject();
-  await createIssue(testDb.db, {
+  await createIssue(testDb.ports, {
     project: "TAC",
     title: "First",
     status: "in_progress",
   });
-  await createIssue(testDb.db, {
+  await createIssue(testDb.ports, {
     project: "TAC",
     title: "Second",
     status: "in_progress",
@@ -425,7 +425,7 @@ test("an agent-claimed issue keeps its claim after the webhook moves it", async 
   const response = await postWebhook(app, pullRequestPayload());
 
   assert.equal(response.status, 200);
-  const issue = await getIssue(testDb.db, "TAC-1");
+  const issue = await getIssue(testDb.ports, "TAC-1");
   assert.equal(issue.status, "in_review");
   assert.equal(issue.claimedBy, "agent-1");
 });
@@ -461,7 +461,7 @@ test("applyPullRequestEvent ignores payloads without a pull_request object", asy
 
   for (const payload of [null, [], { pull_request: null }, { pull_request: 5 }]) {
     assert.equal(
-      await applyPullRequestEvent(testDb.db, "pull_request", payload),
+      await applyPullRequestEvent(testDb.ports, "pull_request", payload),
       null,
     );
   }

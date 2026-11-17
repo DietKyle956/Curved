@@ -4,12 +4,11 @@ import { ServiceError, type ErrorCode } from "../src/domain/errors.ts";
 import { BLOCKED_REASON_MAX_LENGTH } from "../src/domain/validation.ts";
 import { createAgent } from "../src/services/agents.ts";
 import { blockIssue, unblockIssue } from "../src/services/blocking.ts";
-import { listEvents } from "../src/services/events.ts";
 import {
   createIssue,
   getIssue,
   listIssues,
-} from "../src/services/issues.ts";
+} from "../src/application/issues.ts";
 import type { Issue, IssueEvent } from "../src/domain/types.ts";
 import { createProject } from "../src/application/projects.ts";
 import {
@@ -49,7 +48,7 @@ async function seedProject(key = "TAC"): Promise<void> {
 }
 
 async function seedIssue(title = "Queue issue"): Promise<Issue> {
-  return createIssue(testDb.db, {
+  return createIssue(testDb.ports, {
     project: "TAC",
     title,
     status: "todo",
@@ -89,7 +88,7 @@ test("blockIssue trims the reason, returns the issue to todo, and appends one bl
   assert.equal(blocked.claimedBy, null);
   assert.equal(blocked.blockedReason, "needs design review");
 
-  const events = await listEvents(testDb.db, issue.id);
+  const events = await testDb.ports.events.list(issue.id);
   const blockedEvents = withKind(events, "blocked");
   assert.equal(blockedEvents.length, 1);
   const event = blockedEvents[0];
@@ -149,23 +148,23 @@ test("getIssue and listIssues expose blockedReason, and unblocking appends unblo
     reason: "blocked on review",
   });
 
-  const read = await getIssue(testDb.db, issue.key);
+  const read = await getIssue(testDb.ports, issue.key);
   assert.equal(read.blockedReason, "blocked on review");
   assert.equal(read.status, "todo");
 
-  const listed = await listIssues(testDb.db);
+  const listed = await listIssues(testDb.ports);
   assert.equal(listed.length, 1);
   assert.equal(listed[0]?.key, issue.key);
   assert.equal(listed[0]?.blockedReason, "blocked on review");
 
   await unblockIssue(testDb.db, { key: issue.key });
 
-  const afterUnblock = await getIssue(testDb.db, issue.key);
+  const afterUnblock = await getIssue(testDb.ports, issue.key);
   assert.equal(afterUnblock.blockedReason, null);
-  const listedAfterUnblock = await listIssues(testDb.db);
+  const listedAfterUnblock = await listIssues(testDb.ports);
   assert.equal(listedAfterUnblock[0]?.blockedReason, null);
 
-  const events = await listEvents(testDb.db, issue.id);
+  const events = await testDb.ports.events.list(issue.id);
   assert.deepEqual(
     events.map((event) => event.kind),
     ["created", "claim", "blocked", "unblocked"],
@@ -232,7 +231,7 @@ test("an owning agent cannot block an issue in in_review", async () => {
     rejectsWithServiceCode("illegal_transition"),
   );
 
-  const current = await getIssue(testDb.db, issue.key);
+  const current = await getIssue(testDb.ports, issue.key);
   assert.equal(current.status, "in_review");
   assert.equal(current.blockedReason, null);
 });
@@ -262,7 +261,7 @@ test("blockIssue requires the claiming agent on an in_progress issue", async () 
     rejectsWithServiceCode("forbidden_transition"),
   );
 
-  const unchanged = await getIssue(testDb.db, owned.key);
+  const unchanged = await getIssue(testDb.ports, owned.key);
   assert.equal(unchanged.status, "in_progress");
   assert.equal(unchanged.claimedBy, "alpha");
   assert.equal(unchanged.blockedReason, null);
@@ -287,7 +286,7 @@ test("unblockIssue rejects an agent actor and rejects an unblocked issue", async
     rejectsWithServiceCode("forbidden_transition"),
   );
 
-  const stillBlocked = await getIssue(testDb.db, issue.key);
+  const stillBlocked = await getIssue(testDb.ports, issue.key);
   assert.equal(stillBlocked.blockedReason, "waiting on input");
 
   const neverBlocked = await seedIssue("Never blocked");
@@ -308,13 +307,13 @@ test("a blocked issue keeps the trimmed reason in its event and stays an unclaim
     reason: "\n\twaiting on security sign-off \n",
   });
 
-  const current = await getIssue(testDb.db, issue.key);
+  const current = await getIssue(testDb.ports, issue.key);
   assert.equal(current.status, "todo");
   assert.equal(current.claimedBy, null);
   assert.equal(current.blockedReason, "waiting on security sign-off");
 
   const blockedEvents = withKind(
-    await listEvents(testDb.db, issue.id),
+    await testDb.ports.events.list(issue.id),
     "blocked",
   );
   assert.equal(blockedEvents.length, 1);

@@ -6,7 +6,7 @@ import { after, before, beforeEach, test } from "node:test";
 import { Client, type CallToolResult } from "@modelcontextprotocol/client";
 import { StdioClientTransport } from "@modelcontextprotocol/client/stdio";
 import { createAgent } from "../src/services/agents.ts";
-import { createIssue } from "../src/services/issues.ts";
+import { createIssue } from "../src/application/issues.ts";
 import type { Issue } from "../src/domain/types.ts";
 import { createProject } from "../src/application/projects.ts";
 import { openTestDatabase, type TestDatabase } from "./helpers/db.ts";
@@ -96,7 +96,7 @@ async function seedIssue(
   project = "TAC",
   priority = 3,
 ): Promise<Issue> {
-  return createIssue(testDb.db, { project, title, status: "todo", priority });
+  return createIssue(testDb.ports, { project, title, status: "todo", priority });
 }
 
 function childEnv(

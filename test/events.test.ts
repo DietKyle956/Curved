@@ -1,8 +1,7 @@
 import assert from "node:assert/strict";
 import { after, before, beforeEach, test } from "node:test";
 import { pgErrorCode } from "../src/db.ts";
-import { appendEvent, listEvents } from "../src/services/events.ts";
-import { createIssue } from "../src/services/issues.ts";
+import { createIssue } from "../src/application/issues.ts";
 import { createProject } from "../src/application/projects.ts";
 import { openTestDatabase, type TestDatabase } from "./helpers/db.ts";
 
@@ -26,20 +25,20 @@ function assertIsoTimestamp(value: string): void {
 
 async function seedIssue(): Promise<number> {
   await createProject(testDb.ports, { key: "TAC", name: "Tactics" });
-  const issue = await createIssue(testDb.db, { project: "TAC", title: "Event target" });
+  const issue = await createIssue(testDb.ports, { project: "TAC", title: "Event target" });
   return issue.id;
 }
 
 test("appendEvent stores comment and status events and listEvents returns them ascending by id", async () => {
   const issueId = await seedIssue();
 
-  const comment = await appendEvent(testDb.db, {
+  const comment = await testDb.ports.events.append({
     issueId,
     kind: "comment",
     actorType: "human",
     body: "looks good",
   });
-  const status = await appendEvent(testDb.db, {
+  const status = await testDb.ports.events.append({
     issueId,
     kind: "status",
     actorType: "agent",
@@ -47,7 +46,7 @@ test("appendEvent stores comment and status events and listEvents returns them a
     toStatus: "todo",
   });
 
-  const events = await listEvents(testDb.db, issueId);
+  const events = await testDb.ports.events.list(issueId);
   assert.deepEqual(
     events.map((event) => event.kind),
     ["created", "comment", "status"],
@@ -80,7 +79,7 @@ test("appendEvent stores comment and status events and listEvents returns them a
 
 test("issue_events rejects updates with SQLSTATE 23001 and keeps the stored body", async () => {
   const issueId = await seedIssue();
-  const comment = await appendEvent(testDb.db, {
+  const comment = await testDb.ports.events.append({
     issueId,
     kind: "comment",
     actorType: "human",
@@ -92,7 +91,7 @@ test("issue_events rejects updates with SQLSTATE 23001 and keeps the stored body
     (error: unknown) => pgErrorCode(error) === "23001",
   );
 
-  const stored = (await listEvents(testDb.db, issueId)).find(
+  const stored = (await testDb.ports.events.list(issueId)).find(
     (event) => event.id === comment.id,
   );
   assert.ok(stored, "comment event missing from history");
@@ -101,21 +100,21 @@ test("issue_events rejects updates with SQLSTATE 23001 and keeps the stored body
 
 test("issue_events rejects deletes with SQLSTATE 23001 and keeps every event", async () => {
   const issueId = await seedIssue();
-  await appendEvent(testDb.db, {
+  await testDb.ports.events.append({
     issueId,
     kind: "comment",
     actorType: "human",
     body: "keep me",
   });
 
-  const before = await listEvents(testDb.db, issueId);
+  const before = await testDb.ports.events.list(issueId);
 
   await assert.rejects(
     testDb.db.query("delete from issue_events"),
     (error: unknown) => pgErrorCode(error) === "23001",
   );
 
-  const afterDelete = await listEvents(testDb.db, issueId);
+  const afterDelete = await testDb.ports.events.list(issueId);
   assert.equal(afterDelete.length, before.length);
   assert.deepEqual(
     afterDelete.map((event) => event.id),

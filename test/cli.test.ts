@@ -3,7 +3,7 @@ import { spawn } from "node:child_process";
 import { resolve } from "node:path";
 import { after, before, beforeEach, test } from "node:test";
 import { openTestDatabase, type TestDatabase } from "./helpers/db.ts";
-import { createIssue } from "../src/services/issues.ts";
+import { createIssue } from "../src/application/issues.ts";
 import { setIssueLabels } from "../src/services/labels.ts";
 import { createProject } from "../src/application/projects.ts";
 import { addRelation } from "../src/services/relations.ts";
@@ -387,8 +387,8 @@ test("issue comment then issue show render the comment in human and JSON form", 
 
 test("issue show renders labels and relations seeded through the service layer", async () => {
   await createProject(testDb.ports, { key: "TAC", name: "Tac" });
-  await createIssue(testDb.db, { project: "TAC", title: "Blocked work" });
-  await createIssue(testDb.db, { project: "TAC", title: "Blocking work" });
+  await createIssue(testDb.ports, { project: "TAC", title: "Blocked work" });
+  await createIssue(testDb.ports, { project: "TAC", title: "Blocking work" });
   await setIssueLabels(testDb.db, { key: "TAC-1", labels: ["ui", "bug"] });
   await addRelation(testDb.db, { blocked: "TAC-1", blocking: "TAC-2" });
 
@@ -1158,7 +1158,7 @@ test("block and unblock reject missing credentials, wrong actors, wrong status, 
 
 test("git-branch prints the canonical branch name", async () => {
   await createProject(testDb.ports, { key: "TAC", name: "Tac" });
-  await createIssue(testDb.db, { project: "TAC", title: "Fix login" });
+  await createIssue(testDb.ports, { project: "TAC", title: "Fix login" });
 
   const result = await runCli(["git-branch", "TAC-1"]);
 
@@ -1168,7 +1168,7 @@ test("git-branch prints the canonical branch name", async () => {
 
 test("git-branch resolves padded keys to the canonical key", async () => {
   await createProject(testDb.ports, { key: "TAC", name: "Tac" });
-  await createIssue(testDb.db, { project: "TAC", title: "Fix login" });
+  await createIssue(testDb.ports, { project: "TAC", title: "Fix login" });
 
   const result = await runCli(["git-branch", "TAC-001"]);
 
@@ -1178,7 +1178,7 @@ test("git-branch resolves padded keys to the canonical key", async () => {
 
 test("git-branch --json prints the key and branch", async () => {
   await createProject(testDb.ports, { key: "TAC", name: "Tac" });
-  await createIssue(testDb.db, { project: "TAC", title: "Fix login" });
+  await createIssue(testDb.ports, { project: "TAC", title: "Fix login" });
 
   const result = await runCli(["git-branch", "TAC-1", "--json"]);
 

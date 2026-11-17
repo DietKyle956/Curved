@@ -1,11 +1,11 @@
 import type { QueryResultRow } from "pg";
+import { bindPorts } from "../adapters/postgres/ports.ts";
+import { hydrateIssue } from "../application/issue-read-model.ts";
 import type { Database } from "../db.ts";
 import { resolveContext } from "../domain/actors.ts";
 import { ServiceError } from "../domain/errors.ts";
 import { parseIssueKey } from "../domain/keys.ts";
 import type { Issue } from "../domain/types.ts";
-import { appendEvent } from "./events.ts";
-import { hydrateIssue } from "./issues.ts";
 
 export interface AddRelationInput {
   blocked: string;
@@ -62,6 +62,8 @@ export async function addRelation(
   }
 
   return db.tx(async (tx) => {
+    const ports = bindPorts(tx);
+
     const inserted = await tx.one<InsertedRelationRow>(
       `insert into issue_relations (blocking_issue_id, blocked_issue_id)
        values ($1, $2)
@@ -70,7 +72,7 @@ export async function addRelation(
       [blocking.id, blocked.id],
     );
     if (inserted !== null) {
-      await appendEvent(tx, {
+      await ports.events.append({
         issueId: blocked.id,
         kind: "relation",
         actorType: "human",
@@ -80,6 +82,6 @@ export async function addRelation(
       });
     }
 
-    return hydrateIssue(tx, blocked.id, context);
+    return hydrateIssue(ports, blocked.id, context);
   });
 }

@@ -3,12 +3,13 @@ import { z } from "zod";
 import type { Database } from "../db.ts";
 import { ServiceError } from "../domain/errors.ts";
 import { ISSUE_KEY_PATTERN, PROJECT_KEY_PATTERN } from "../domain/keys.ts";
+import type { Ports } from "../application/ports.ts";
 import { blockIssue } from "../services/blocking.ts";
 import { commentOnIssue } from "../services/comments.ts";
 import {
   createIssue as createIssueService,
   getIssueTimeline,
-} from "../services/issues.ts";
+} from "../application/issues.ts";
 import {
   claimNext as claimNextService,
   listReady as listReadyService,
@@ -79,6 +80,8 @@ export type SubmitForReviewInput = z.infer<typeof submitForReviewInput>;
 
 export interface ToolDeps {
   db: Database;
+  /** Ports bound to the same database, for the issue application module. */
+  ports: Ports;
   /** Resolves the authenticated agent name, or throws `not_authenticated`. */
   resolveAgent(): Promise<string>;
 }
@@ -118,7 +121,7 @@ export async function claimNext(deps: ToolDeps, input: ClaimNextInput) {
     { project: input.project },
     agent,
   );
-  return getIssueTimeline(deps.db, issue.key, { actor: "agent", agent });
+  return getIssueTimeline(deps.ports, issue.key, { actor: "agent", agent });
 }
 
 export async function comment(deps: ToolDeps, input: CommentInput) {
@@ -133,7 +136,7 @@ export async function comment(deps: ToolDeps, input: CommentInput) {
 
 export async function createIssue(deps: ToolDeps, input: CreateIssueInput) {
   await deps.resolveAgent();
-  return createIssueService(deps.db, {
+  return createIssueService(deps.ports, {
     project: input.project,
     title: input.title,
     description: input.description,
@@ -144,7 +147,7 @@ export async function createIssue(deps: ToolDeps, input: CreateIssueInput) {
 
 export async function getIssue(deps: ToolDeps, input: GetIssueInput) {
   const agent = await deps.resolveAgent();
-  return getIssueTimeline(deps.db, input.key, { actor: "agent", agent });
+  return getIssueTimeline(deps.ports, input.key, { actor: "agent", agent });
 }
 
 export async function listReady(deps: ToolDeps, input: ListReadyInput) {

@@ -1,11 +1,11 @@
 import type { Database } from "../db.ts";
+import { bindPorts } from "../adapters/postgres/ports.ts";
+import { getIssue } from "../application/issues.ts";
 import { resolveContext } from "../domain/actors.ts";
 import { ServiceError } from "../domain/errors.ts";
 import type { IssueEvent } from "../domain/types.ts";
 import { validateCommentBody } from "../domain/validation.ts";
-import { appendEvent } from "./events.ts";
 import { ensureAgentExists } from "./agents.ts";
-import { getIssue } from "./issues.ts";
 
 export interface CommentInput {
   key: string;
@@ -34,7 +34,7 @@ export async function commentOnIssue(
     agentName = agent;
     await ensureAgentExists(db, agent);
   }
-  const issue = await getIssue(db, input.key, {
+  const issue = await getIssue(bindPorts(db), input.key, {
     actor,
     agent: agentName ?? undefined,
   });
@@ -50,7 +50,7 @@ export async function commentOnIssue(
   }
 
   return db.tx(async (tx) =>
-    appendEvent(tx, {
+    bindPorts(tx).events.append({
       issueId: issue.id,
       kind: "comment",
       actorType: actor,

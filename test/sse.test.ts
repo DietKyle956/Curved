@@ -6,7 +6,7 @@ import { after, afterEach, before, beforeEach, test } from "node:test";
 import { createApp, type App } from "../src/http/app.ts";
 import { createEventHub, type EventHub } from "../src/http/event-hub.ts";
 import { commentOnIssue } from "../src/services/comments.ts";
-import { createIssue, updateIssue } from "../src/services/issues.ts";
+import { createIssue, updateIssue } from "../src/application/issues.ts";
 import { createProject } from "../src/application/projects.ts";
 import { openTestDatabase, type TestDatabase } from "./helpers/db.ts";
 
@@ -309,7 +309,7 @@ test("an issue created by the CLI wakes the open stream within 1000 ms of exitin
 
 test("a comment and an issue field update each wake the stream", async () => {
   const project = await createProject(testDb.ports, { key: "TAC", name: "Tactics" });
-  const issue = await createIssue(testDb.db, {
+  const issue = await createIssue(testDb.ports, {
     project: "TAC",
     title: "Watch me",
   });
@@ -320,7 +320,7 @@ test("a comment and an issue field update each wake the stream", async () => {
   const commentFrame = await nextEvent(stream, "issues_changed");
   assert.equal(Number(commentFrame.data), project.id);
 
-  await updateIssue(testDb.db, { key: issue.key, title: "Renamed" });
+  await updateIssue(testDb.ports, { key: issue.key, title: "Renamed" });
   const updateFrame = await nextEvent(stream, "issues_changed");
   assert.equal(Number(updateFrame.data), project.id);
 });

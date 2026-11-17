@@ -2,12 +2,11 @@ import assert from "node:assert/strict";
 import { after, before, beforeEach, test } from "node:test";
 import { ServiceError, type ErrorCode } from "../src/domain/errors.ts";
 import { createAgent } from "../src/services/agents.ts";
-import { listEvents } from "../src/services/events.ts";
 import {
   createIssue,
   getIssue,
   moveIssue,
-} from "../src/services/issues.ts";
+} from "../src/application/issues.ts";
 import type { Issue, IssueEvent } from "../src/domain/types.ts";
 import { createProject } from "../src/application/projects.ts";
 import { claimNext, listReady } from "../src/services/queue.ts";
@@ -48,7 +47,7 @@ async function seedIssue(
   title = "Issue",
   status = "todo",
 ): Promise<Issue> {
-  return createIssue(testDb.db, { project, title, status, priority: 3 });
+  return createIssue(testDb.ports, { project, title, status, priority: 3 });
 }
 
 async function seedAgent(name: string): Promise<void> {
@@ -62,7 +61,7 @@ function withKind(events: IssueEvent[], kind: IssueEvent["kind"]): IssueEvent[] 
 /** Walks a backlog issue down the legal human edges to done. */
 async function markDone(key: string): Promise<void> {
   for (const to of ["todo", "in_progress", "in_review", "done"]) {
-    await moveIssue(testDb.db, { key, to });
+    await moveIssue(testDb.ports, { key, to });
   }
 }
 
@@ -83,19 +82,19 @@ test("addRelation records both directions and one event on the blocked issue", a
     blockedBy: [blocker.key],
   });
 
-  const blockerRead = await getIssue(testDb.db, blocker.key);
+  const blockerRead = await getIssue(testDb.ports, blocker.key);
   assert.deepEqual(blockerRead.relations, {
     blocks: [blocked.key],
     blockedBy: [],
   });
-  const blockedRead = await getIssue(testDb.db, blocked.key);
+  const blockedRead = await getIssue(testDb.ports, blocked.key);
   assert.deepEqual(blockedRead.relations, {
     blocks: [],
     blockedBy: [blocker.key],
   });
 
   const blockedEvents = withKind(
-    await listEvents(testDb.db, blocked.id),
+    await testDb.ports.events.list(blocked.id),
     "relation",
   );
   assert.equal(blockedEvents.length, 1);
@@ -111,7 +110,7 @@ test("addRelation records both directions and one event on the blocked issue", a
   );
 
   assert.deepEqual(
-    withKind(await listEvents(testDb.db, blocker.id), "relation"),
+    withKind(await testDb.ports.events.list(blocker.id), "relation"),
     [],
   );
 });
@@ -136,7 +135,7 @@ test("adding the same relation twice is idempotent and writes no second event", 
     blockedBy: [blocker.key],
   });
   assert.equal(
-    withKind(await listEvents(testDb.db, blocked.id), "relation").length,
+    withKind(await testDb.ports.events.list(blocked.id), "relation").length,
     1,
   );
 });
@@ -169,10 +168,10 @@ test("addRelation validates the edge and rejects unknown issues and agent actors
   );
 
   assert.deepEqual(
-    withKind(await listEvents(testDb.db, blocked.id), "relation"),
+    withKind(await testDb.ports.events.list(blocked.id), "relation"),
     [],
   );
-  assert.deepEqual((await getIssue(testDb.db, blocked.key)).relations, {
+  assert.deepEqual((await getIssue(testDb.ports, blocked.key)).relations, {
     blocks: [],
     blockedBy: [],
   });
@@ -196,7 +195,7 @@ test("an open blocker keeps a todo issue out of the ready queue until it is done
     claimNext(testDb.db, { project: "TAC" }, "alpha"),
     rejectsWithServiceCode("no_ready_issue"),
   );
-  assert.equal((await getIssue(testDb.db, blocked.key)).status, "todo");
+  assert.equal((await getIssue(testDb.ports, blocked.key)).status, "todo");
 
   await markDone(blocker.key);
 
