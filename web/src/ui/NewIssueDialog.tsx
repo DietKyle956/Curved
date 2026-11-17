@@ -84,6 +84,7 @@ export function NewIssueDialog({
           {(id) => (
             <input
               id={id}
+              data-testid="new-issue-title"
               value={title}
               onChange={(event) => {
                 setTitle(event.target.value);
@@ -103,6 +104,7 @@ export function NewIssueDialog({
           {(id) => (
             <textarea
               id={id}
+              data-testid="new-issue-description"
               value={description}
               onChange={(event) => {
                 setDescription(event.target.value);
@@ -124,6 +126,7 @@ export function NewIssueDialog({
             {(id) => (
               <select
                 id={id}
+                data-testid="new-issue-priority"
                 value={priority}
                 onChange={(event) => {
                   setPriority(Number(event.target.value) as Priority);
@@ -142,6 +145,7 @@ export function NewIssueDialog({
             {(id) => (
               <select
                 id={id}
+                data-testid="new-issue-status"
                 value={status}
                 onChange={(event) => {
                   setStatus(event.target.value as Status);
@@ -163,6 +167,7 @@ export function NewIssueDialog({
             <>
               <input
                 id={id}
+                data-testid="new-issue-labels"
                 value={labels}
                 onChange={(event) => {
                   setLabels(event.target.value);
@@ -188,7 +193,13 @@ export function NewIssueDialog({
             <Button variant="ghost" size="md" onClick={onClose}>
               Cancel
             </Button>
-            <Button type="submit" variant="primary" size="md" loading={submitting}>
+            <Button
+              type="submit"
+              variant="primary"
+              size="md"
+              loading={submitting}
+              data-testid="new-issue-submit"
+            >
               Create issue
             </Button>
           </div>

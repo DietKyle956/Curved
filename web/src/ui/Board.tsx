@@ -45,6 +45,7 @@ export function IssueCard({
 
   return (
     <article
+      data-testid={`issue-card-${issue.key}`}
       draggable={onDragStart !== undefined}
       onDragStart={
         onDragStart === undefined
@@ -218,6 +219,7 @@ export function Board({
   if (issues.length === 0) {
     return (
       <EmptyState
+        testId="board-empty"
         className="flex-1"
         icon={<Plus className="size-5" aria-hidden="true" />}
         title="No issues yet"
@@ -234,6 +236,7 @@ export function Board({
   if (visible.length === 0) {
     return (
       <EmptyState
+        testId="board-empty"
         className="flex-1"
         icon={<Plus className="size-5" aria-hidden="true" />}
         title="No issues match"
@@ -273,7 +276,10 @@ export function Board({
       <div className="min-h-0 min-w-0 flex-1 overflow-y-auto px-3 pb-[calc(7.5rem+env(safe-area-inset-bottom))] lg:hidden">
         <div className="divide-y divide-line">
           {mobileIssues.length === 0 ? (
-            <p className="px-1 py-8 text-center text-[11.5px] text-fg-muted">
+            <p
+              data-testid="board-empty"
+              className="px-1 py-8 text-center text-[11.5px] text-fg-muted"
+            >
               No issues in this status. Tap the active tab again to show all
               issues.
             </p>
@@ -282,6 +288,7 @@ export function Board({
             <button
               key={issue.key}
               type="button"
+              data-testid={`issue-row-${issue.key}`}
               onClick={() => {
                 onOpenIssue(issue);
               }}
@@ -335,6 +342,9 @@ export function Board({
               <button
                 key={status}
                 type="button"
+                data-testid={`status-tab-${status}`}
+                data-status={status}
+                data-count={counts[status]}
                 onClick={() => {
                   setMobileStatus(active ? "all" : status);
                 }}

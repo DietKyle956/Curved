@@ -2,7 +2,7 @@
 
 - **Last updated:** 2026-11-17
 - **Project:** curved
-- **Phase:** HTTP API and auth boundary complete (`LAS-148`), plus a working SPA prototype, the SSE realtime stream (`LAS-150`), the GitHub webhook with its branch helper (`LAS-151`), the SPA foundation ticket (`LAS-152`), the architecture contract (`LAS-168`, documentation only), the pure domain layer (`LAS-169`, no behavior change), and step 3's slices, ports plus the projects resource (`LAS-170`) then the issue lifecycle and read model on ports (`LAS-171`), agents, claims, review, comments, and blocking on ports (`LAS-172`), then labels, relations, and the GitHub use case on ports (`LAS-173`), then the inbound-adapter rewire, composition roots, and the import-direction gate (`LAS-174`), then the web layering (`LAS-175`), then the completion gate, boundary audit, and handoff (`LAS-176`), all with no behavior change; all six refactor steps, the architecture gate, and the completion handoff are complete. Toolchain, Postgres 18, migrations, the projects resource, the issues resource (atomic keys, append-only events), comment events with the full timeline read path, the transition graph with its actor matrix, token-authenticated agents with the one-active-issue fence, agent block with human unblock, the MCP server over stdio, the authenticated HTTP API with its SPA fallback, the React/Vite board, queue, detail, and palette, the SSE stream that refreshes them, the HMAC-verified GitHub webhook that moves issues from pull requests, and the routed board with its mobile status bar are live.
+- **Phase:** HTTP API and auth boundary complete (`LAS-148`), plus a working SPA prototype, the SSE realtime stream (`LAS-150`), the GitHub webhook with its branch helper (`LAS-151`), the SPA foundation ticket (`LAS-152`), the architecture contract (`LAS-168`, documentation only), the pure domain layer (`LAS-169`, no behavior change), and step 3's slices, ports plus the projects resource (`LAS-170`) then the issue lifecycle and read model on ports (`LAS-171`), agents, claims, review, comments, and blocking on ports (`LAS-172`), then labels, relations, and the GitHub use case on ports (`LAS-173`), then the inbound-adapter rewire, composition roots, and the import-direction gate (`LAS-174`), then the web layering (`LAS-175`), then the completion gate, boundary audit, and handoff (`LAS-176`), all with no behavior change; all six refactor steps, the architecture gate, and the completion handoff are complete. Toolchain, Postgres 18, migrations, the projects resource, the issues resource (atomic keys, append-only events), comment events with the full timeline read path, the transition graph with its actor matrix, token-authenticated agents with the one-active-issue fence, agent block with human unblock, the MCP server over stdio, the authenticated HTTP API with its SPA fallback, the React/Vite board, queue, detail, and palette, the SSE stream that refreshes them, the HMAC-verified GitHub webhook that moves issues from pull requests, and the routed board with its mobile status bar are live, and `LAS-155` adds the end-to-end acceptance gate (`npm run acceptance`).
 
 ## Current verified state
 
@@ -12,6 +12,16 @@
 - Startup path: `./scripts/init.sh` runs install, database, check, build.
   `--no-install` skips only install; the database step still runs.
 - End-of-session gate: `./scripts/clean-state.sh`
+- End-to-end acceptance gate: `npm run acceptance`
+  (`bash scripts/acceptance.sh` -> `node scripts/acceptance.mjs`) runs the CLI
+  lifecycle, the eight-tool MCP stdio handshake, `npm start` with HTTP plus SSE,
+  a signed GitHub webhook with its replay, and a dependency-free Chromium/CDP
+  browser leg at 390x844 against one throwaway
+  `curved_acceptance_<pid>_<epoch>` database. It migrates that database, drops
+  it afterward, and fails when a per-table digest of the default `curved`
+  database changes. `--skip-browser` and `--keep` are the flags; screenshots are
+  written under the system temp dir with run-scoped names. `scripts/db.sh` gained
+  `--no-migrate` so the acceptance bootstrap never writes the default schema.
 - Baseline: green, and `LAS-176` re-ran and recorded the full gate on
   2026-11-17. `./scripts/init.sh` and `./scripts/clean-state.sh` both pass;
   `npm run typecheck` covers server and web configs; `npm test` runs 195 tests
@@ -1717,3 +1727,55 @@ verification until those land.
   or a browser global reached through a re-export needs review eyes; there is
   still no frontend test runner, so the browser pass is manual.
 - Next best step: `LAS-155` (the end-to-end acceptance gate).
+
+### Session 029
+
+- Date: 2026-11-17
+- Goal: close `LAS-155`, the end-to-end acceptance gate. No product behavior
+  change; the only UI change is inert test hooks.
+- Completed: `npm run acceptance` is the repeatable gate.
+  `scripts/acceptance.sh` starts Postgres with `bash scripts/db.sh
+  --no-migrate`, always rebuilds `web/dist`, then runs
+  `scripts/acceptance.mjs`. The orchestrator creates and migrates one
+  `curved_acceptance_<pid>_<epoch>` database and runs every leg against it: the
+  CLI lifecycle (project, agent, Todo issue, ready with `busy: -`, claim, second
+  claim `agent_busy`, review, `busy: TAC-1` while in review, human move to done,
+  empty ready, `no_ready_issue`), the NDJSON MCP handshake with exactly the
+  eight tools, `npm start` on a free port, the UI bearer plus the session
+  cookie and the `ready` and `issues_changed` SSE frames, a signed
+  `pull_request` webhook that moves an issue to In Review plus its ignored
+  replay, and `scripts/acceptance-browser.mjs`. That browser leg is a
+  dependency-free Chromium/CDP driver at 390x844 that signs in, asserts the five
+  status tabs with counts, creates an issue through `Ctrl+K` and the palette,
+  posts a comment, and proves a second tab updates in under 1100ms (observed
+  46ms). Cleanup stops children newest-first, drops the database unless
+  `--keep`, and re-digests `projects`, `issues`, `issue_events`, `agents`,
+  `labels`, `issue_labels`, `issue_relations`, and `schema_migrations` in the
+  default `curved` database, failing on any change; `SIGINT`/`SIGTERM` runs the
+  same shutdown. `scripts/db.sh` gained `--no-migrate`. `web/src/ui` gained inert
+  `data-testid` hooks (board tabs, cards, rows, empty state; new-issue fields;
+  detail transitions, comment, timeline; sign-in; setup; toasts) plus optional
+  `testId` props on `Modal` and `EmptyState`, with no behavior, copy, or layout
+  change. `README.md` and `AGENTS.md` document the gate and its commands.
+- Evidence: `./scripts/init.sh` green (install, database, check, build; 195
+  tests, `architecture: ok`); `npm run acceptance` green twice, 72-73 checks,
+  on a fresh build with `web/dist` deleted, and with a SIGINT mid-run leaving no
+  server, chromium, or acceptance database behind; the default `curved` row
+  counts (`projects` 1, `issues` 30, `issue_events` 113, `agents` 5) were
+  identical before and after a full `npm test`, proving suite isolation on
+  `curved_test`; the board screenshot was measured programmatically (five equal
+  tabs 44.5 CSS px tall with counts, two issue rows, no clipping or overlap);
+  `./scripts/clean-state.sh` green.
+- Deviations: the webhook leg asserts the agent claim survives the `git` move to
+  in_review (`claimedBy: "beta"`), matching `nextClaimedBy` and
+  `test/github.test.ts`, not the ticket brief's "claim cleared". The acceptance
+  wrapper always rebuilds `web/dist` so the browser leg cannot pass on stale
+  assets.
+- Tracker: `LAS-155` is Done. `LAS-151` shows In Review; `LAS-153` and `LAS-154`
+  remain open with acceptance tests outstanding.
+- Known risk: the mobile toast overlays the comment composer for its 5s lifetime
+  and the muted pill text measures about 4.04:1 contrast; both are pre-existing
+  palette/layout traits, recorded rather than changed here. The browser leg needs
+  a local Chromium and Docker.
+- Next best step: `LAS-153` (issue detail and human actions acceptance tests).
+

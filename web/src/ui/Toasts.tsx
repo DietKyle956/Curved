@@ -46,6 +46,8 @@ export function Toasts({
               exit={reduce ? undefined : { opacity: 0, y: 6 }}
               transition={{ duration: 0.18, ease: [0.16, 1, 0.3, 1] }}
               className="pointer-events-auto flex items-start gap-2.5 rounded-ui border border-line bg-elevated px-3 py-2.5 shadow-float"
+              data-testid="toast"
+              data-kind={item.kind}
             >
               <Icon
                 className={`mt-px size-4 shrink-0 ${TONE[item.kind]}`}

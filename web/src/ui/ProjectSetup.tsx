@@ -98,6 +98,7 @@ export function ProjectSetup({
                   className="field-input font-mono tracking-[0.08em] uppercase"
                   placeholder="CRV"
                   maxLength={10}
+                  data-testid="setup-key"
                 />
               )}
             </Field>
@@ -115,6 +116,7 @@ export function ProjectSetup({
                   className="field-input"
                   placeholder="Curved"
                   maxLength={200}
+                  data-testid="setup-name"
                 />
               )}
             </Field>
@@ -125,7 +127,13 @@ export function ProjectSetup({
               </p>
             ) : null}
 
-            <Button type="submit" variant="primary" size="lg" loading={submitting}>
+            <Button
+              type="submit"
+              variant="primary"
+              size="lg"
+              loading={submitting}
+              data-testid="setup-submit"
+            >
               {submitting ? "Creating project" : "Create project"}
             </Button>
           </form>

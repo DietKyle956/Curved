@@ -15,6 +15,8 @@ interface ModalProps {
   overlayClassName?: string;
   /** Size, surface, and layout for the panel itself. */
   panelClassName: string;
+  /** Sets `data-testid` on the dialog panel. */
+  testId?: string;
   children: ReactNode;
 }
 
@@ -31,6 +33,7 @@ export function Modal({
   describedBy,
   overlayClassName = "",
   panelClassName,
+  testId,
   children,
 }: ModalProps) {
   const panelRef = useRef<HTMLDivElement>(null);
@@ -112,6 +115,7 @@ export function Modal({
             aria-label={label}
             aria-labelledby={labelledBy}
             aria-describedby={describedBy}
+            data-testid={testId}
             className={`${panelClassName} outline-none`}
             initial={reduce ? false : { opacity: 0, y: 8, scale: 0.99 }}
             animate={{ opacity: 1, y: 0, scale: 1 }}

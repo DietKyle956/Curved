@@ -285,9 +285,16 @@ fail (application -> adapter, domain -> `pg`, web ui -> adapter, web application
 -> adapter, web domain -> a backend module other than `src/domain/status.ts`).
 `ARCH.md` codifies the layers and the one-way dependency rule; all six steps
 have landed, along with the import-direction gate and the completion handoff,
-so the refactor parent `LAS-167` and `LAS-176` are complete. The next frontier
-is `LAS-155` (the end-to-end acceptance gate); `LAS-153` and `LAS-154` remain
-open in the tracker with acceptance tests outstanding.
+so the refactor parent `LAS-167` and `LAS-176` are complete. `LAS-155` added the
+end-to-end acceptance gate: `npm run acceptance` runs `scripts/acceptance.sh`
+(`db.sh --no-migrate`, then `npm run build:web`), and `scripts/acceptance.mjs`
+creates a throwaway `curved_acceptance_<pid>_<epoch>` database, migrates it,
+runs the CLI lifecycle, MCP stdio with all eight tools, `npm start` with HTTP
+plus SSE, a signed GitHub webhook and its replay, and the browser leg, then
+drops it and proves the default `curved` rows are unchanged through per-table
+digests. `--skip-browser` skips the browser leg; `--keep` keeps the throwaway
+database. `LAS-153` and `LAS-154` remain open in the tracker with acceptance
+tests outstanding.
 `scripts/check-architecture.mjs` enforces
 the rule set over `src/**/*.ts` and `web/src/**/*.ts(x)` from inside
 `npm run check`.
@@ -315,6 +322,9 @@ carries the same rules as a project-agnostic template.
 | `scripts/init.sh` | Baseline runner: install, check, build. `--no-install` skips install. |
 | `scripts/check-architecture.mjs` | Import-direction check over `src/**/*.ts` and `web/src/**/*.ts(x)`; exits 1 on any violation. |
 | `scripts/clean-state.sh` | End-of-session gate. Idempotent, writes nothing. |
+| `scripts/acceptance.sh` | Acceptance entry: `bash scripts/db.sh --no-migrate`, `npm run build:web`, then `scripts/acceptance.mjs` with the caller's flags. |
+| `scripts/acceptance.mjs` | End-to-end gate over a throwaway database: CLI, MCP, server, HTTP plus SSE, webhook, browser; drops the database and fails if the default `curved` rows changed. `--skip-browser`, `--keep`. |
+| `scripts/acceptance-browser.mjs` | Dependency-free Chromium/CDP driver at 390x844 over the built SPA; writes run-scoped screenshots under the system temp dir. `CHROMIUM_BIN` overrides the binary search. |
 | `.codegraph/` | Local index, gitignored. Refresh with `codegraph sync`. |
 
 ## Working rules
@@ -333,6 +343,7 @@ carries the same rules as a project-agnostic template.
 - The state-machine or permission invariant the change touches is proven by a test
   that would fail without the change.
 - `./scripts/init.sh` green, `./scripts/clean-state.sh` green.
+- `npm run acceptance` green before the item is reported done.
 - `MEMORY.md` dated today with what changed and the next step.
 
 ## End of session

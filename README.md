@@ -153,6 +153,63 @@ issue payload carries `labels` and `relations: { blocks, blockedBy }`, where
 - Working agreement: `AGENTS.md`
 - Current state and next step: `MEMORY.md`
 
+## Acceptance gate
+
+`npm run acceptance` is the end-to-end gate for the shipped entry points. It runs
+`bash scripts/acceptance.sh`, which starts Postgres with
+`bash scripts/db.sh --no-migrate` (readiness only, so the local `curved` database
+gets no migrations), rebuilds `web/dist` with `npm run build:web` so the browser
+leg exercises the tree under test, then hands off to
+`node scripts/acceptance.mjs`.
+
+The orchestrator creates one throwaway database,
+`curved_acceptance_<pid>_<epoch>`, from `DATABASE_URL` (falling back to the repo
+`.env`, then `postgres://curved:curved@127.0.0.1:55432/curved`), migrates it, and
+runs every leg against it:
+
+- `cli` - `project add`, `agent add`, `issue add`, then `ready` with its busy
+  line, `claim`, a second claim returning `agent_busy`, `review`, a human
+  `issue move` to done, and the `no_ready_issue` exit code.
+- `mcp` - the eight tools over NDJSON stdio, checked against the expected
+  `tools/list` names.
+- `server` - `npm start` on a free port until it prints its listening line, with
+  fresh `CURVED_UI_TOKEN` and `GITHUB_WEBHOOK_SECRET` values.
+- `http+sse` - the UI bearer and the session cookie, the `ready` frame, an
+  `issues_changed` frame for the acceptance project, and the built SPA.
+- `webhook` - a signed `pull_request` delivery moves an issue to `in_review`, and
+  the replay answers `ignored` without adding a second event.
+- `browser` - `scripts/acceptance-browser.mjs` drives Chromium at 390x844 through
+  sign-in, the five status tabs, palette-driven issue creation, a comment, and a
+  second tab that updates in under 1100ms.
+
+Prerequisites: Docker with Postgres from `docker compose up -d`, and Chromium
+found on `PATH` as `chromium`, `chromium-browser`, `google-chrome`, or
+`google-chrome-stable`, or named by `CHROMIUM_BIN`.
+
+Two flags reach `node scripts/acceptance.mjs` through
+`npm run acceptance -- <flag>`:
+
+- `--skip-browser` - skip the browser leg, for a machine without Chromium.
+- `--keep` - keep the throwaway database and print its name instead of dropping
+  it.
+
+The browser leg writes run-scoped screenshots to the system temp directory
+(`curved-acceptance-<run id>-board.png`, `-detail.png`, `-second-tab.png`) and
+prints each path on its `PASS browser:` line.
+
+Exit codes: `0` when every check passes, `1` on a failed check, a failed leg, or a
+cleanup failure, and `2` on an unknown argument. Cleanup stops the children, drops
+the throwaway database unless `--keep`, then re-digests the default database and
+fails when any row of `projects`, `issues`, `issue_events`, `agents`, `labels`,
+`issue_labels`, `issue_relations`, or `schema_migrations` changed. `SIGINT` or
+`SIGTERM` cleans up the same way and exits `1`. Each `PASS <leg>:` and
+`FAIL <leg>:` line names the leg that produced it.
+
+The gate builds on the other two entry points rather than replacing them:
+`./scripts/init.sh` is still the baseline (install, database, check, build) and
+`./scripts/clean-state.sh` is still the end-of-session gate. This is the only one
+that runs the CLI, MCP server, HTTP server, webhook, and SPA together.
+
 ## HTTP API
 
 `node src/composition/server.ts` (or `npm start`) serves the JSON API under

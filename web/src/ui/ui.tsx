@@ -240,15 +240,18 @@ export function EmptyState({
   body,
   action,
   className = "",
+  testId,
 }: {
   icon: ReactNode;
   title: string;
   body?: string;
   action?: ReactNode;
   className?: string;
+  testId?: string;
 }) {
   return (
     <div
+      data-testid={testId}
       className={`flex flex-col items-center justify-center px-6 py-10 text-center ${className}`}
     >
       <div className="mb-4 grid size-10 place-items-center rounded-ui border border-line bg-panel text-fg-muted">

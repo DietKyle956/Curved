@@ -78,7 +78,7 @@ function TimelineEvent({
 }) {
   const detail = eventDetail(event);
   return (
-    <li className="relative flex gap-2.5">
+    <li className="relative flex gap-2.5" data-testid="timeline-event" data-kind={event.kind}>
       <div className="flex flex-col items-center">
         <span className="grid size-5 shrink-0 place-items-center rounded-ui border border-line bg-panel">
           <EventIcon kind={event.kind} />
@@ -311,6 +311,7 @@ export function IssueDetail({
       open
       onClose={onClose}
       label={`Issue ${issueKey}`}
+      testId="issue-detail"
       overlayClassName="z-40 items-stretch p-0 sm:items-center sm:p-6"
       panelClassName="flex h-[100dvh] w-full flex-col overflow-hidden bg-panel sm:h-[min(calc(100dvh-3rem),50rem)] sm:max-w-3xl sm:rounded-ui sm:border sm:border-line sm:shadow-float"
     >
@@ -493,6 +494,8 @@ export function IssueDetail({
                           loading={moving === status}
                           disabled={moving !== null}
                           onClick={() => void transition(status)}
+                          data-testid={"transition-" + status}
+                          data-status={status}
                         >
                           {STATUS_LABEL[status]}
                         </Button>
@@ -684,6 +687,7 @@ export function IssueDetail({
           </label>
           <textarea
             id="issue-comment"
+            data-testid="comment-input"
             value={comment}
             onChange={(event) => {
               setComment(event.target.value);
@@ -708,6 +712,7 @@ export function IssueDetail({
               size="sm"
               loading={commenting}
               disabled={comment.trim().length === 0}
+              data-testid="comment-submit"
             >
               Comment
             </Button>

@@ -145,6 +145,7 @@ export function SignIn({
                     }}
                     aria-invalid={error !== null}
                     aria-describedby={error === null ? undefined : "signin-error"}
+                    data-testid="signin-token"
                   />
                   <button
                     type="button"
@@ -179,6 +180,7 @@ export function SignIn({
               size="lg"
               loading={submitting}
               className="w-full"
+              data-testid="signin-submit"
             >
               {submitting ? "Signing in" : "Continue"}
             </Button>
