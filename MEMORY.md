@@ -1,8 +1,8 @@
 # MEMORY.md
 
-- **Last updated:** 2026-11-16
+- **Last updated:** 2026-11-17
 - **Project:** curved
-- **Phase:** HTTP API and auth boundary complete (`LAS-148`), plus a working SPA prototype, the SSE realtime stream (`LAS-150`), the GitHub webhook with its branch helper (`LAS-151`), and the SPA foundation ticket (`LAS-152`). Toolchain, Postgres 18, migrations, the projects resource, the issues resource (atomic keys, append-only events), comment events with the full timeline read path, the transition graph with its actor matrix, token-authenticated agents with the one-active-issue fence, agent block with human unblock, the MCP server over stdio, the authenticated HTTP API with its SPA fallback, the React/Vite board, queue, detail, and palette, the SSE stream that refreshes them, the HMAC-verified GitHub webhook that moves issues from pull requests, and the routed board with its mobile status bar are live.
+- **Phase:** HTTP API and auth boundary complete (`LAS-148`), plus a working SPA prototype, the SSE realtime stream (`LAS-150`), the GitHub webhook with its branch helper (`LAS-151`), the SPA foundation ticket (`LAS-152`), and the architecture contract (`LAS-168`, documentation only). Toolchain, Postgres 18, migrations, the projects resource, the issues resource (atomic keys, append-only events), comment events with the full timeline read path, the transition graph with its actor matrix, token-authenticated agents with the one-active-issue fence, agent block with human unblock, the MCP server over stdio, the authenticated HTTP API with its SPA fallback, the React/Vite board, queue, detail, and palette, the SSE stream that refreshes them, the HMAC-verified GitHub webhook that moves issues from pull requests, and the routed board with its mobile status bar are live.
 
 ## Current verified state
 
@@ -14,6 +14,15 @@
 - End-of-session gate: `./scripts/clean-state.sh`
 - Baseline: green. `npm run typecheck` covers server and web configs; `npm test`
   runs 187 tests on the Node test runner.
+- Architecture contract: `ARCH.md` (550 lines) codifies target hexagonal layers
+  (domain, application, inbound and outbound adapters, composition roots), rule
+  ownership with bounded mirrors, ports and transactions, error translation, web
+  layering, testing policy, and enforcement. It is per-ticket guidance, not
+  implemented: the refactor has not started, so its Current/Target markers matter.
+- Templates: `/home/dietkyle/projects/templates/ARCH.md` (111 lines) is the
+  project-agnostic version of the same contract, listed as copy-first item 2 in
+  that directory's `index.md`; `templates/` is not a git repository, so those files
+  are uncommitted.
 - Database: `docker compose up` starts `postgres:18-alpine` on host port 55432
   (user/password/db all `curved`, named volume mounted at `/var/lib/postgresql`).
   `scripts/db.sh` waits for readiness, then runs `node src/migrate.ts`.
@@ -1016,3 +1025,50 @@ Close `LAS-152`, `LAS-153`, and `LAS-154` once their acceptance tests land.
   from this pass.
 - Next best step: `LAS-153` (issue detail and human actions).
 - Commits: 1 commit, `Route the SPA and finish the mobile board`.
+
+### Session 019
+
+- Date: 2026-11-17
+- Goal: close `LAS-168` (architecture contract and `ARCH.md` template), under
+  `LAS-167` (Hexagonal Refactor). Documentation only.
+- Completed: `ARCH.md` (550 lines) with a two-tense Current/Target convention and
+  nine sections: the layer map and one-way dependency rule (target `src/` and
+  `web/src/` trees, the sanctioned `http -> github, sse, static` peer set, the
+  composition-root rule); the rule-ownership table (one owner per rule plus its
+  current home, the five duplicate key regexes to delete, and bounded mirrors such
+  as the Postgres CHECK constraints and web imports of `src/shared/status.ts`); the
+  current state with the six-step expand-contract migration table and the no-shim
+  rule; ports (one `ports.ts`, `TransactionPorts`, `Ports.transaction`,
+  `ActiveClaimConflict`), the canonical lock/check/write/append-event/reload
+  sequence for the six status and claim use cases, and the preserved SQL invariants
+  (counter CTE, lock by key, `for update skip locked`, advisory lock 727275 against
+  migrations' 727274, the two-statement meta batch, the three-statement listing
+  budget, append trigger SQLSTATE 23001, `pg_notify` triggers); error translation
+  (one per crossing, 23505 to `duplicate`, partial index to `ActiveClaimConflict`
+  then `agent_busy`, HTTP status mapping only in the HTTP adapter) with the
+  code-to-HTTP table; web layering (`main.tsx` as the only importer of both `ui`
+  and `application`, the current `SignIn.tsx`/`ProjectSetup.tsx` violations and the
+  786-line `app.tsx`, the reference client marked machine-local and illustrative);
+  testing policy (the 187 tests in 16 files as the regression contract, six seams,
+  no new implementation-detail tests, no web test framework); the nine-item review
+  checklist; and enforcement (`npm run check`, the planned import-direction check,
+  the forbidden-directions table, review-only until migration step 6). `AGENTS.md`
+  gained an `ARCH.md` directory-page entry and one current-state sentence.
+  `/home/dietkyle/projects/templates/ARCH.md` (111 lines) is the project-agnostic
+  minimum contract and `templates/index.md` lists it as copy-first item 2.
+- Verification run: `npm run check` green (server and web typecheck plus 187
+  tests, 0 fail); `./scripts/init.sh --no-install` green (61s: install, database,
+  check, build); `./scripts/clean-state.sh` green. `git status` shows only
+  `ARCH.md` (new), `AGENTS.md`, and `MEMORY.md`, so no source, test, migration, or
+  `package.json` change.
+- Evidence captured: nine sections and the two-tense convention in `ARCH.md`; the
+  rule-ownership table with its five duplicate regexes; the six-step migration
+  table; the preserved lock numbers and SQLSTATE 23001; the 111-line template and
+  its `index.md` slot.
+- Known risk: `ARCH.md` describes a target tree that does not exist yet, so readers
+  must honor its Current/Target markers; the import-direction check is planned and
+  absent, so layering stays review-only until migration step 6; the web has no
+  automated test coverage; `templates/AGENTS.md` does not yet tell an agent to read
+  `ARCH.md`, so inheritance runs through `index.md` only.
+- Next best step: `LAS-169` (extract the pure domain layer).
+- Commits: 1 commit, `Codify the architecture contract`.

@@ -111,13 +111,16 @@ Tests: 187 pass, 0 fail, including `test/http.test.ts`, `test/event-hub.test.ts`
 `test/sse.test.ts`, the label and relation suites in `test/labels.test.ts` and
 `test/relations.test.ts`, the webhook and branch suite in `test/github.test.ts`,
 and the issue filter and human-only edit cases in `test/issues.test.ts`. Next
-frontier: LAS-153.
+frontier: LAS-153. `ARCH.md` now codifies the target layers and the one-way
+dependency rule, and that refactor has not started. `/home/dietkyle/projects/templates/ARCH.md`
+carries the same rules as a project-agnostic template.
 
 ## Directory page
 
 | Path | Role |
 |---|---|
 | `initial_idea.md` | Product intent and the design sketch. Source of truth for scope. |
+| `ARCH.md` | Architecture contract: layer map, one-way dependency rule, rule ownership, ports and transactions, error translation, testing policy, review checklist. |
 | `AGENTS.md` | This file: constraints and startup path. |
 | `MEMORY.md` | Verified state, decisions, session log. Update it every session. |
 | `src/http/` | HTTP router, auth boundary, SSE hub and stream, and SPA fallback. |
