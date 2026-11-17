@@ -1,8 +1,8 @@
 import { createHash, timingSafeEqual } from "node:crypto";
-import type { Db } from "../db.ts";
 import { ServiceError } from "../domain/errors.ts";
 import type { ActorType } from "../domain/status.ts";
-import { authenticateAgent } from "../services/agents.ts";
+import { authenticateAgent } from "../application/agents.ts";
+import type { Ports } from "../application/ports.ts";
 
 export const SESSION_COOKIE_NAME = "curved_session";
 export const SESSION_MAX_AGE_SECONDS = 2592000;
@@ -123,7 +123,7 @@ export function resolveSessionActor(
  */
 export async function resolveActor(
   request: Request,
-  options: { db: Db; uiToken: string },
+  options: { ports: Ports; uiToken: string },
 ): Promise<AuthContext> {
   const authorization = request.headers.get("authorization");
   if (authorization !== null) {
@@ -135,7 +135,7 @@ export async function resolveActor(
     if (token.length > 0 && constantTimeEqual(token, options.uiToken)) {
       return { actor: { type: "human", name: null }, serviceActor: "human", agentName: null };
     }
-    const agent = await authenticateAgent(options.db, token);
+    const agent = await authenticateAgent(options.ports, token);
     return {
       actor: { type: "agent", name: agent.name },
       serviceActor: "agent",

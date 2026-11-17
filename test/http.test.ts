@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, afterEach, before, beforeEach, test } from "node:test";
 import { createApp } from "../src/http/app.ts";
-import { createAgent } from "../src/services/agents.ts";
+import { createAgent } from "../src/application/agents.ts";
 import { createIssue } from "../src/application/issues.ts";
 import type { Issue, IssueEvent } from "../src/domain/types.ts";
 import { createProject } from "../src/application/projects.ts";
@@ -225,7 +225,7 @@ test("bearer tokens resolve humans and agents, and an invalid bearer wins over a
     name: null,
   });
 
-  const created = await createAgent(testDb.db, "agent-1");
+  const created = await createAgent(testDb.ports, "agent-1");
   const agent = await request(app, "/api/me", {
     headers: { authorization: `Bearer ${created.token}` },
   });
@@ -277,7 +277,7 @@ test("projects list, create, human-only rule, and duplicate keys", async () => {
   assert.equal(duplicate.status, 409);
   assert.equal((await readJson<ErrorResponse>(duplicate)).error.code, "duplicate");
 
-  const agentCreated = await createAgent(testDb.db, "agent-1");
+  const agentCreated = await createAgent(testDb.ports, "agent-1");
   const forbidden = await request(app, "/api/projects", {
     method: "POST",
     headers: {
@@ -376,7 +376,7 @@ test("PATCH updates an issue for humans and forbids agents", async () => {
   assert.equal(issue.description, "A longer description");
   assert.equal(issue.priority, 1);
 
-  const created = await createAgent(testDb.db, "agent-1");
+  const created = await createAgent(testDb.ports, "agent-1");
   const forbidden = await request(app, "/api/issues/TAC-1", {
     method: "PATCH",
     headers: { authorization: `Bearer ${created.token}`, ...JSON_HEADERS },
@@ -440,7 +440,7 @@ test("comments return a created event and reject empty bodies", async () => {
 
 test("agent claim, busy, ready, release, block, and unblock flow", async () => {
   await seedIssue("todo");
-  const created = await createAgent(testDb.db, "agent-1");
+  const created = await createAgent(testDb.ports, "agent-1");
   const agent = { authorization: `Bearer ${created.token}` };
 
   const humanClaim = await request(app, "/api/claims/next?project=TAC", {
@@ -610,7 +610,7 @@ test("issue labels are human-only, sorted, replaced, and recorded once", async (
     "validation",
   );
 
-  const agentCreated = await createAgent(testDb.db, "agent-1");
+  const agentCreated = await createAgent(testDb.ports, "agent-1");
   const forbidden = await request(app, "/api/issues/TAC-1/labels", {
     method: "POST",
     headers: {
@@ -707,7 +707,7 @@ test("issue relations are human-only, expose both directions, and ignore duplica
   assert.equal(missing.status, 404);
   assert.equal((await readJson<ErrorResponse>(missing)).error.code, "not_found");
 
-  const agentCreated = await createAgent(testDb.db, "agent-1");
+  const agentCreated = await createAgent(testDb.ports, "agent-1");
   const forbidden = await request(app, "/api/issues/TAC-1/relations", {
     method: "POST",
     headers: {
@@ -743,7 +743,7 @@ test("the ready queue and claims skip a todo issue with an open blocker", async 
   });
   assert.equal(relation.status, 200);
 
-  const agentCreated = await createAgent(testDb.db, "agent-1");
+  const agentCreated = await createAgent(testDb.ports, "agent-1");
   const agent = { authorization: `Bearer ${agentCreated.token}` };
 
   const blockedReady = await request(app, "/api/ready?project=TAC", {

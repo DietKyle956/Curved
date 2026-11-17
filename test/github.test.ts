@@ -4,7 +4,7 @@ import { after, afterEach, before, beforeEach, test } from "node:test";
 import { createApp } from "../src/http/app.ts";
 import { issueKeyFromText, branchNameForIssue } from "../src/domain/keys.ts";
 import type { Issue, IssueEvent } from "../src/domain/types.ts";
-import { createAgent } from "../src/services/agents.ts";
+import { createAgent } from "../src/application/agents.ts";
 import { applyPullRequestEvent } from "../src/services/github.ts";
 import {
   createIssue,
@@ -12,7 +12,7 @@ import {
   getIssueTimeline,
 } from "../src/application/issues.ts";
 import { createProject } from "../src/application/projects.ts";
-import { claimNext } from "../src/services/queue.ts";
+import { claimNext } from "../src/application/queue.ts";
 import { openTestDatabase, type TestDatabase } from "./helpers/db.ts";
 
 const SECRET = "test-webhook-secret";
@@ -418,8 +418,8 @@ test("the title supplies the key when the head ref is absent", async () => {
 
 test("an agent-claimed issue keeps its claim after the webhook moves it", async () => {
   await seedIssue("todo");
-  await createAgent(testDb.db, "agent-1");
-  const claimed = await claimNext(testDb.db, { project: "TAC" }, "agent-1");
+  await createAgent(testDb.ports, "agent-1");
+  const claimed = await claimNext(testDb.ports, { project: "TAC" }, "agent-1");
   assert.equal(claimed.claimedBy, "agent-1");
 
   const response = await postWebhook(app, pullRequestPayload());

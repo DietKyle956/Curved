@@ -2,7 +2,7 @@
 
 - **Last updated:** 2026-11-17
 - **Project:** curved
-- **Phase:** HTTP API and auth boundary complete (`LAS-148`), plus a working SPA prototype, the SSE realtime stream (`LAS-150`), the GitHub webhook with its branch helper (`LAS-151`), the SPA foundation ticket (`LAS-152`), the architecture contract (`LAS-168`, documentation only), the pure domain layer (`LAS-169`, no behavior change), and step 3's slices, ports plus the projects resource (`LAS-170`) then the issue lifecycle and read model on ports (`LAS-171`), both with no behavior change; step 3's remaining slices are `LAS-172` and `LAS-173`. Toolchain, Postgres 18, migrations, the projects resource, the issues resource (atomic keys, append-only events), comment events with the full timeline read path, the transition graph with its actor matrix, token-authenticated agents with the one-active-issue fence, agent block with human unblock, the MCP server over stdio, the authenticated HTTP API with its SPA fallback, the React/Vite board, queue, detail, and palette, the SSE stream that refreshes them, the HMAC-verified GitHub webhook that moves issues from pull requests, and the routed board with its mobile status bar are live.
+- **Phase:** HTTP API and auth boundary complete (`LAS-148`), plus a working SPA prototype, the SSE realtime stream (`LAS-150`), the GitHub webhook with its branch helper (`LAS-151`), the SPA foundation ticket (`LAS-152`), the architecture contract (`LAS-168`, documentation only), the pure domain layer (`LAS-169`, no behavior change), and step 3's slices, ports plus the projects resource (`LAS-170`) then the issue lifecycle and read model on ports (`LAS-171`), agents, claims, review, comments, and blocking on ports (`LAS-172`), all with no behavior change; step 3's remaining slice is `LAS-173`. Toolchain, Postgres 18, migrations, the projects resource, the issues resource (atomic keys, append-only events), comment events with the full timeline read path, the transition graph with its actor matrix, token-authenticated agents with the one-active-issue fence, agent block with human unblock, the MCP server over stdio, the authenticated HTTP API with its SPA fallback, the React/Vite board, queue, detail, and palette, the SSE stream that refreshes them, the HMAC-verified GitHub webhook that moves issues from pull requests, and the routed board with its mobile status bar are live.
 
 ## Current verified state
 
@@ -17,10 +17,11 @@
 - Architecture contract: `ARCH.md` codifies target hexagonal layers (domain,
   application, inbound and outbound adapters, composition roots), rule ownership
   with bounded mirrors, ports and transactions, error translation, web layering,
-  testing policy, and enforcement. Steps 1 and 2, plus step 3's first two slices
-  (`LAS-170` ports and the projects resource; `LAS-171` the issue lifecycle and
-  read model), are implemented; the next frontier is `LAS-172`, then `LAS-173`,
-  and steps 4 to 6, so its Current/Target markers still matter.
+  testing policy, and enforcement. Steps 1 and 2, plus step 3's first three
+  slices (`LAS-170` ports and the projects resource; `LAS-171` the issue
+  lifecycle and read model; `LAS-172` agents, claims, review, comments, and
+  blocking), are implemented; the next frontier is `LAS-173`, then steps 4 to 6,
+  so its Current/Target markers still matter.
 - Templates: `/home/dietkyle/projects/templates/ARCH.md` (111 lines) is the
   project-agnostic version of the same contract, listed as copy-first item 2 in
   that directory's `index.md`; `templates/AGENTS.md` now reads `ARCH.md` in its
@@ -47,8 +48,8 @@
   `IssueEvent`, `IssueMeta`, `IssueRelations`, and `emptyMeta`.
   `src/http/errors.ts` owns `HTTP_STATUS`, `httpStatusFor`, `ErrorBody`, and
   `errorBody`. The services keep the SQL for the resources not yet migrated
-  (`queue`, `blocking`, `labels`, `relations`) and their orchestration, and import
-  every rule from the domain; the issue use cases live in
+  (`labels`, `relations`, and the GitHub use case) and their orchestration, and
+  import every rule from the domain; the issue use cases live in
   `src/application/issues.ts`, and `toIssue`/`hydrateIssue` live in
   `src/application/issue-read-model.ts` over `IssueRecord`. `src/domain/**` imports
   only domain modules: no `pg`, no `node:*`, no HTTP/MCP/CLI, no filesystem, no
@@ -69,8 +70,9 @@
   repository and codec either to the pool or to `database.tx`'s connection. The
   cardinally one token implementation is `src/adapters/token-codec.ts`
   (`createTokenCodec()`: `crv_` plus 24 random bytes base64url, lowercase SHA-256
-  hex); `src/services/agents.ts` uses it and no longer exports
-  `generateAgentToken` or `hashAgentToken`.
+  hex); `createAgent` and `authenticateAgent` use it through `TokenCodec`, and
+  `src/services/agents.ts` is gone, together with its `generateAgentToken` and
+  `hashAgentToken` exports.
 - Wiring (`LAS-170`): `createApp` requires a `ports: Ports` option;
   `src/server.ts` and the CLI `project add`/`project list` branches build
   `createPorts(db)`; `src/services/projects.ts` is deleted. `test/helpers/db.ts`
@@ -85,21 +87,50 @@
   atomic per-project allocation, findById, findByKey, lockByKey, list,
   updateFields, updateStatus, findActiveClaimKey, listReady),
   `IssueEventRepository` (append, list ascending id), `IssueMetaRepository`
-  (loadForIds, at most two statements), and `AgentRepository` (`exists` only for
-  now), and `TransactionPorts` carries projects/issues/events/meta/agents/tokens.
+  (loadForIds, at most two statements), and `AgentRepository` (the full port,
+  landed with `LAS-172`), and `TransactionPorts` carries
+  projects/issues/events/meta/agents/tokens.
   Adapters are `src/adapters/postgres/repositories/issues.ts`, `issue-events.ts`,
   `issue-meta.ts`, and `agents.ts`; `src/adapters/postgres/ports.ts` exports
   `bindPorts(db: Db): TransactionPorts`, and `createPorts(database)` delegates to
   it. `src/services/issues.ts`, `events.ts`, and `issue-meta.ts` are deleted, and
-  `queue`, `blocking`, `comments`, `labels`, `relations`, and `github` are rewired
-  through `bindPorts` and the application modules. Still transitional until
-  `LAS-172`/`LAS-173`: `queue.ts` owns the advisory lock, the skip-locked
-  candidate select, and the claim SQL; `blocking.ts` owns its raw status and
-  reason updates; `labels` and `relations` own their table SQL. An
+  the GitHub webhook enters through `bindPorts` and the application modules. Still
+  transitional until `LAS-173`: `labels` and `relations` own their table SQL, and
+  `github.ts` carries the GitHub use case itself. An
   `issues_one_active_claim_per_agent` violation in `updateStatus` becomes the
   port-level `ActiveClaimConflict`, which `moveIssue` and `claimNext` map to the
   unchanged `agent_busy` message naming the active key. `listIssues` stays three
   statements; payloads, error codes, and all 189 tests are unchanged.
+- Agent and queue ports (`LAS-172`): `src/application/agents.ts` holds
+  `createAgent(ports, name)`, `authenticateAgent(ports, token)`, and
+  `ensureAgentExists(ports, name)`, with token mint and hash behind `TokenCodec`.
+  `src/application/queue.ts` holds `ReadyQueue`, `listReady(ports, options?,
+  context?)`, `claimNext(ports, options, agent)`, `submitForReview(ports, input)`,
+  and `releaseClaim(ports, input)`; `src/application/blocking.ts` holds
+  `blockIssue(ports, input)` and `unblockIssue(ports, input)`;
+  `src/application/comments.ts` holds `commentOnIssue(ports, input)`. None of them
+  imports `pg`, `src/db.ts`, or `node:*`. `AgentRepository` is now `create({ name,
+  tokenHash })`, `findByTokenHash(tokenHash)`, `findByName(name)`, and
+  `acquireClaimLock(name)`; the old `exists` is gone. `IssueRepository` adds
+  `block({ id, reason })`, `unblock({ id })`, and `lockClaimCandidate({ project
+  })` (todo, unblocked, no not-done blocker, priority/number/key order, `for
+  update ... skip locked`); `updateStatus`, `findActiveClaimKey`, and `listReady`
+  are unchanged. `src/adapters/postgres/repositories/agents.ts` implements all
+  four agent operations, maps SQLSTATE `23505` to `ServiceError("duplicate",
+  'agent "<name>" already exists')`, and owns the advisory lock
+  `select pg_advisory_xact_lock(727275, hashtext($1))`;
+  `src/adapters/postgres/repositories/issues.ts` owns the skip-locked candidate
+  query and the single-statement block and unblock updates.
+  `src/services/agents.ts`, `queue.ts`, `blocking.ts`, and `comments.ts` are
+  deleted, leaving `src/services/` with `github.ts`, `labels.ts`, and
+  `relations.ts`. Wiring: HTTP `resolveActor(request, { ports, uiToken })`, with
+  `src/http/app.ts` passing `ports` to the comment, block, unblock, release,
+  ready, and claim routes and keeping `db` only for labels, relations, and the
+  event hub; the CLI builds `createPorts(db)` once per `withDatabase` scope and
+  uses `withAgent(ports, config, fn)`; MCP `ToolDeps` is `{ ports, resolveAgent }`
+  (the `db` field is gone) with `resolveAgentFromToken(ports, config)`. Behavior
+  is unchanged: same error codes and messages, same events, same concurrency
+  semantics, and 189 passing tests.
 - Database: `docker compose up` starts `postgres:18-alpine` on host port 55432
   (user/password/db all `curved`, named volume mounted at `/var/lib/postgresql`).
   `scripts/db.sh` waits for readiness, then runs `node src/migrate.ts`.
@@ -192,7 +223,7 @@
   `@modelcontextprotocol/server` (2.4.0) over stdio via `serveStdio`, registering
   exactly `claim_next`, `comment`, `create_issue`, `get_issue`, `list_ready`,
   `mark_blocked`, `release_claim`, and `submit_for_review`. Handlers are thin over
-  the service layer and never run SQL. Every call authenticates
+  the application layer and never run SQL. Every call authenticates
   `CURVED_AGENT_TOKEN` (`not_authenticated` names the variable when blank or
   unknown) and acts as actor `agent` with that agent's name. Inputs are
   zod-validated; the SDK returns schema failures as `isError` text results
@@ -295,11 +326,12 @@
   issue detail, and reconnects 1s after error or close with a single-timer guard.
   The 20 second poll is removed; the window `focus` refresh and manual refresh
   remain.
-- Service additions for the HTTP slice: `listIssues` accepts `{ project?, status? }`;
-  `updateIssue(ports, { key, title?, description?, priority?, actor?, agent? })` is
-  human only (`forbidden_transition` otherwise), requires at least one field, trims
-  the title, validates priority, appends no timeline event (no event kind exists for
-  field edits), and returns the hydrated issue with `allowedTransitions`.
+- Application additions for the HTTP slice: `listIssues` accepts `{ project?,
+  status? }`; `updateIssue(ports, { key, title?, description?, priority?, actor?,
+  agent? })` is human only (`forbidden_transition` otherwise), requires at least one
+  field, trims the title, validates priority, appends no timeline event (no event
+  kind exists for field edits), and returns the hydrated issue with
+  `allowedTransitions`.
 - Schema (LAS-149): `labels` (per-project unique trimmed name 1..50),
   `issue_labels` link table keyed `(issue_id, label_id)`, and `issue_relations`
   directed edges keyed `(blocking_issue_id, blocked_issue_id)` with a no-self
@@ -433,10 +465,10 @@
   (default `legacy: "serve"`), not the v1 SDK: v2 serves the 2025 `initialize`
   handshake and the 2026 spec from the same factory, so no fallback was needed.
   `@modelcontextprotocol/client` is a dev dependency used only by the stdio test.
-- MCP handlers live in `src/mcp/tools.ts` and are thin over the service layer;
-  `src/mcp/server.ts` registers them and owns the token/database lifecycle;
+- MCP handlers live in `src/mcp/tools.ts` and are thin over the application
+  layer; `src/mcp/server.ts` registers them and owns the token/database lifecycle;
   `src/mcp/main.ts` is the entry. Tool schemas are zod-only in the adapter; the
-  services stay authoritative for business validation.
+  application modules stay authoritative for business validation.
 - Input-schema failures surface as `isError` results (`Input validation error:
   Invalid arguments for tool <name>: ...`), because the v2 SDK catches the
   InvalidParams throw inside the tools/call handler. Tests assert that shape.
@@ -498,10 +530,10 @@
 
 ## Next best step
 
-`LAS-172` (agents, claims, review, comments, and blocking on ports) is the next
-refactor step: move `queue`, `blocking`, `comments`, and the agent repository
-behind ports, which retires the advisory-lock, claim, and raw blocking SQL that
-`LAS-171` left in the services. `LAS-173` (labels and relations) follows.
+`LAS-173` (labels, relations, and the GitHub use case) is the next refactor
+step, and the last of step 3: move `labels` and `relations` behind their ports
+and move the GitHub webhook use case out of `src/services/github.ts`, which
+retires the table SQL they still own. Steps 4 to 6 follow.
 `LAS-152`, `LAS-153`, and `LAS-154` still need their acceptance tests, and
 `LAS-155` remains the end-to-end gate.
 
@@ -531,7 +563,9 @@ behind ports, which retires the advisory-lock, claim, and raw blocking SQL that
 - Refactor series (`LAS-167`): `LAS-168` architecture contract (done), `LAS-169`
   pure domain layer (done), `LAS-170` ports plus the projects resource (done
   2026-11-17), `LAS-171` issue lifecycle and read model on ports (done
-  2026-11-17); `LAS-172` is next, then `LAS-173`, then steps 4 to 6.
+  2026-11-17), `LAS-172` agents, claims, review, comments, and blocking on ports
+  (done 2026-11-17); `LAS-173` (labels, relations, and the GitHub use case) is
+  next, then steps 4 to 6.
 
 ## Session log
 
@@ -1297,3 +1331,41 @@ behind ports, which retires the advisory-lock, claim, and raw blocking SQL that
   layering remains review-only until the import-direction check lands.
 - Next best step: `LAS-172` (agents, claims, review, comments, and blocking on
   ports).
+
+### Session 023
+
+- Date: 2026-11-17
+- Goal: execute `LAS-172` (agents, claims, review, comments, and blocking on
+  ports), step 3's third slice of the `LAS-167` refactor. No observable behavior
+  change.
+- Completed: `src/application/agents.ts` with `createAgent`,
+  `authenticateAgent`, and `ensureAgentExists`, token mint and hash behind
+  `TokenCodec`; `src/application/queue.ts` with `ReadyQueue`, `listReady`,
+  `claimNext`, `submitForReview`, and `releaseClaim`;
+  `src/application/blocking.ts` with `blockIssue` and `unblockIssue`;
+  `src/application/comments.ts` with `commentOnIssue`. `AgentRepository` is now
+  `create({ name, tokenHash })`, `findByTokenHash`, `findByName`, and
+  `acquireClaimLock`, and `IssueRepository` adds `block`, `unblock`, and
+  `lockClaimCandidate`. `src/adapters/postgres/repositories/agents.ts` owns the
+  advisory lock `pg_advisory_xact_lock(727275, hashtext($1))` and the `23505`
+  duplicate translation; `src/adapters/postgres/repositories/issues.ts` owns the
+  skip-locked candidate query and the single-statement block and unblock updates.
+  `src/services/agents.ts`, `queue.ts`, `blocking.ts`, and `comments.ts` are
+  deleted, leaving `github.ts`, `labels.ts`, and `relations.ts`. Wiring: HTTP
+  `resolveActor` takes `{ ports, uiToken }` and the comment, block, unblock,
+  release, ready, and claim routes receive `ports`, with `db` kept only for
+  labels, relations, and the event hub; the CLI builds `createPorts(db)` per
+  `withDatabase` scope and uses `withAgent(ports, config, fn)`; MCP `ToolDeps` is
+  `{ ports, resolveAgent }` with `resolveAgentFromToken(ports, config)` and no
+  `db` field.
+- Verification run: `npm run typecheck` green; full `npm test` 189 pass, 0 fail;
+  live CLI project list, issue list, and ready, plus a live HTTP server check of
+  `/api/me`, `/api/ready`, an unauthenticated 401, and an invalid agent bearer
+  401; `scripts/init.sh` and `scripts/clean-state.sh` green.
+- Evidence captured: tests changed imports and the first argument only; no
+  assertion was weakened; the SQL invariants (advisory lock scope, skip-locked
+  candidate ordering, single-statement block and unblock) are preserved.
+- Known risk: labels, relations, and the GitHub SQL remain in `src/services/`
+  until `LAS-173`; the event hub is still constructed in `createApp`; the
+  import-direction check is still planned, so layering stays review-only.
+- Next best step: `LAS-173` (labels, relations, and the GitHub use case).

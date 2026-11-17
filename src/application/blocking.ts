@@ -1,12 +1,11 @@
-import type { Database } from "../db.ts";
-import { bindPorts } from "../adapters/postgres/ports.ts";
-import { hydrateIssue } from "../application/issue-read-model.ts";
 import { resolveContext } from "../domain/actors.ts";
 import { ServiceError } from "../domain/errors.ts";
 import { parseIssueKey } from "../domain/keys.ts";
 import type { Issue } from "../domain/types.ts";
 import { validateBlockReason } from "../domain/validation.ts";
 import { ensureAgentExists } from "./agents.ts";
+import { hydrateIssue } from "./issue-read-model.ts";
+import type { Ports } from "./ports.ts";
 
 export interface BlockIssueInput {
   key: string;
@@ -26,7 +25,7 @@ export interface UnblockIssueInput {
  * here explicitly because this is not a generic status move.
  */
 export async function blockIssue(
-  db: Database,
+  ports: Ports,
   input: BlockIssueInput,
 ): Promise<Issue> {
   const reason = validateBlockReason(input.reason);
@@ -37,12 +36,11 @@ export async function blockIssue(
       'actor "agent" requires an agent identity',
     );
   }
-  await ensureAgentExists(db, agent);
+  await ensureAgentExists(ports, agent);
   const key = parseIssueKey(input.key).key;
 
-  return db.tx(async (tx) => {
-    const ports = bindPorts(tx);
-    const locked = await ports.issues.lockByKey(key);
+  return ports.transaction(async (tx) => {
+    const locked = await tx.issues.lockByKey(key);
     if (locked === null) {
       throw new ServiceError("not_found", `issue "${key}" not found`);
     }
@@ -59,13 +57,8 @@ export async function blockIssue(
       );
     }
 
-    await tx.query(
-      `update issues
-       set status = 'todo', claimed_by = null, blocked_reason = $2, updated_at = now()
-       where id = $1`,
-      [locked.id, reason],
-    );
-    await ports.events.append({
+    await tx.issues.block({ id: locked.id, reason });
+    await tx.events.append({
       issueId: locked.id,
       kind: "blocked",
       actorType: "agent",
@@ -74,7 +67,7 @@ export async function blockIssue(
       body: reason,
     });
 
-    return hydrateIssue(ports, locked.id, { actor: "agent", agent });
+    return hydrateIssue(tx, locked.id, { actor: "agent", agent });
   });
 }
 
@@ -83,7 +76,7 @@ export async function blockIssue(
  * blocked; status and claim are left untouched.
  */
 export async function unblockIssue(
-  db: Database,
+  ports: Ports,
   input: UnblockIssueInput,
 ): Promise<Issue> {
   const key = parseIssueKey(input.key).key;
@@ -95,9 +88,8 @@ export async function unblockIssue(
     );
   }
 
-  return db.tx(async (tx) => {
-    const ports = bindPorts(tx);
-    const locked = await ports.issues.lockByKey(key);
+  return ports.transaction(async (tx) => {
+    const locked = await tx.issues.lockByKey(key);
     if (locked === null) {
       throw new ServiceError("not_found", `issue "${key}" not found`);
     }
@@ -105,11 +97,8 @@ export async function unblockIssue(
       throw new ServiceError("validation", `issue "${key}" is not blocked`);
     }
 
-    await tx.query(
-      `update issues set blocked_reason = null, updated_at = now() where id = $1`,
-      [locked.id],
-    );
-    await ports.events.append({
+    await tx.issues.unblock({ id: locked.id });
+    await tx.events.append({
       issueId: locked.id,
       kind: "unblocked",
       actorType: "human",
@@ -118,6 +107,6 @@ export async function unblockIssue(
       body: null,
     });
 
-    return hydrateIssue(ports, locked.id, context);
+    return hydrateIssue(tx, locked.id, context);
   });
 }

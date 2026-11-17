@@ -2,8 +2,8 @@ import assert from "node:assert/strict";
 import { after, before, beforeEach, test } from "node:test";
 import { ServiceError, type ErrorCode } from "../src/domain/errors.ts";
 import { BLOCKED_REASON_MAX_LENGTH } from "../src/domain/validation.ts";
-import { createAgent } from "../src/services/agents.ts";
-import { blockIssue, unblockIssue } from "../src/services/blocking.ts";
+import { createAgent } from "../src/application/agents.ts";
+import { blockIssue, unblockIssue } from "../src/application/blocking.ts";
 import {
   createIssue,
   getIssue,
@@ -15,7 +15,7 @@ import {
   claimNext,
   listReady,
   submitForReview,
-} from "../src/services/queue.ts";
+} from "../src/application/queue.ts";
 import { openTestDatabase, type TestDatabase } from "./helpers/db.ts";
 
 let testDb: TestDatabase;
@@ -57,7 +57,7 @@ async function seedIssue(title = "Queue issue"): Promise<Issue> {
 }
 
 async function seedAgent(name: string): Promise<void> {
-  await createAgent(testDb.db, name);
+  await createAgent(testDb.ports, name);
 }
 
 function withKind(events: IssueEvent[], kind: IssueEvent["kind"]): IssueEvent[] {
@@ -66,7 +66,7 @@ function withKind(events: IssueEvent[], kind: IssueEvent["kind"]): IssueEvent[] 
 
 async function seedClaimedIssue(agent: string): Promise<Issue> {
   const issue = await seedIssue();
-  await claimNext(testDb.db, {}, agent);
+  await claimNext(testDb.ports, {}, agent);
   return issue;
 }
 
@@ -77,7 +77,7 @@ test("blockIssue trims the reason, returns the issue to todo, and appends one bl
   await seedAgent("alpha");
   const issue = await seedClaimedIssue("alpha");
 
-  const blocked = await blockIssue(testDb.db, {
+  const blocked = await blockIssue(testDb.ports, {
     key: issue.key,
     agent: "alpha",
     reason: "  needs design review\t",
@@ -105,33 +105,33 @@ test("a blocked issue leaves the ready queue until it is unblocked, then is clai
   await seedAgent("alpha");
   const issue = await seedClaimedIssue("alpha");
 
-  await blockIssue(testDb.db, {
+  await blockIssue(testDb.ports, {
     key: issue.key,
     agent: "alpha",
     reason: "waiting on vendor",
   });
 
-  const blockedQueue = await listReady(testDb.db, { project: "TAC" });
+  const blockedQueue = await listReady(testDb.ports, { project: "TAC" });
   assert.deepEqual(
     blockedQueue.ready.map((ready) => ready.key),
     [],
   );
   await assert.rejects(
-    claimNext(testDb.db, { project: "TAC" }, "alpha"),
+    claimNext(testDb.ports, { project: "TAC" }, "alpha"),
     rejectsWithServiceCode("no_ready_issue"),
   );
 
-  const unblocked = await unblockIssue(testDb.db, { key: issue.key });
+  const unblocked = await unblockIssue(testDb.ports, { key: issue.key });
   assert.equal(unblocked.key, issue.key);
   assert.equal(unblocked.blockedReason, null);
 
-  const readyQueue = await listReady(testDb.db, { project: "TAC" });
+  const readyQueue = await listReady(testDb.ports, { project: "TAC" });
   assert.deepEqual(
     readyQueue.ready.map((ready) => ready.key),
     [issue.key],
   );
 
-  const reclaimed = await claimNext(testDb.db, { project: "TAC" }, "alpha");
+  const reclaimed = await claimNext(testDb.ports, { project: "TAC" }, "alpha");
   assert.equal(reclaimed.key, issue.key);
   assert.equal(reclaimed.status, "in_progress");
   assert.equal(reclaimed.claimedBy, "alpha");
@@ -142,7 +142,7 @@ test("getIssue and listIssues expose blockedReason, and unblocking appends unblo
   await seedAgent("alpha");
   const issue = await seedClaimedIssue("alpha");
 
-  await blockIssue(testDb.db, {
+  await blockIssue(testDb.ports, {
     key: issue.key,
     agent: "alpha",
     reason: "blocked on review",
@@ -157,7 +157,7 @@ test("getIssue and listIssues expose blockedReason, and unblocking appends unblo
   assert.equal(listed[0]?.key, issue.key);
   assert.equal(listed[0]?.blockedReason, "blocked on review");
 
-  await unblockIssue(testDb.db, { key: issue.key });
+  await unblockIssue(testDb.ports, { key: issue.key });
 
   const afterUnblock = await getIssue(testDb.ports, issue.key);
   assert.equal(afterUnblock.blockedReason, null);
@@ -187,14 +187,14 @@ test("blockIssue validates the reason length while allowing the maximum", async 
 
   for (const reason of ["", "   ", "\t\n"]) {
     await assert.rejects(
-      blockIssue(testDb.db, { key: issue.key, agent: "alpha", reason }),
+      blockIssue(testDb.ports, { key: issue.key, agent: "alpha", reason }),
       rejectsWithServiceCode("validation"),
       JSON.stringify(reason),
     );
   }
 
   await assert.rejects(
-    blockIssue(testDb.db, {
+    blockIssue(testDb.ports, {
       key: issue.key,
       agent: "alpha",
       reason: "a".repeat(BLOCKED_REASON_MAX_LENGTH + 1),
@@ -203,7 +203,7 @@ test("blockIssue validates the reason length while allowing the maximum", async 
   );
 
   const maximum = "b".repeat(BLOCKED_REASON_MAX_LENGTH);
-  const blocked = await blockIssue(testDb.db, {
+  const blocked = await blockIssue(testDb.ports, {
     key: issue.key,
     agent: "alpha",
     reason: maximum,
@@ -216,14 +216,14 @@ test("an owning agent cannot block an issue in in_review", async () => {
   await seedProject();
   await seedAgent("alpha");
   const issue = await seedClaimedIssue("alpha");
-  await submitForReview(testDb.db, {
+  await submitForReview(testDb.ports, {
     key: issue.key,
     agent: "alpha",
     summary: "ready for review",
   });
 
   await assert.rejects(
-    blockIssue(testDb.db, {
+    blockIssue(testDb.ports, {
       key: issue.key,
       agent: "alpha",
       reason: "needs another look",
@@ -243,7 +243,7 @@ test("blockIssue requires the claiming agent on an in_progress issue", async () 
   const owned = await seedClaimedIssue("alpha");
 
   await assert.rejects(
-    blockIssue(testDb.db, {
+    blockIssue(testDb.ports, {
       key: owned.key,
       agent: "beta",
       reason: "not mine",
@@ -253,7 +253,7 @@ test("blockIssue requires the claiming agent on an in_progress issue", async () 
 
   const unclaimed = await seedIssue("Unclaimed backlog item");
   await assert.rejects(
-    blockIssue(testDb.db, {
+    blockIssue(testDb.ports, {
       key: unclaimed.key,
       agent: "beta",
       reason: "not claimed",
@@ -271,14 +271,14 @@ test("unblockIssue rejects an agent actor and rejects an unblocked issue", async
   await seedProject();
   await seedAgent("alpha");
   const issue = await seedClaimedIssue("alpha");
-  await blockIssue(testDb.db, {
+  await blockIssue(testDb.ports, {
     key: issue.key,
     agent: "alpha",
     reason: "waiting on input",
   });
 
   await assert.rejects(
-    unblockIssue(testDb.db, {
+    unblockIssue(testDb.ports, {
       key: issue.key,
       actor: "agent",
       agent: "alpha",
@@ -291,7 +291,7 @@ test("unblockIssue rejects an agent actor and rejects an unblocked issue", async
 
   const neverBlocked = await seedIssue("Never blocked");
   await assert.rejects(
-    unblockIssue(testDb.db, { key: neverBlocked.key }),
+    unblockIssue(testDb.ports, { key: neverBlocked.key }),
     rejectsWithServiceCode("validation"),
   );
 });
@@ -301,7 +301,7 @@ test("a blocked issue keeps the trimmed reason in its event and stays an unclaim
   await seedAgent("alpha");
   const issue = await seedClaimedIssue("alpha");
 
-  await blockIssue(testDb.db, {
+  await blockIssue(testDb.ports, {
     key: issue.key,
     agent: "alpha",
     reason: "\n\twaiting on security sign-off \n",

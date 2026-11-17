@@ -224,7 +224,7 @@ export async function moveIssue(
       );
     }
     claimAgent = agent;
-    if (!(await ports.agents.exists(agent.trim()))) {
+    if ((await ports.agents.findByName(agent.trim())) === null) {
       throw new ServiceError("not_found", `agent "${agent.trim()}" not found`);
     }
   }

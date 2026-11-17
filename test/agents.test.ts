@@ -6,8 +6,8 @@ import {
   authenticateAgent,
   createAgent,
   ensureAgentExists,
-} from "../src/services/agents.ts";
-import { commentOnIssue } from "../src/services/comments.ts";
+} from "../src/application/agents.ts";
+import { commentOnIssue } from "../src/application/comments.ts";
 import {
   createIssue,
   getIssue,
@@ -21,7 +21,7 @@ import {
   listReady,
   releaseClaim,
   submitForReview,
-} from "../src/services/queue.ts";
+} from "../src/application/queue.ts";
 import type { Status } from "../src/domain/status.ts";
 import { openTestDatabase, type TestDatabase } from "./helpers/db.ts";
 
@@ -71,7 +71,7 @@ async function seedIssue(options: SeedIssueOptions = {}): Promise<Issue> {
 }
 
 async function seedAgent(name: string): Promise<void> {
-  await createAgent(testDb.db, name);
+  await createAgent(testDb.ports, name);
 }
 
 function withKind(events: IssueEvent[], kind: IssueEvent["kind"]): IssueEvent[] {
@@ -116,7 +116,7 @@ function rejectedReasons(
 // --- Agent identity and tokens -------------------------------------------
 
 test("createAgent mints a prefixed token, stores only its hash, and authenticates", async () => {
-  const created = await createAgent(testDb.db, "  alpha  ");
+  const created = await createAgent(testDb.ports, "  alpha  ");
 
   assert.match(created.token, /^crv_[A-Za-z0-9_-]{32}$/);
   assert.equal(created.agent.name, "alpha");
@@ -130,27 +130,27 @@ test("createAgent mints a prefixed token, stores only its hash, and authenticate
   assert.match(row.token_hash, /^[0-9a-f]{64}$/);
   assert.notEqual(row.token_hash, created.token);
 
-  const authenticated = await authenticateAgent(testDb.db, created.token);
+  const authenticated = await authenticateAgent(testDb.ports, created.token);
   assert.equal(authenticated.id, created.agent.id);
   assert.equal(authenticated.name, "alpha");
   assert.equal(authenticated.createdAt, created.agent.createdAt);
 });
 
 test("createAgent rejects duplicate names and invalid names", async () => {
-  await createAgent(testDb.db, "alpha");
+  await createAgent(testDb.ports, "alpha");
 
   await assert.rejects(
-    createAgent(testDb.db, "alpha"),
+    createAgent(testDb.ports, "alpha"),
     rejectsWithServiceCode("duplicate"),
   );
   await assert.rejects(
-    createAgent(testDb.db, "  alpha  "),
+    createAgent(testDb.ports, "  alpha  "),
     rejectsWithServiceCode("duplicate"),
   );
 
   for (const name of ["", "   ", "\t\n", "x".repeat(101)]) {
     await assert.rejects(
-      createAgent(testDb.db, name),
+      createAgent(testDb.ports, name),
       rejectsWithServiceCode("validation"),
       JSON.stringify(name),
     );
@@ -168,19 +168,19 @@ test("authenticateAgent rejects blank and unknown tokens and ensureAgentExists d
 
   for (const token of ["", "   ", "\t\n"]) {
     await assert.rejects(
-      authenticateAgent(testDb.db, token),
+      authenticateAgent(testDb.ports, token),
       rejectsWithServiceCode("not_authenticated"),
       JSON.stringify(token),
     );
   }
   await assert.rejects(
-    authenticateAgent(testDb.db, `crv_${"a".repeat(32)}`),
+    authenticateAgent(testDb.ports, `crv_${"a".repeat(32)}`),
     rejectsWithServiceCode("not_authenticated"),
   );
 
-  await ensureAgentExists(testDb.db, "alpha");
+  await ensureAgentExists(testDb.ports, "alpha");
   await assert.rejects(
-    ensureAgentExists(testDb.db, "ghost"),
+    ensureAgentExists(testDb.ports, "ghost"),
     rejectsWithServiceCode("not_found"),
   );
 });
@@ -203,7 +203,7 @@ test("listReady returns only unblocked todo issues ordered by priority then numb
     [blocked.id],
   );
 
-  const queue = await listReady(testDb.db);
+  const queue = await listReady(testDb.ports);
 
   assert.deepEqual(
     queue.ready.map((issue) => issue.key),
@@ -222,20 +222,20 @@ test("listReady filters by project and rejects an unknown project", async () => 
   const tactics = await seedIssue({ project: "TAC" });
   const operations = await seedIssue({ project: "OPS" });
 
-  const filtered = await listReady(testDb.db, { project: "OPS" });
+  const filtered = await listReady(testDb.ports, { project: "OPS" });
   assert.deepEqual(
     filtered.ready.map((issue) => issue.key),
     [operations.key],
   );
 
-  const all = await listReady(testDb.db);
+  const all = await listReady(testDb.ports);
   assert.deepEqual(
     all.ready.map((issue) => issue.key),
     [operations.key, tactics.key],
   );
 
   await assert.rejects(
-    listReady(testDb.db, { project: "ZZZ" }),
+    listReady(testDb.ports, { project: "ZZZ" }),
     rejectsWithServiceCode("not_found"),
   );
 });
@@ -247,16 +247,16 @@ test("listReady reports an agent's active claim as busy and applies the fence ac
   const tactics = await seedIssue({ project: "TAC" });
   const operations = await seedIssue({ project: "OPS" });
 
-  const idle = await listReady(testDb.db, undefined, {
+  const idle = await listReady(testDb.ports, undefined, {
     actor: "agent",
     agent: "alpha",
   });
   assert.equal(idle.busy, null);
 
-  const claimed = await claimNext(testDb.db, { project: "TAC" }, "alpha");
+  const claimed = await claimNext(testDb.ports, { project: "TAC" }, "alpha");
   assert.equal(claimed.key, tactics.key);
 
-  const inProgress = await listReady(testDb.db, { project: "OPS" }, {
+  const inProgress = await listReady(testDb.ports, { project: "OPS" }, {
     actor: "agent",
     agent: "alpha",
   });
@@ -266,13 +266,13 @@ test("listReady reports an agent's active claim as busy and applies the fence ac
     [operations.key],
   );
 
-  await submitForReview(testDb.db, {
+  await submitForReview(testDb.ports, {
     key: tactics.key,
     agent: "alpha",
     summary: "ready for review",
   });
 
-  const inReview = await listReady(testDb.db, { project: "OPS" }, {
+  const inReview = await listReady(testDb.ports, { project: "OPS" }, {
     actor: "agent",
     agent: "alpha",
   });
@@ -284,9 +284,9 @@ test("listReady reports an agent's active claim as busy and applies the fence ac
     actor: "human",
   });
 
-  await releaseClaim(testDb.db, { key: tactics.key, agent: "alpha" });
+  await releaseClaim(testDb.ports, { key: tactics.key, agent: "alpha" });
 
-  const released = await listReady(testDb.db, { project: "OPS" }, {
+  const released = await listReady(testDb.ports, { project: "OPS" }, {
     actor: "agent",
     agent: "alpha",
   });
@@ -302,7 +302,7 @@ test("claimNext claims the highest-priority ready issue and appends one claim ev
   const target = await seedIssue({ priority: 1 });
   await seedIssue({ priority: 2 });
 
-  const claimed = await claimNext(testDb.db, {}, "alpha");
+  const claimed = await claimNext(testDb.ports, {}, "alpha");
 
   assert.equal(claimed.key, target.key);
   assert.equal(claimed.status, "in_progress");
@@ -333,7 +333,7 @@ test("claimNext rejects an empty queue with no_ready_issue", async () => {
   await seedAgent("alpha");
 
   await assert.rejects(
-    claimNext(testDb.db, {}, "alpha"),
+    claimNext(testDb.ports, {}, "alpha"),
     rejectsWithServiceCode("no_ready_issue"),
   );
 
@@ -343,7 +343,7 @@ test("claimNext rejects an empty queue with no_ready_issue", async () => {
   await seedIssue({ status: "done" });
 
   await assert.rejects(
-    claimNext(testDb.db, { project: "TAC" }, "alpha"),
+    claimNext(testDb.ports, { project: "TAC" }, "alpha"),
     rejectsWithServiceCode("no_ready_issue"),
   );
   assert.equal(await claimEventCount(), 0);
@@ -356,10 +356,10 @@ test("claimNext rejects an agent that already holds an in_progress or in_review 
   await seedIssue({ priority: 2 });
   await seedIssue({ priority: 3 });
 
-  await claimNext(testDb.db, {}, "alpha");
+  await claimNext(testDb.ports, {}, "alpha");
 
   await assert.rejects(
-    claimNext(testDb.db, {}, "alpha"),
+    claimNext(testDb.ports, {}, "alpha"),
     (error: unknown) => {
       assert.ok(error instanceof ServiceError, `expected ServiceError, got ${String(error)}`);
       assert.equal(error.code, "agent_busy");
@@ -368,14 +368,14 @@ test("claimNext rejects an agent that already holds an in_progress or in_review 
     },
   );
 
-  await submitForReview(testDb.db, {
+  await submitForReview(testDb.ports, {
     key: held.key,
     agent: "alpha",
     summary: "handing over",
   });
 
   await assert.rejects(
-    claimNext(testDb.db, {}, "alpha"),
+    claimNext(testDb.ports, {}, "alpha"),
     (error: unknown) => {
       assert.ok(error instanceof ServiceError, `expected ServiceError, got ${String(error)}`);
       assert.equal(error.code, "agent_busy");
@@ -397,7 +397,7 @@ test("two agents racing one ready issue produce exactly one claim", async () => 
   const results = await Promise.allSettled(
     ["alpha", "beta"].map(async (agent) => ({
       agent,
-      issue: await claimNext(testDb.db, {}, agent),
+      issue: await claimNext(testDb.ports, {}, agent),
     })),
   );
 
@@ -435,8 +435,8 @@ test("concurrent claims by the same agent produce one success and one agent_busy
   await seedIssue({ priority: 2 });
 
   const results = await Promise.allSettled([
-    claimNext(testDb.db, {}, "alpha"),
-    claimNext(testDb.db, {}, "alpha"),
+    claimNext(testDb.ports, {}, "alpha"),
+    claimNext(testDb.ports, {}, "alpha"),
   ]);
 
   const claims = fulfilledValues(results);
@@ -459,7 +459,7 @@ test("raw SQL cannot give one agent a second active claim", async () => {
   await seedProject("TAC");
   await seedAgent("alpha");
   const first = await seedIssue({ priority: 1 });
-  await claimNext(testDb.db, {}, "alpha");
+  await claimNext(testDb.ports, {}, "alpha");
   const second = await seedIssue({ priority: 2 });
 
   await assert.rejects(
@@ -487,7 +487,7 @@ test("moveIssue maps a second active claim to agent_busy and leaves the target t
   await seedProject("TAC");
   await seedAgent("alpha");
   const held = await seedIssue({ priority: 1 });
-  await claimNext(testDb.db, {}, "alpha");
+  await claimNext(testDb.ports, {}, "alpha");
   const target = await seedIssue({ priority: 2 });
 
   await assert.rejects(
@@ -521,9 +521,9 @@ test("submitForReview records one review_submitted event and keeps the claim", a
   await seedProject("TAC");
   await seedAgent("alpha");
   const issue = await seedIssue({ priority: 1 });
-  await claimNext(testDb.db, {}, "alpha");
+  await claimNext(testDb.ports, {}, "alpha");
 
-  const reviewed = await submitForReview(testDb.db, {
+  const reviewed = await submitForReview(testDb.ports, {
     key: issue.key,
     agent: "alpha",
     summary: "  ready for review  ",
@@ -551,10 +551,10 @@ test("submitForReview rejects non-owners, blank summaries, released issues, doub
   await seedAgent("alpha");
   await seedAgent("beta");
   const issue = await seedIssue({ priority: 1 });
-  await claimNext(testDb.db, {}, "alpha");
+  await claimNext(testDb.ports, {}, "alpha");
 
   await assert.rejects(
-    submitForReview(testDb.db, {
+    submitForReview(testDb.ports, {
       key: issue.key,
       agent: "beta",
       summary: "not mine",
@@ -565,7 +565,7 @@ test("submitForReview rejects non-owners, blank summaries, released issues, doub
 
   for (const summary of ["", "   ", "\t\n "]) {
     await assert.rejects(
-      submitForReview(testDb.db, {
+      submitForReview(testDb.ports, {
         key: issue.key,
         agent: "alpha",
         summary,
@@ -576,12 +576,12 @@ test("submitForReview rejects non-owners, blank summaries, released issues, doub
   }
   assert.deepEqual(withKind(await testDb.ports.events.list(issue.id), "review_submitted"), []);
 
-  await releaseClaim(testDb.db, { key: issue.key, agent: "alpha" });
+  await releaseClaim(testDb.ports, { key: issue.key, agent: "alpha" });
 
   // A released issue is unclaimed, so the ownership gate fires before the
   // status gate and rejects the old claimant.
   await assert.rejects(
-    submitForReview(testDb.db, {
+    submitForReview(testDb.ports, {
       key: issue.key,
       agent: "alpha",
       summary: "too late",
@@ -590,7 +590,7 @@ test("submitForReview rejects non-owners, blank summaries, released issues, doub
   );
 
   await assert.rejects(
-    submitForReview(testDb.db, {
+    submitForReview(testDb.ports, {
       key: "TAC-99",
       agent: "alpha",
       summary: "missing",
@@ -600,14 +600,14 @@ test("submitForReview rejects non-owners, blank summaries, released issues, doub
   assert.deepEqual(withKind(await testDb.ports.events.list(issue.id), "review_submitted"), []);
 
   // Re-claim, submit once, then a second submit hits the status gate.
-  await claimNext(testDb.db, {}, "alpha");
-  await submitForReview(testDb.db, {
+  await claimNext(testDb.ports, {}, "alpha");
+  await submitForReview(testDb.ports, {
     key: issue.key,
     agent: "alpha",
     summary: "first review",
   });
   await assert.rejects(
-    submitForReview(testDb.db, {
+    submitForReview(testDb.ports, {
       key: issue.key,
       agent: "alpha",
       summary: "second review",
@@ -625,10 +625,10 @@ test("releaseClaim returns the issue to todo and records one release event", asy
   await seedAgent("alpha");
   await seedAgent("beta");
   const issue = await seedIssue({ priority: 1 });
-  await claimNext(testDb.db, {}, "alpha");
+  await claimNext(testDb.ports, {}, "alpha");
 
   await assert.rejects(
-    releaseClaim(testDb.db, { key: issue.key, agent: "beta" }),
+    releaseClaim(testDb.ports, { key: issue.key, agent: "beta" }),
     rejectsWithServiceCode("forbidden_transition"),
   );
   const stillHeld = await getIssue(testDb.ports, issue.key);
@@ -636,7 +636,7 @@ test("releaseClaim returns the issue to todo and records one release event", asy
   assert.equal(stillHeld.claimedBy, "alpha");
   assert.deepEqual(withKind(await testDb.ports.events.list(issue.id), "release"), []);
 
-  const released = await releaseClaim(testDb.db, {
+  const released = await releaseClaim(testDb.ports, {
     key: issue.key,
     agent: "alpha",
   });
@@ -662,15 +662,15 @@ test("releaseClaim rejects an in_review issue with illegal_transition", async ()
   await seedProject("TAC");
   await seedAgent("alpha");
   const issue = await seedIssue({ project: "TAC", priority: 1 });
-  await claimNext(testDb.db, { project: "TAC" }, "alpha");
-  await submitForReview(testDb.db, {
+  await claimNext(testDb.ports, { project: "TAC" }, "alpha");
+  await submitForReview(testDb.ports, {
     key: issue.key,
     agent: "alpha",
     summary: "reviewing",
   });
 
   await assert.rejects(
-    releaseClaim(testDb.db, { key: issue.key, agent: "alpha" }),
+    releaseClaim(testDb.ports, { key: issue.key, agent: "alpha" }),
     rejectsWithServiceCode("illegal_transition"),
   );
 
@@ -687,10 +687,10 @@ test("commentOnIssue enforces agent ownership and requires a known agent identit
   await seedAgent("beta");
   const claimed = await seedIssue({ priority: 1 });
   const unclaimed = await seedIssue({ priority: 2 });
-  await claimNext(testDb.db, {}, "alpha");
+  await claimNext(testDb.ports, {}, "alpha");
 
   await assert.rejects(
-    commentOnIssue(testDb.db, {
+    commentOnIssue(testDb.ports, {
       key: claimed.key,
       body: "not mine",
       actor: "agent",
@@ -700,7 +700,7 @@ test("commentOnIssue enforces agent ownership and requires a known agent identit
   );
   assert.deepEqual(withKind(await testDb.ports.events.list(claimed.id), "comment"), []);
 
-  const owner = await commentOnIssue(testDb.db, {
+  const owner = await commentOnIssue(testDb.ports, {
     key: claimed.key,
     body: "  owner here  ",
     actor: "agent",
@@ -710,14 +710,14 @@ test("commentOnIssue enforces agent ownership and requires a known agent identit
   assert.equal(owner.actorType, "agent");
   assert.equal(owner.body, "owner here");
 
-  const human = await commentOnIssue(testDb.db, {
+  const human = await commentOnIssue(testDb.ports, {
     key: claimed.key,
     body: "human note",
     actor: "human",
   });
   assert.equal(human.actorType, "human");
 
-  const onUnclaimed = await commentOnIssue(testDb.db, {
+  const onUnclaimed = await commentOnIssue(testDb.ports, {
     key: unclaimed.key,
     body: "free issue comment",
     actor: "agent",
@@ -726,7 +726,7 @@ test("commentOnIssue enforces agent ownership and requires a known agent identit
   assert.equal(onUnclaimed.actorType, "agent");
 
   await assert.rejects(
-    commentOnIssue(testDb.db, {
+    commentOnIssue(testDb.ports, {
       key: claimed.key,
       body: "no identity",
       actor: "agent",
@@ -734,7 +734,7 @@ test("commentOnIssue enforces agent ownership and requires a known agent identit
     rejectsWithServiceCode("validation"),
   );
   await assert.rejects(
-    commentOnIssue(testDb.db, {
+    commentOnIssue(testDb.ports, {
       key: claimed.key,
       body: "ghost identity",
       actor: "agent",
@@ -756,11 +756,11 @@ test("releaseClaim frees the agent to claim an issue in another project", async 
   const tactics = await seedIssue({ project: "TAC", priority: 1 });
   const operations = await seedIssue({ project: "OPS", priority: 1 });
 
-  const first = await claimNext(testDb.db, { project: "TAC" }, "alpha");
+  const first = await claimNext(testDb.ports, { project: "TAC" }, "alpha");
   assert.equal(first.key, tactics.key);
-  await releaseClaim(testDb.db, { key: tactics.key, agent: "alpha" });
+  await releaseClaim(testDb.ports, { key: tactics.key, agent: "alpha" });
 
-  const second = await claimNext(testDb.db, { project: "OPS" }, "alpha");
+  const second = await claimNext(testDb.ports, { project: "OPS" }, "alpha");
   assert.equal(second.key, operations.key);
   assert.equal(second.claimedBy, "alpha");
   assert.deepEqual(await activeClaims("alpha"), [operations.key]);
@@ -773,8 +773,8 @@ test("a human moving an in_review issue to done frees the agent for the next cla
   const tactics = await seedIssue({ project: "TAC", priority: 1 });
   const operations = await seedIssue({ project: "OPS", priority: 1 });
 
-  await claimNext(testDb.db, { project: "TAC" }, "alpha");
-  await submitForReview(testDb.db, {
+  await claimNext(testDb.ports, { project: "TAC" }, "alpha");
+  await submitForReview(testDb.ports, {
     key: tactics.key,
     agent: "alpha",
     summary: "finished",
@@ -786,7 +786,7 @@ test("a human moving an in_review issue to done frees the agent for the next cla
   });
   assert.equal(done.status, "done");
 
-  const next = await claimNext(testDb.db, { project: "OPS" }, "alpha");
+  const next = await claimNext(testDb.ports, { project: "OPS" }, "alpha");
   assert.equal(next.key, operations.key);
   assert.equal(next.claimedBy, "alpha");
   assert.deepEqual(await activeClaims("alpha"), [operations.key]);

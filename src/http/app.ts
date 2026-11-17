@@ -2,8 +2,8 @@ import { resolve } from "node:path";
 import type { Database } from "../db.ts";
 import { ServiceError } from "../domain/errors.ts";
 import { errorBody, httpStatusFor } from "./errors.ts";
-import { blockIssue, unblockIssue } from "../services/blocking.ts";
-import { commentOnIssue } from "../services/comments.ts";
+import { blockIssue, unblockIssue } from "../application/blocking.ts";
+import { commentOnIssue } from "../application/comments.ts";
 import {
   createIssue,
   getIssueTimeline,
@@ -15,7 +15,7 @@ import type { IssueContext } from "../domain/actors.ts";
 import { setIssueLabels } from "../services/labels.ts";
 import type { Ports } from "../application/ports.ts";
 import { createProject, listProjects } from "../application/projects.ts";
-import { claimNext, listReady, releaseClaim } from "../services/queue.ts";
+import { claimNext, listReady, releaseClaim } from "../application/queue.ts";
 import { addRelation } from "../services/relations.ts";
 import {
   constantTimeEqual,
@@ -240,7 +240,7 @@ export function createApp(options: CreateAppOptions): App {
     // Authentication is lazy so unknown routes stay 404 rather than 401.
     let authPromise: Promise<AuthContext> | null = null;
     const auth = (): Promise<AuthContext> => {
-      authPromise ??= resolveActor(request, { db, uiToken });
+      authPromise ??= resolveActor(request, { ports, uiToken });
       return authPromise;
     };
 
@@ -389,7 +389,7 @@ export function createApp(options: CreateAppOptions): App {
       if (action === "comments" && method === "POST") {
         const authContext = await auth();
         const body = await requestBody();
-        const event = await commentOnIssue(db, {
+        const event = await commentOnIssue(ports, {
           key,
           body: stringField(body, "body"),
           actor: authContext.serviceActor,
@@ -423,7 +423,7 @@ export function createApp(options: CreateAppOptions): App {
       if (action === "block" && method === "POST") {
         const agentName = requireAgent(await auth());
         const body = await requestBody();
-        const issue = await blockIssue(db, {
+        const issue = await blockIssue(ports, {
           key,
           agent: agentName,
           reason: stringField(body, "reason"),
@@ -434,14 +434,14 @@ export function createApp(options: CreateAppOptions): App {
       if (action === "unblock" && method === "POST") {
         requireHuman(await auth());
         await requestBody();
-        const issue = await unblockIssue(db, { key, actor: "human" });
+        const issue = await unblockIssue(ports, { key, actor: "human" });
         return json({ issue });
       }
 
       if (action === "release" && method === "POST") {
         const agentName = requireAgent(await auth());
         await requestBody();
-        const issue = await releaseClaim(db, { key, agent: agentName });
+        const issue = await releaseClaim(ports, { key, agent: agentName });
         return json({ issue });
       }
 
@@ -454,7 +454,7 @@ export function createApp(options: CreateAppOptions): App {
       }
       const authContext = await auth();
       const queue = await listReady(
-        db,
+        ports,
         { project: queryParam(url, "project") },
         issueContext(authContext),
       );
@@ -468,7 +468,7 @@ export function createApp(options: CreateAppOptions): App {
       const agentName = requireAgent(await auth());
       await requestBody();
       const issue = await claimNext(
-        db,
+        ports,
         { project: queryParam(url, "project") },
         agentName,
       );

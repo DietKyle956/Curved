@@ -5,7 +5,7 @@ import { resolve } from "node:path";
 import { after, afterEach, before, beforeEach, test } from "node:test";
 import { createApp, type App } from "../src/http/app.ts";
 import { createEventHub, type EventHub } from "../src/http/event-hub.ts";
-import { commentOnIssue } from "../src/services/comments.ts";
+import { commentOnIssue } from "../src/application/comments.ts";
 import { createIssue, updateIssue } from "../src/application/issues.ts";
 import { createProject } from "../src/application/projects.ts";
 import { openTestDatabase, type TestDatabase } from "./helpers/db.ts";
@@ -316,7 +316,7 @@ test("a comment and an issue field update each wake the stream", async () => {
   const stream = await openStream();
   assert.equal((await stream.nextFrame()).event, "ready");
 
-  await commentOnIssue(testDb.db, { key: issue.key, body: "hello" });
+  await commentOnIssue(testDb.ports, { key: issue.key, body: "hello" });
   const commentFrame = await nextEvent(stream, "issues_changed");
   assert.equal(Number(commentFrame.data), project.id);
 

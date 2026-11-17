@@ -1,5 +1,5 @@
 import type { ActorType, EventKind, Priority, Status } from "../domain/status.ts";
-import type { IssueEvent, IssueMeta, Project } from "../domain/types.ts";
+import type { Agent, IssueEvent, IssueMeta, Project } from "../domain/types.ts";
 
 /**
  * The application boundary. Use cases depend only on these interfaces, so no
@@ -60,6 +60,15 @@ export interface IssueRepository {
   }): Promise<{ id: number } | null>;
   /** Sets status and claim column; a one-active-claim fence violation becomes ActiveClaimConflict. */
   updateStatus(input: { id: number; status: Status; claimedBy: string | null }): Promise<void>;
+  /** Sets status todo, clears the claim, and records the blocked reason in one statement. */
+  block(input: { id: number; reason: string }): Promise<void>;
+  /** Clears the blocked reason in one statement, leaving status and claim untouched. */
+  unblock(input: { id: number }): Promise<void>;
+  /**
+   * Locks the next claim candidate and skips rows locked elsewhere: todo,
+   * unblocked, no not-done blocker, priority then number then key order.
+   */
+  lockClaimCandidate(filter: { project: string | null }): Promise<{ id: number } | null>;
   findActiveClaimKey(agent: string): Promise<string | null>;
   /** Ready rows: todo, unblocked, no not-done blocker, priority/number/key order. */
   listReady(filter: { project: string | null }): Promise<IssueRecord[]>;
@@ -83,7 +92,12 @@ export interface IssueMetaRepository {
 }
 
 export interface AgentRepository {
-  exists(name: string): Promise<boolean>;
+  /** Inserts an agent; a duplicate name becomes a `duplicate` service error. */
+  create(input: { name: string; tokenHash: string }): Promise<Agent>;
+  findByTokenHash(tokenHash: string): Promise<Agent | null>;
+  findByName(name: string): Promise<Agent | null>;
+  /** Serializes concurrent claims by one agent inside the current transaction. */
+  acquireClaimLock(name: string): Promise<void>;
 }
 
 /** Mints a fresh agent token and hashes a presented one for lookup. */

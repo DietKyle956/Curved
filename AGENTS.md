@@ -151,6 +151,34 @@ MCP `ToolDeps` all pass `ports`. A violation of the
 `issues_one_active_claim_per_agent` constraint surfaces as `ActiveClaimConflict`
 and keeps the `agent_busy` message naming the active key. Behavior is unchanged:
 189 tests pass.
+LAS-172 is live: step 3's third slice moves the rest of the shared services onto
+ports. `src/application/agents.ts` holds `createAgent`, `authenticateAgent`, and
+`ensureAgentExists` (token mint and hash go through `TokenCodec`),
+`src/application/queue.ts` holds `ReadyQueue`, `listReady`, `claimNext`,
+`submitForReview`, and `releaseClaim`, `src/application/blocking.ts` holds
+`blockIssue` and `unblockIssue`, and `src/application/comments.ts` holds
+`commentOnIssue`, none with SQL and none importing `pg`. `AgentRepository` in
+`src/application/ports.ts` becomes `create({ name, tokenHash })`, `findByTokenHash`,
+`findByName`, and `acquireClaimLock(name)`, with the old `exists` gone, and
+`IssueRepository` adds `block({ id, reason })`, `unblock({ id })`, and
+`lockClaimCandidate({ project })` (todo, unblocked, no not-done blocker,
+priority/number/key order, `for update ... skip locked`), while `updateStatus`,
+`findActiveClaimKey`, and `listReady` are unchanged. They are implemented in
+`src/adapters/postgres/repositories/agents.ts`, which maps SQLSTATE `23505` to
+`ServiceError("duplicate", 'agent "<name>" already exists')` and owns the
+advisory lock `select pg_advisory_xact_lock(727275, hashtext($1))`, and in
+`src/adapters/postgres/repositories/issues.ts`, which owns the skip-locked
+candidate query and the single-statement block and unblock updates.
+`src/services/agents.ts`, `queue.ts`, `blocking.ts`, and `comments.ts` are
+deleted, leaving `labels.ts`, `relations.ts`, and `github.ts` for LAS-173. HTTP
+auth resolves the actor with `resolveActor(request, { ports, uiToken })` and the
+comment, block, unblock, release, ready, and claim routes take `ports` (`db`
+remains for labels, relations, and the event hub), the CLI builds
+`createPorts(db)` once per `withDatabase` scope and wraps work in
+`withAgent(ports, config, fn)`, and MCP `ToolDeps` is ports-only
+(`{ ports, resolveAgent }`) with `resolveAgentFromToken(ports, config)`.
+Behavior, error codes, messages, and concurrency semantics are unchanged: 189
+tests pass.
 
 Tests: 189 pass, 0 fail, including `test/http.test.ts`, `test/event-hub.test.ts`,
 `test/sse.test.ts`, the label and relation suites in `test/labels.test.ts` and
@@ -159,9 +187,10 @@ the issue filter and human-only edit cases in `test/issues.test.ts`, and
 `test/projects.test.ts` for create and list, duplicate and validation, the
 transaction-scoped ports commit and rollback, and repository find by key.
 `ARCH.md` codifies the target layers and the one-way dependency rule; step 2
-(domain extraction) and step 3's first two slices (ports plus the projects
-resource, then the issue lifecycle and read model) have landed, the rest of
-step 3 and steps 4 to 6 remain, and the next frontier is `LAS-172`.
+(domain extraction) and step 3's first three slices (ports plus the projects
+resource, then the issue lifecycle and read model, then agents, queue, blocking,
+and comments) have landed, the rest of step 3 and steps 4 to 6 remain, and the
+next frontier is `LAS-173`.
 `/home/dietkyle/projects/templates/ARCH.md`
 carries the same rules as a project-agnostic template.
 

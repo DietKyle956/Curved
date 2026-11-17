@@ -217,5 +217,41 @@ export function createIssueRepository(db: Db): IssueRepository {
       );
       return rows.map(toRecord);
     },
+
+    async lockClaimCandidate(filter): Promise<{ id: number } | null> {
+      const row = await db.one<IdRow>(
+        `select i.id
+  from issues i
+  join projects p on p.id = i.project_id
+  where i.status = 'todo'
+    and i.blocked_reason is null
+    and not exists (
+      select 1
+      from issue_relations r
+      join issues blocker on blocker.id = r.blocking_issue_id
+      where r.blocked_issue_id = i.id and blocker.status <> 'done'
+    )
+    and ($1::text is null or p.key = $1)
+  order by i.priority asc, i.number asc, i.key asc
+  limit 1
+  for update of i skip locked`,
+        [filter.project],
+      );
+      return row === null ? null : { id: row.id };
+    },
+
+    async block(input): Promise<void> {
+      await db.query(
+        `update issues set status = 'todo', claimed_by = null, blocked_reason = $2, updated_at = now() where id = $1`,
+        [input.id, input.reason],
+      );
+    },
+
+    async unblock(input): Promise<void> {
+      await db.query(
+        `update issues set blocked_reason = null, updated_at = now() where id = $1`,
+        [input.id],
+      );
+    },
   };
 }

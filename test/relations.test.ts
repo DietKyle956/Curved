@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { after, before, beforeEach, test } from "node:test";
 import { ServiceError, type ErrorCode } from "../src/domain/errors.ts";
-import { createAgent } from "../src/services/agents.ts";
+import { createAgent } from "../src/application/agents.ts";
 import {
   createIssue,
   getIssue,
@@ -9,7 +9,7 @@ import {
 } from "../src/application/issues.ts";
 import type { Issue, IssueEvent } from "../src/domain/types.ts";
 import { createProject } from "../src/application/projects.ts";
-import { claimNext, listReady } from "../src/services/queue.ts";
+import { claimNext, listReady } from "../src/application/queue.ts";
 import { addRelation } from "../src/services/relations.ts";
 import { openTestDatabase, type TestDatabase } from "./helpers/db.ts";
 
@@ -51,7 +51,7 @@ async function seedIssue(
 }
 
 async function seedAgent(name: string): Promise<void> {
-  await createAgent(testDb.db, name);
+  await createAgent(testDb.ports, name);
 }
 
 function withKind(events: IssueEvent[], kind: IssueEvent["kind"]): IssueEvent[] {
@@ -189,22 +189,22 @@ test("an open blocker keeps a todo issue out of the ready queue until it is done
     blocking: blocker.key,
   });
 
-  const gated = await listReady(testDb.db, { project: "TAC" });
+  const gated = await listReady(testDb.ports, { project: "TAC" });
   assert.deepEqual(gated.ready.map((issue) => issue.key), []);
   await assert.rejects(
-    claimNext(testDb.db, { project: "TAC" }, "alpha"),
+    claimNext(testDb.ports, { project: "TAC" }, "alpha"),
     rejectsWithServiceCode("no_ready_issue"),
   );
   assert.equal((await getIssue(testDb.ports, blocked.key)).status, "todo");
 
   await markDone(blocker.key);
 
-  const ready = await listReady(testDb.db, { project: "TAC" });
+  const ready = await listReady(testDb.ports, { project: "TAC" });
   assert.deepEqual(
     ready.ready.map((issue) => issue.key),
     [blocked.key],
   );
-  const claimed = await claimNext(testDb.db, { project: "TAC" }, "alpha");
+  const claimed = await claimNext(testDb.ports, { project: "TAC" }, "alpha");
   assert.equal(claimed.key, blocked.key);
   assert.equal(claimed.status, "in_progress");
   assert.equal(claimed.claimedBy, "alpha");
@@ -221,21 +221,21 @@ test("a blocker in another project also gates the ready queue", async () => {
     blocking: blocker.key,
   });
 
-  const gated = await listReady(testDb.db, { project: "TAC" });
+  const gated = await listReady(testDb.ports, { project: "TAC" });
   assert.deepEqual(gated.ready.map((issue) => issue.key), []);
   await assert.rejects(
-    claimNext(testDb.db, { project: "TAC" }, "alpha"),
+    claimNext(testDb.ports, { project: "TAC" }, "alpha"),
     rejectsWithServiceCode("no_ready_issue"),
   );
 
   await markDone(blocker.key);
 
-  const ready = await listReady(testDb.db, { project: "TAC" });
+  const ready = await listReady(testDb.ports, { project: "TAC" });
   assert.deepEqual(
     ready.ready.map((issue) => issue.key),
     [blocked.key],
   );
-  const claimed = await claimNext(testDb.db, { project: "TAC" }, "alpha");
+  const claimed = await claimNext(testDb.ports, { project: "TAC" }, "alpha");
   assert.equal(claimed.key, blocked.key);
   assert.equal(claimed.claimedBy, "alpha");
 });

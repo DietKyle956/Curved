@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { after, before, beforeEach, test } from "node:test";
 import { ServiceError, type ErrorCode } from "../src/domain/errors.ts";
-import { createAgent } from "../src/services/agents.ts";
+import { createAgent } from "../src/application/agents.ts";
 import {
   createIssue,
   getIssue,
@@ -22,8 +22,8 @@ before(async () => {
 
 beforeEach(async () => {
   await testDb.reset();
-  await createAgent(testDb.db, "agent-1");
-  await createAgent(testDb.db, "agent-2");
+  await createAgent(testDb.ports, "agent-1");
+  await createAgent(testDb.ports, "agent-2");
 });
 
 after(async () => {

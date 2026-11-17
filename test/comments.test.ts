@@ -2,8 +2,8 @@ import assert from "node:assert/strict";
 import { after, before, beforeEach, test } from "node:test";
 import { pgErrorCode } from "../src/db.ts";
 import { ServiceError, type ErrorCode } from "../src/domain/errors.ts";
-import { createAgent } from "../src/services/agents.ts";
-import { commentOnIssue } from "../src/services/comments.ts";
+import { createAgent } from "../src/application/agents.ts";
+import { commentOnIssue } from "../src/application/comments.ts";
 import { createIssue, moveIssue } from "../src/application/issues.ts";
 import { createProject } from "../src/application/projects.ts";
 import { openTestDatabase, type TestDatabase } from "./helpers/db.ts";
@@ -16,8 +16,8 @@ before(async () => {
 
 beforeEach(async () => {
   await testDb.reset();
-  await createAgent(testDb.db, "agent-1");
-  await createAgent(testDb.db, "agent-2");
+  await createAgent(testDb.ports, "agent-1");
+  await createAgent(testDb.ports, "agent-2");
 });
 
 after(async () => {
@@ -45,17 +45,17 @@ async function seedIssue(): Promise<number> {
 test("commentOnIssue appends interleaved agent and human comments in insertion order", async () => {
   const issueId = await seedIssue();
 
-  const human = await commentOnIssue(testDb.db, {
+  const human = await commentOnIssue(testDb.ports, {
     key: "TAC-1",
     body: "  first from human  ",
   });
-  const agent = await commentOnIssue(testDb.db, {
+  const agent = await commentOnIssue(testDb.ports, {
     key: "TAC-1",
     body: "second from agent",
     actor: "agent",
     agent: "agent-1",
   });
-  const humanAgain = await commentOnIssue(testDb.db, {
+  const humanAgain = await commentOnIssue(testDb.ports, {
     key: "TAC-0001",
     body: "third from human",
     actor: "human",
@@ -106,7 +106,7 @@ test("commentOnIssue rejects empty and whitespace-only bodies without appending 
 
   for (const body of ["", "   ", "\t\n "]) {
     await assert.rejects(
-      commentOnIssue(testDb.db, { key: "TAC-1", body }),
+      commentOnIssue(testDb.ports, { key: "TAC-1", body }),
       rejectsWithServiceCode("validation"),
       JSON.stringify(body),
     );
@@ -123,15 +123,15 @@ test("commentOnIssue rejects an unknown key, a malformed key, and an invalid act
   const issueId = await seedIssue();
 
   await assert.rejects(
-    commentOnIssue(testDb.db, { key: "TAC-99", body: "missing issue" }),
+    commentOnIssue(testDb.ports, { key: "TAC-99", body: "missing issue" }),
     rejectsWithServiceCode("not_found"),
   );
   await assert.rejects(
-    commentOnIssue(testDb.db, { key: "tac-1", body: "malformed key" }),
+    commentOnIssue(testDb.ports, { key: "tac-1", body: "malformed key" }),
     rejectsWithServiceCode("validation"),
   );
   await assert.rejects(
-    commentOnIssue(testDb.db, { key: "TAC-1", body: "wrong actor", actor: "robot" }),
+    commentOnIssue(testDb.ports, { key: "TAC-1", body: "wrong actor", actor: "robot" }),
     rejectsWithServiceCode("validation"),
   );
 
@@ -144,7 +144,7 @@ test("commentOnIssue rejects an unknown key, a malformed key, and an invalid act
 
 test("issue_events rejects updates and deletes on a comment row and keeps the stored comment", async () => {
   const issueId = await seedIssue();
-  const comment = await commentOnIssue(testDb.db, {
+  const comment = await commentOnIssue(testDb.ports, {
     key: "TAC-1",
     body: "original comment",
     actor: "agent",
@@ -201,7 +201,7 @@ test("commentOnIssue forbids an agent from commenting on another agent's claim w
   const before = await testDb.ports.events.list(issueId);
 
   await assert.rejects(
-    commentOnIssue(testDb.db, {
+    commentOnIssue(testDb.ports, {
       key: "TAC-1",
       body: "not mine",
       actor: "agent",
@@ -227,13 +227,13 @@ test("commentOnIssue lets the owning agent and a human comment on a claimed issu
     agent: "agent-1",
   });
 
-  const owner = await commentOnIssue(testDb.db, {
+  const owner = await commentOnIssue(testDb.ports, {
     key: "TAC-1",
     body: "  owner note  ",
     actor: "agent",
     agent: "agent-1",
   });
-  const human = await commentOnIssue(testDb.db, {
+  const human = await commentOnIssue(testDb.ports, {
     key: "TAC-1",
     body: "human note",
   });
@@ -261,7 +261,7 @@ test("commentOnIssue rejects an agent comment without an identity", async () => 
   const issueId = await seedIssue();
 
   await assert.rejects(
-    commentOnIssue(testDb.db, {
+    commentOnIssue(testDb.ports, {
       key: "TAC-1",
       body: "anonymous agent",
       actor: "agent",
@@ -280,7 +280,7 @@ test("commentOnIssue rejects an unregistered agent identity", async () => {
   const issueId = await seedIssue();
 
   await assert.rejects(
-    commentOnIssue(testDb.db, {
+    commentOnIssue(testDb.ports, {
       key: "TAC-1",
       body: "ghost comment",
       actor: "agent",

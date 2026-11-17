@@ -1,11 +1,10 @@
 import type { CallToolResult } from "@modelcontextprotocol/server";
 import { z } from "zod";
-import type { Database } from "../db.ts";
 import { ServiceError } from "../domain/errors.ts";
 import { ISSUE_KEY_PATTERN, PROJECT_KEY_PATTERN } from "../domain/keys.ts";
 import type { Ports } from "../application/ports.ts";
-import { blockIssue } from "../services/blocking.ts";
-import { commentOnIssue } from "../services/comments.ts";
+import { blockIssue } from "../application/blocking.ts";
+import { commentOnIssue } from "../application/comments.ts";
 import {
   createIssue as createIssueService,
   getIssueTimeline,
@@ -15,7 +14,7 @@ import {
   listReady as listReadyService,
   releaseClaim as releaseClaimService,
   submitForReview as submitForReviewService,
-} from "../services/queue.ts";
+} from "../application/queue.ts";
 
 export const projectSchema = z
   .string()
@@ -79,8 +78,7 @@ export type ReleaseClaimInput = z.infer<typeof releaseClaimInput>;
 export type SubmitForReviewInput = z.infer<typeof submitForReviewInput>;
 
 export interface ToolDeps {
-  db: Database;
-  /** Ports bound to the same database, for the issue application module. */
+  /** Ports bound to the same database, for the application modules. */
   ports: Ports;
   /** Resolves the authenticated agent name, or throws `not_authenticated`. */
   resolveAgent(): Promise<string>;
@@ -117,7 +115,7 @@ export async function runTool<T>(fn: () => Promise<T>): Promise<CallToolResult> 
 export async function claimNext(deps: ToolDeps, input: ClaimNextInput) {
   const agent = await deps.resolveAgent();
   const issue = await claimNextService(
-    deps.db,
+    deps.ports,
     { project: input.project },
     agent,
   );
@@ -126,7 +124,7 @@ export async function claimNext(deps: ToolDeps, input: ClaimNextInput) {
 
 export async function comment(deps: ToolDeps, input: CommentInput) {
   const agent = await deps.resolveAgent();
-  return commentOnIssue(deps.db, {
+  return commentOnIssue(deps.ports, {
     key: input.key,
     body: input.body,
     actor: "agent",
@@ -153,7 +151,7 @@ export async function getIssue(deps: ToolDeps, input: GetIssueInput) {
 export async function listReady(deps: ToolDeps, input: ListReadyInput) {
   const agent = await deps.resolveAgent();
   return listReadyService(
-    deps.db,
+    deps.ports,
     { project: input.project },
     { actor: "agent", agent },
   );
@@ -161,7 +159,7 @@ export async function listReady(deps: ToolDeps, input: ListReadyInput) {
 
 export async function markBlocked(deps: ToolDeps, input: MarkBlockedInput) {
   const agent = await deps.resolveAgent();
-  return blockIssue(deps.db, {
+  return blockIssue(deps.ports, {
     key: input.key,
     agent,
     reason: input.reason,
@@ -170,7 +168,7 @@ export async function markBlocked(deps: ToolDeps, input: MarkBlockedInput) {
 
 export async function releaseClaim(deps: ToolDeps, input: ReleaseClaimInput) {
   const agent = await deps.resolveAgent();
-  return releaseClaimService(deps.db, { key: input.key, agent });
+  return releaseClaimService(deps.ports, { key: input.key, agent });
 }
 
 export async function submitForReview(
@@ -178,7 +176,7 @@ export async function submitForReview(
   input: SubmitForReviewInput,
 ) {
   const agent = await deps.resolveAgent();
-  return submitForReviewService(deps.db, {
+  return submitForReviewService(deps.ports, {
     key: input.key,
     agent,
     summary: input.summary,

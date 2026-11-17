@@ -5,9 +5,9 @@ import { createDatabase } from "./db.ts";
 import { ServiceError } from "./domain/errors.ts";
 import { branchNameForIssue } from "./domain/keys.ts";
 import { runMigrations } from "./migrate.ts";
-import { authenticateAgent, createAgent } from "./services/agents.ts";
-import { blockIssue, unblockIssue } from "./services/blocking.ts";
-import { commentOnIssue } from "./services/comments.ts";
+import { authenticateAgent, createAgent } from "./application/agents.ts";
+import { blockIssue, unblockIssue } from "./application/blocking.ts";
+import { commentOnIssue } from "./application/comments.ts";
 import {
   createIssue,
   getIssue,
@@ -15,14 +15,15 @@ import {
   listIssues,
   moveIssue,
 } from "./application/issues.ts";
+import type { Ports } from "./application/ports.ts";
 import { createProject, listProjects } from "./application/projects.ts";
-import { createPorts } from "./adapters/postgres/ports.ts";
 import {
   claimNext,
   listReady,
   releaseClaim,
   submitForReview,
-} from "./services/queue.ts";
+} from "./application/queue.ts";
+import { createPorts } from "./adapters/postgres/ports.ts";
 
 const USAGE = `Usage: curved <command> [options]
 
@@ -87,11 +88,11 @@ function requireAgentToken(config: Config): string {
 }
 
 async function withAgent<T>(
-  db: Database,
+  ports: Ports,
   config: Config,
   fn: (agentName: string) => Promise<T>,
 ): Promise<T> {
-  const agent = await authenticateAgent(db, requireAgentToken(config));
+  const agent = await authenticateAgent(ports, requireAgentToken(config));
   return fn(agent.name);
 }
 
@@ -383,7 +384,7 @@ async function runIssueCommand(
     }
     const body = words.join(" ");
     const event = await withDatabase((db) =>
-      commentOnIssue(db, { key, body, actor, agent }),
+      commentOnIssue(createPorts(db), { key, body, actor, agent }),
     );
     if (json) {
       printJson(event);
@@ -403,11 +404,12 @@ async function runIssueCommand(
       throw new UsageError("issue block requires a reason");
     }
     const reason = words.join(" ");
-    const issue = await withDatabase((db, config) =>
-      withAgent(db, config, (agent) =>
-        blockIssue(db, { key, agent, reason }),
-      ),
-    );
+    const issue = await withDatabase((db, config) => {
+      const ports = createPorts(db);
+      return withAgent(ports, config, (agent) =>
+        blockIssue(ports, { key, agent, reason }),
+      );
+    });
     if (json) {
       printJson(issue);
     } else {
@@ -426,7 +428,7 @@ async function runIssueCommand(
       throw new UsageError("issue unblock accepts exactly one KEY argument");
     }
     const issue = await withDatabase((db) =>
-      unblockIssue(db, { key, actor, agent }),
+      unblockIssue(createPorts(db), { key, actor, agent }),
     );
     if (json) {
       printJson(issue);
@@ -524,7 +526,9 @@ async function runAgentCommand(
     if (extra.length > 0) {
       throw new UsageError("agent add requires exactly one name");
     }
-    const created = await withDatabase((db) => createAgent(db, name));
+    const created = await withDatabase((db) =>
+      createAgent(createPorts(db), name),
+    );
     if (json) {
       printJson({ ...created.agent, token: created.token });
     } else {
@@ -566,11 +570,12 @@ async function runReadyCommand(
   }
   const options = project === undefined ? undefined : { project };
   const queue = await withDatabase(async (db, config) => {
+    const ports = createPorts(db);
     if (human) {
-      return listReady(db, options, { actor: "human" });
+      return listReady(ports, options, { actor: "human" });
     }
-    return withAgent(db, config, (agent) =>
-      listReady(db, options, { actor: "agent", agent }),
+    return withAgent(ports, config, (agent) =>
+      listReady(ports, options, { actor: "agent", agent }),
     );
   });
   if (json) {
@@ -600,9 +605,12 @@ async function runClaimCommand(
     throw new UsageError("claim accepts at most one PROJECT argument");
   }
   const options = project === undefined ? {} : { project };
-  const issue = await withDatabase((db, config) =>
-    withAgent(db, config, (agent) => claimNext(db, options, agent)),
-  );
+  const issue = await withDatabase((db, config) => {
+    const ports = createPorts(db);
+    return withAgent(ports, config, (agent) =>
+      claimNext(ports, options, agent),
+    );
+  });
   if (json) {
     printJson(issue);
   } else {
@@ -626,11 +634,12 @@ async function runReviewCommand(
     throw new UsageError("review requires <KEY> <summary...>");
   }
   const summary = words.join(" ");
-  const issue = await withDatabase((db, config) =>
-    withAgent(db, config, (agent) =>
-      submitForReview(db, { key, agent, summary }),
-    ),
-  );
+  const issue = await withDatabase((db, config) => {
+    const ports = createPorts(db);
+    return withAgent(ports, config, (agent) =>
+      submitForReview(ports, { key, agent, summary }),
+    );
+  });
   if (json) {
     printJson(issue);
   } else {
@@ -656,9 +665,12 @@ async function runReleaseCommand(
   if (extra.length > 0) {
     throw new UsageError("release accepts exactly one KEY argument");
   }
-  const issue = await withDatabase((db, config) =>
-    withAgent(db, config, (agent) => releaseClaim(db, { key, agent })),
-  );
+  const issue = await withDatabase((db, config) => {
+    const ports = createPorts(db);
+    return withAgent(ports, config, (agent) =>
+      releaseClaim(ports, { key, agent }),
+    );
+  });
   if (json) {
     printJson(issue);
   } else {

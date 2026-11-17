@@ -1,8 +1,3 @@
-import type { Db, Database } from "../db.ts";
-import { bindPorts } from "../adapters/postgres/ports.ts";
-import { hydrateIssue, toIssue } from "../application/issue-read-model.ts";
-import { ActiveClaimConflict } from "../application/ports.ts";
-import type { TransactionPorts } from "../application/ports.ts";
 import { resolveContext } from "../domain/actors.ts";
 import type { IssueContext, ResolvedContext } from "../domain/actors.ts";
 import { ServiceError } from "../domain/errors.ts";
@@ -10,6 +5,9 @@ import { parseIssueKey } from "../domain/keys.ts";
 import type { Issue } from "../domain/types.ts";
 import { validateReviewSummary } from "../domain/validation.ts";
 import { ensureAgentExists } from "./agents.ts";
+import { hydrateIssue, toIssue } from "./issue-read-model.ts";
+import { ActiveClaimConflict } from "./ports.ts";
+import type { Ports, TransactionPorts } from "./ports.ts";
 
 export interface ReadyQueue {
   ready: Issue[];
@@ -48,11 +46,10 @@ async function activeClaimKey(
  * worker can tell it is already busy before it tries to claim again.
  */
 export async function listReady(
-  db: Db,
+  ports: TransactionPorts,
   options?: { project?: string },
   context?: IssueContext,
 ): Promise<ReadyQueue> {
-  const ports = bindPorts(db);
   const resolved: ResolvedContext = resolveContext(context);
   const project = await resolveProjectFilter(ports, options?.project);
 
@@ -76,22 +73,19 @@ export async function listReady(
  * `skip locked` so they never pile up behind one row.
  */
 export async function claimNext(
-  db: Database,
+  ports: Ports,
   options: { project?: string },
   agent: string,
 ): Promise<Issue> {
   const agentName = agent.trim();
-  await ensureAgentExists(db, agentName);
-  const project = await resolveProjectFilter(bindPorts(db), options.project);
+  await ensureAgentExists(ports, agentName);
+  const project = await resolveProjectFilter(ports, options.project);
 
   try {
-    return await db.tx(async (tx) => {
-      const ports = bindPorts(tx);
-      await tx.query(`select pg_advisory_xact_lock(727275, hashtext($1))`, [
-        agentName,
-      ]);
+    return await ports.transaction(async (tx) => {
+      await tx.agents.acquireClaimLock(agentName);
 
-      const active = await activeClaimKey(ports, agentName);
+      const active = await activeClaimKey(tx, agentName);
       if (active !== null) {
         throw new ServiceError(
           "agent_busy",
@@ -99,24 +93,7 @@ export async function claimNext(
         );
       }
 
-      const candidate = await tx.one<{ id: number }>(
-        `select i.id
-         from issues i
-         join projects p on p.id = i.project_id
-         where i.status = 'todo'
-           and i.blocked_reason is null
-           and not exists (
-             select 1
-             from issue_relations r
-             join issues blocker on blocker.id = r.blocking_issue_id
-             where r.blocked_issue_id = i.id and blocker.status <> 'done'
-           )
-           and ($1::text is null or p.key = $1)
-         order by i.priority asc, i.number asc, i.key asc
-         limit 1
-         for update of i skip locked`,
-        [project],
-      );
+      const candidate = await tx.issues.lockClaimCandidate({ project });
       if (candidate === null) {
         throw new ServiceError(
           "no_ready_issue",
@@ -124,12 +101,12 @@ export async function claimNext(
         );
       }
 
-      await ports.issues.updateStatus({
+      await tx.issues.updateStatus({
         id: candidate.id,
         status: "in_progress",
         claimedBy: agentName,
       });
-      await ports.events.append({
+      await tx.events.append({
         issueId: candidate.id,
         kind: "claim",
         actorType: "agent",
@@ -138,7 +115,7 @@ export async function claimNext(
         body: null,
       });
 
-      return hydrateIssue(ports, candidate.id, {
+      return hydrateIssue(tx, candidate.id, {
         actor: "agent",
         agent: agentName,
       });
@@ -147,7 +124,7 @@ export async function claimNext(
     if (!(error instanceof ActiveClaimConflict)) {
       throw error;
     }
-    const active = await activeClaimKey(bindPorts(db), agentName);
+    const active = await activeClaimKey(ports, agentName);
     throw new ServiceError(
       "agent_busy",
       active === null
@@ -162,17 +139,16 @@ export async function claimNext(
  * explicitly because this is not a generic status move.
  */
 export async function submitForReview(
-  db: Database,
+  ports: Ports,
   input: { key: string; agent: string; summary: string },
 ): Promise<Issue> {
   const agent = input.agent.trim();
-  await ensureAgentExists(db, agent);
+  await ensureAgentExists(ports, agent);
   const summary = validateReviewSummary(input.summary);
   const key = parseIssueKey(input.key).key;
 
-  return db.tx(async (tx) => {
-    const ports = bindPorts(tx);
-    const locked = await ports.issues.lockByKey(key);
+  return ports.transaction(async (tx) => {
+    const locked = await tx.issues.lockByKey(key);
     if (locked === null) {
       throw new ServiceError("not_found", `issue "${key}" not found`);
     }
@@ -189,12 +165,12 @@ export async function submitForReview(
       );
     }
 
-    await ports.issues.updateStatus({
+    await tx.issues.updateStatus({
       id: locked.id,
       status: "in_review",
       claimedBy: agent,
     });
-    await ports.events.append({
+    await tx.events.append({
       issueId: locked.id,
       kind: "review_submitted",
       actorType: "agent",
@@ -203,7 +179,7 @@ export async function submitForReview(
       body: summary,
     });
 
-    return hydrateIssue(ports, locked.id, { actor: "agent", agent });
+    return hydrateIssue(tx, locked.id, { actor: "agent", agent });
   });
 }
 
@@ -212,16 +188,15 @@ export async function submitForReview(
  * here explicitly because this is not a generic status move.
  */
 export async function releaseClaim(
-  db: Database,
+  ports: Ports,
   input: { key: string; agent: string },
 ): Promise<Issue> {
   const agent = input.agent.trim();
-  await ensureAgentExists(db, agent);
+  await ensureAgentExists(ports, agent);
   const key = parseIssueKey(input.key).key;
 
-  return db.tx(async (tx) => {
-    const ports = bindPorts(tx);
-    const locked = await ports.issues.lockByKey(key);
+  return ports.transaction(async (tx) => {
+    const locked = await tx.issues.lockByKey(key);
     if (locked === null) {
       throw new ServiceError("not_found", `issue "${key}" not found`);
     }
@@ -238,12 +213,12 @@ export async function releaseClaim(
       );
     }
 
-    await ports.issues.updateStatus({
+    await tx.issues.updateStatus({
       id: locked.id,
       status: "todo",
       claimedBy: null,
     });
-    await ports.events.append({
+    await tx.events.append({
       issueId: locked.id,
       kind: "release",
       actorType: "agent",
@@ -252,6 +227,6 @@ export async function releaseClaim(
       body: null,
     });
 
-    return hydrateIssue(ports, locked.id, { actor: "agent", agent });
+    return hydrateIssue(tx, locked.id, { actor: "agent", agent });
   });
 }

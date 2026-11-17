@@ -3,10 +3,10 @@ import { serveStdio } from "@modelcontextprotocol/server/stdio";
 import { loadConfig } from "../config.ts";
 import type { Config } from "../config.ts";
 import { createDatabase } from "../db.ts";
-import type { Database } from "../db.ts";
 import { createPorts } from "../adapters/postgres/ports.ts";
+import type { Ports } from "../application/ports.ts";
 import { ServiceError } from "../domain/errors.ts";
-import { authenticateAgent } from "../services/agents.ts";
+import { authenticateAgent } from "../application/agents.ts";
 import {
   claimNext,
   claimNextInput,
@@ -33,7 +33,7 @@ import type { ToolDeps } from "./tools.ts";
  * through this, so a missing or unknown token fails authentication.
  */
 export async function resolveAgentFromToken(
-  db: Database,
+  ports: Ports,
   config: Config,
 ): Promise<string> {
   const token = config.agentToken.trim();
@@ -43,7 +43,7 @@ export async function resolveAgentFromToken(
       'no agent token: set CURVED_AGENT_TOKEN to a token created with "node src/cli.ts agent add <name>"',
     );
   }
-  const agent = await authenticateAgent(db, token);
+  const agent = await authenticateAgent(ports, token);
   return agent.name;
 }
 
@@ -146,12 +146,12 @@ export function createCurvedMcpServer(deps: ToolDeps): McpServer {
 export async function main(): Promise<void> {
   const config = loadConfig();
   const db = createDatabase(config.databaseUrl);
+  const ports = createPorts(db);
   const handle = serveStdio(
     () =>
       createCurvedMcpServer({
-        db,
-        ports: createPorts(db),
-        resolveAgent: () => resolveAgentFromToken(db, config),
+        ports,
+        resolveAgent: () => resolveAgentFromToken(ports, config),
       }),
     {
       onerror: (error) => {

@@ -5,7 +5,7 @@ import { createInterface } from "node:readline";
 import { after, before, beforeEach, test } from "node:test";
 import { Client, type CallToolResult } from "@modelcontextprotocol/client";
 import { StdioClientTransport } from "@modelcontextprotocol/client/stdio";
-import { createAgent } from "../src/services/agents.ts";
+import { createAgent } from "../src/application/agents.ts";
 import { createIssue } from "../src/application/issues.ts";
 import type { Issue } from "../src/domain/types.ts";
 import { createProject } from "../src/application/projects.ts";
@@ -87,7 +87,7 @@ async function seedProject(key = "TAC", name = "Tac"): Promise<void> {
 }
 
 async function seedAgentToken(name = AGENT_NAME): Promise<string> {
-  const created = await createAgent(testDb.db, name);
+  const created = await createAgent(testDb.ports, name);
   return created.token;
 }
 
