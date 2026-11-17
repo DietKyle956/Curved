@@ -21,8 +21,10 @@
   implemented: the refactor has not started, so its Current/Target markers matter.
 - Templates: `/home/dietkyle/projects/templates/ARCH.md` (111 lines) is the
   project-agnostic version of the same contract, listed as copy-first item 2 in
-  that directory's `index.md`; `templates/` is not a git repository, so those files
-  are uncommitted.
+  that directory's `index.md`; `templates/AGENTS.md` now reads `ARCH.md` in its
+  startup workflow and lists it under required artifacts. `templates/` is not a
+  git repository, so those files are uncommitted. `LAS-177` tracks the wider
+  template audit.
 - Database: `docker compose up` starts `postgres:18-alpine` on host port 55432
   (user/password/db all `curved`, named volume mounted at `/var/lib/postgresql`).
   `scripts/db.sh` waits for readiness, then runs `node src/migrate.ts`.
@@ -1055,7 +1057,9 @@ Close `LAS-152`, `LAS-153`, and `LAS-154` once their acceptance tests land.
   the forbidden-directions table, review-only until migration step 6). `AGENTS.md`
   gained an `ARCH.md` directory-page entry and one current-state sentence.
   `/home/dietkyle/projects/templates/ARCH.md` (111 lines) is the project-agnostic
-  minimum contract and `templates/index.md` lists it as copy-first item 2.
+  minimum contract, `templates/index.md` lists it as copy-first item 2, and
+  `templates/AGENTS.md` now reads it in startup step 2 and lists it under required
+  artifacts. `LAS-177` was filed for a full template audit.
 - Verification run: `npm run check` green (server and web typecheck plus 187
   tests, 0 fail); `./scripts/init.sh --no-install` green (61s: install, database,
   check, build); `./scripts/clean-state.sh` green. `git status` shows only
@@ -1068,7 +1072,9 @@ Close `LAS-152`, `LAS-153`, and `LAS-154` once their acceptance tests land.
 - Known risk: `ARCH.md` describes a target tree that does not exist yet, so readers
   must honor its Current/Target markers; the import-direction check is planned and
   absent, so layering stays review-only until migration step 6; the web has no
-  automated test coverage; `templates/AGENTS.md` does not yet tell an agent to read
-  `ARCH.md`, so inheritance runs through `index.md` only.
+  automated test coverage. The template startup gap is closed: `templates/AGENTS.md`
+  reads `ARCH.md` in step 2 and lists it under required artifacts; `LAS-177` covers
+  the wider template audit.
 - Next best step: `LAS-169` (extract the pure domain layer).
-- Commits: 1 commit, `Codify the architecture contract`.
+- Commits: 2 commits, `Codify the architecture contract` and
+  `Record the template ARCH startup step`.
