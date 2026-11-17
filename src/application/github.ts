@@ -1,8 +1,8 @@
-import { moveIssue } from "../application/issues.ts";
-import type { Ports } from "../application/ports.ts";
 import { ServiceError } from "../domain/errors.ts";
 import { issueKeyFromText } from "../domain/keys.ts";
 import type { Issue } from "../domain/types.ts";
+import { moveIssue } from "./issues.ts";
+import type { Ports } from "./ports.ts";
 
 /** Narrows an unknown JSON value to a plain object, or null when it is not one. */
 function record(value: unknown): Record<string, unknown> | null {

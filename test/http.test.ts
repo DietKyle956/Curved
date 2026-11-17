@@ -80,7 +80,6 @@ beforeEach(async () => {
   appOpened = false;
   await testDb.reset();
   app = createApp({
-    db: testDb.db,
     ports: testDb.ports,
     databaseUrl: testDb.databaseUrl,
     uiToken: UI_TOKEN,
@@ -132,7 +131,6 @@ test("createApp rejects an empty ui token with a message naming CURVED_UI_TOKEN"
   assert.throws(
     () =>
       createApp({
-        db: testDb.db,
         ports: testDb.ports,
         databaseUrl: testDb.databaseUrl,
         uiToken: "",
@@ -857,7 +855,6 @@ test("SPA serving uses the fixture build, caches by kind, and rejects traversal"
     await writeFile(join(dist, "assets", "app-abc123.js"), "console.log('app');");
 
     spa = createApp({
-      db: testDb.db,
       ports: testDb.ports,
       databaseUrl: testDb.databaseUrl,
       uiToken: UI_TOKEN,
@@ -899,7 +896,6 @@ test("SPA serving uses the fixture build, caches by kind, and rejects traversal"
 test("a missing web build returns 503 text explaining how to build", async () => {
   const missingDir = join(tmpdir(), `curved-http-missing-${process.pid}-${Date.now()}`);
   const spa = createApp({
-    db: testDb.db,
     ports: testDb.ports,
     databaseUrl: testDb.databaseUrl,
     uiToken: UI_TOKEN,

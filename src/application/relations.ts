@@ -1,11 +1,9 @@
-import type { QueryResultRow } from "pg";
-import { bindPorts } from "../adapters/postgres/ports.ts";
-import { hydrateIssue } from "../application/issue-read-model.ts";
-import type { Database } from "../db.ts";
 import { resolveContext } from "../domain/actors.ts";
 import { ServiceError } from "../domain/errors.ts";
 import { parseIssueKey } from "../domain/keys.ts";
 import type { Issue } from "../domain/types.ts";
+import { hydrateIssue } from "./issue-read-model.ts";
+import type { Ports } from "./ports.ts";
 
 export interface AddRelationInput {
   blocked: string;
@@ -14,21 +12,12 @@ export interface AddRelationInput {
   agent?: string;
 }
 
-interface IssueIdRow extends QueryResultRow {
-  id: number;
-  key: string;
-}
-
-interface InsertedRelationRow extends QueryResultRow {
-  blocking_issue_id: number;
-}
-
 /**
  * Records that one issue blocks another. Only a human may add a relation.
  * The edge is idempotent: a duplicate add writes no second event.
  */
 export async function addRelation(
-  db: Database,
+  ports: Ports,
   input: AddRelationInput,
 ): Promise<Issue> {
   const context = resolveContext({ actor: input.actor, agent: input.agent });
@@ -48,31 +37,22 @@ export async function addRelation(
     );
   }
 
-  const rows = await db.query<IssueIdRow>(
-    `select id, key from issues where key = any($1::text[])`,
-    [[blockedKey, blockingKey]],
-  );
-  const blocked = rows.find((row) => row.key === blockedKey);
-  if (blocked === undefined) {
+  const blocked = await ports.issues.findByKey(blockedKey);
+  if (blocked === null) {
     throw new ServiceError("not_found", `issue "${blockedKey}" not found`);
   }
-  const blocking = rows.find((row) => row.key === blockingKey);
-  if (blocking === undefined) {
+  const blocking = await ports.issues.findByKey(blockingKey);
+  if (blocking === null) {
     throw new ServiceError("not_found", `issue "${blockingKey}" not found`);
   }
 
-  return db.tx(async (tx) => {
-    const ports = bindPorts(tx);
-
-    const inserted = await tx.one<InsertedRelationRow>(
-      `insert into issue_relations (blocking_issue_id, blocked_issue_id)
-       values ($1, $2)
-       on conflict (blocking_issue_id, blocked_issue_id) do nothing
-       returning blocking_issue_id`,
-      [blocking.id, blocked.id],
-    );
-    if (inserted !== null) {
-      await ports.events.append({
+  return ports.transaction(async (tx) => {
+    const inserted = await tx.relations.add({
+      blockingIssueId: blocking.id,
+      blockedIssueId: blocked.id,
+    });
+    if (inserted) {
+      await tx.events.append({
         issueId: blocked.id,
         kind: "relation",
         actorType: "human",
@@ -82,6 +62,6 @@ export async function addRelation(
       });
     }
 
-    return hydrateIssue(ports, blocked.id, context);
+    return hydrateIssue(tx, blocked.id, context);
   });
 }

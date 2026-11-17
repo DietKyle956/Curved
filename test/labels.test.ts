@@ -10,9 +10,9 @@ import {
   listIssues,
 } from "../src/application/issues.ts";
 import type { Issue, IssueEvent } from "../src/domain/types.ts";
-import { setIssueLabels } from "../src/services/labels.ts";
+import { setIssueLabels } from "../src/application/labels.ts";
 import { createProject } from "../src/application/projects.ts";
-import { addRelation } from "../src/services/relations.ts";
+import { addRelation } from "../src/application/relations.ts";
 import { openTestDatabase, type TestDatabase } from "./helpers/db.ts";
 
 let testDb: TestDatabase;
@@ -85,13 +85,13 @@ test("setIssueLabels replaces the label set and returns names ascending", async 
   await seedProject();
   const issue = await seedIssue();
 
-  const first = await setIssueLabels(testDb.db, {
+  const first = await setIssueLabels(testDb.ports, {
     key: issue.key,
     labels: ["beta", "alpha"],
   });
   assert.deepEqual(first.labels, ["alpha", "beta"]);
 
-  const second = await setIssueLabels(testDb.db, {
+  const second = await setIssueLabels(testDb.ports, {
     key: issue.key,
     labels: ["gamma", "beta"],
   });
@@ -118,7 +118,7 @@ test("setIssueLabels trims names and collapses duplicates in one call", async ()
   await seedProject();
   const issue = await seedIssue();
 
-  const updated = await setIssueLabels(testDb.db, {
+  const updated = await setIssueLabels(testDb.ports, {
     key: issue.key,
     labels: ["  ui  ", "bug", "ui", " bug "],
   });
@@ -138,9 +138,9 @@ test("labels are upserted per project and reused across projects", async () => {
   const second = await seedIssue("TAC", "Second");
   const other = await seedIssue("AAA", "Other");
 
-  await setIssueLabels(testDb.db, { key: first.key, labels: ["ui"] });
-  await setIssueLabels(testDb.db, { key: second.key, labels: ["ui"] });
-  await setIssueLabels(testDb.db, { key: other.key, labels: ["ui"] });
+  await setIssueLabels(testDb.ports, { key: first.key, labels: ["ui"] });
+  await setIssueLabels(testDb.ports, { key: second.key, labels: ["ui"] });
+  await setIssueLabels(testDb.ports, { key: other.key, labels: ["ui"] });
 
   const labelRows = await testDb.db.query<{ project_id: number; name: string }>(
     `select project_id, name from labels where name = $1 order by project_id asc`,
@@ -167,11 +167,11 @@ test("each label replacement appends one labels event with a JSON body", async (
   await seedProject();
   const issue = await seedIssue();
 
-  await setIssueLabels(testDb.db, {
+  await setIssueLabels(testDb.ports, {
     key: issue.key,
     labels: ["beta", "alpha"],
   });
-  await setIssueLabels(testDb.db, { key: issue.key, labels: ["gamma"] });
+  await setIssueLabels(testDb.ports, { key: issue.key, labels: ["gamma"] });
 
   const events = withKind(await testDb.ports.events.list(issue.id), "labels");
   assert.equal(events.length, 2);
@@ -189,9 +189,9 @@ test("each label replacement appends one labels event with a JSON body", async (
 test("an empty label array clears the set and still appends one event", async () => {
   await seedProject();
   const issue = await seedIssue();
-  await setIssueLabels(testDb.db, { key: issue.key, labels: ["alpha", "beta"] });
+  await setIssueLabels(testDb.ports, { key: issue.key, labels: ["alpha", "beta"] });
 
-  const cleared = await setIssueLabels(testDb.db, {
+  const cleared = await setIssueLabels(testDb.ports, {
     key: issue.key,
     labels: [],
   });
@@ -225,7 +225,7 @@ test("setIssueLabels validates names and rejects non-arrays", async () => {
   ];
   for (const [label, labels] of cases) {
     await assert.rejects(
-      setIssueLabels(testDb.db, {
+      setIssueLabels(testDb.ports, {
         key: issue.key,
         labels: labels as string[],
       }),
@@ -234,7 +234,7 @@ test("setIssueLabels validates names and rejects non-arrays", async () => {
     );
   }
 
-  const maximum = await setIssueLabels(testDb.db, {
+  const maximum = await setIssueLabels(testDb.ports, {
     key: issue.key,
     labels: ["x".repeat(50)],
   });
@@ -246,11 +246,11 @@ test("setIssueLabels rejects an unknown issue and an agent actor", async () => {
   const issue = await seedIssue();
 
   await assert.rejects(
-    setIssueLabels(testDb.db, { key: "TAC-99", labels: ["ui"] }),
+    setIssueLabels(testDb.ports, { key: "TAC-99", labels: ["ui"] }),
     rejectsWithServiceCode("not_found"),
   );
   await assert.rejects(
-    setIssueLabels(testDb.db, {
+    setIssueLabels(testDb.ports, {
       key: issue.key,
       labels: ["ui"],
       actor: "agent",
@@ -272,7 +272,7 @@ test("getIssue, listIssues, and the timeline expose labels", async () => {
   await seedProject();
   const labelled = await seedIssue("TAC", "Labelled");
   await seedIssue("TAC", "Plain");
-  await setIssueLabels(testDb.db, {
+  await setIssueLabels(testDb.ports, {
     key: labelled.key,
     labels: ["ui", "bug"],
   });
@@ -297,8 +297,8 @@ test("listIssues loads a whole project in three statements", async () => {
   const first = await seedIssue("TAC", "First");
   await seedIssue("TAC", "Second");
   const third = await seedIssue("TAC", "Third");
-  await setIssueLabels(testDb.db, { key: first.key, labels: ["ui"] });
-  await addRelation(testDb.db, { blocked: third.key, blocking: first.key });
+  await setIssueLabels(testDb.ports, { key: first.key, labels: ["ui"] });
+  await addRelation(testDb.ports, { blocked: third.key, blocking: first.key });
 
   const { db, statements } = countingDb(testDb.db);
   const issues = await listIssues(bindPorts(db), { project: "TAC" });

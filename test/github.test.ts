@@ -5,7 +5,7 @@ import { createApp } from "../src/http/app.ts";
 import { issueKeyFromText, branchNameForIssue } from "../src/domain/keys.ts";
 import type { Issue, IssueEvent } from "../src/domain/types.ts";
 import { createAgent } from "../src/application/agents.ts";
-import { applyPullRequestEvent } from "../src/services/github.ts";
+import { applyPullRequestEvent } from "../src/application/github.ts";
 import {
   createIssue,
   getIssue,
@@ -59,7 +59,6 @@ after(async () => {
 
 function createTestApp(webhookSecret: string | null = SECRET): HttpApp {
   const created = createApp({
-    db: testDb.db,
     ports: testDb.ports,
     databaseUrl: testDb.databaseUrl,
     uiToken: UI_TOKEN,

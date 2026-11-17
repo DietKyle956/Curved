@@ -114,9 +114,11 @@ resolution, and `allowedTransitions`; `claim.ts` owns `nextClaimedBy`;
 `move-policy.ts` owns `mayMove`; `validation.ts` owns every validator and
 max-length constant; `keys.ts` owns key parsing and branch naming; `errors.ts`
 owns `ServiceError` and `ERROR_CODES`; and `types.ts` owns the shared record
-types. Services keep the SQL for the resources not yet migrated, the issue read
-model, and orchestration, and import every pure rule from the domain. The HTTP
-status mapping (`HTTP_STATUS`, `httpStatusFor`) lives in `src/http/errors.ts`. The
+types. At that point the services kept the SQL for the resources not yet
+migrated, the issue read model, and orchestration, and imported every pure rule
+from the domain; `src/services/` has since been retired by `LAS-170` to
+`LAS-173`. The HTTP status mapping (`HTTP_STATUS`, `httpStatusFor`) lives in
+`src/http/errors.ts`. The
 old shared status module and the old root error module are deleted. Behavior is
 unchanged; the baseline stays green.
 LAS-170 is live: step 3's first slice adds `src/application/ports.ts`
@@ -143,9 +145,10 @@ events, meta, agents, and tokens. They are implemented in
 `issue-meta.ts`, and `agents.ts`, and `src/adapters/postgres/ports.ts` exports
 `bindPorts` (`createPorts` delegates to it). `src/services/issues.ts`,
 `src/services/events.ts`, and `src/services/issue-meta.ts` are deleted. The
-transitional services (`queue.ts`, `blocking.ts`, `comments.ts`, `labels.ts`,
-`relations.ts`, `github.ts`) bind ports for shared work while their own SQL
-stays until LAS-172 (queue and blocking) and LAS-173 (labels and relations).
+then-transitional services (`queue.ts`, `blocking.ts`, `comments.ts`, `labels.ts`,
+`relations.ts`, `github.ts`) bound ports for shared work while their own SQL
+stayed in `src/services/` until LAS-172 (queue and blocking) and LAS-173 (labels
+and relations); that directory is now deleted.
 The HTTP issue routes, the webhook, the CLI issue commands and `git-branch`, and
 MCP `ToolDeps` all pass `ports`. A violation of the
 `issues_one_active_claim_per_agent` constraint surfaces as `ActiveClaimConflict`
@@ -173,12 +176,32 @@ candidate query and the single-statement block and unblock updates.
 deleted, leaving `labels.ts`, `relations.ts`, and `github.ts` for LAS-173. HTTP
 auth resolves the actor with `resolveActor(request, { ports, uiToken })` and the
 comment, block, unblock, release, ready, and claim routes take `ports` (`db`
-remains for labels, relations, and the event hub), the CLI builds
+then remained for labels, relations, and the event hub), the CLI builds
 `createPorts(db)` once per `withDatabase` scope and wraps work in
 `withAgent(ports, config, fn)`, and MCP `ToolDeps` is ports-only
 (`{ ports, resolveAgent }`) with `resolveAgentFromToken(ports, config)`.
 Behavior, error codes, messages, and concurrency semantics are unchanged: 189
 tests pass.
+LAS-173 is live: step 3's fourth and final slice puts labels, relations, and the
+GitHub use case on ports, and `src/services/` is deleted with no re-export shims.
+`src/application/ports.ts` adds `LabelRepository`
+(`replace({ issueId, projectId, names })`, the project-scoped label upsert plus
+set replacement) and `RelationRepository` (`add({ blockingIssueId,
+blockedIssueId })`, an idempotent insert that resolves true only when a row was
+created), and `TransactionPorts` carries `labels` and `relations`.
+`src/application/labels.ts` holds `setIssueLabels(ports, input)`,
+`src/application/relations.ts` holds `addRelation(ports, input)`, and
+`src/application/github.ts` holds `applyPullRequestEvent(ports, event, payload)`,
+none importing `pg`, `src/db.ts`, or `node:*`. They are implemented in
+`src/adapters/postgres/repositories/labels.ts` (`createLabelRepository`, the same
+three statements) and `relations.ts` (`createRelationRepository`, the same
+idempotent insert), both wired in `bindPorts`. `src/http/webhook.ts` keeps HMAC
+verification, the raw-body read, the 1 MiB body cap, JSON parsing, and the
+non-POST 404, and now calls the use case. `createApp` no longer accepts a `db`
+option: the label and relation routes take `ports`, `src/server.ts` and six test
+files were updated, and the test changes are imports, `testDb.db` to
+`testDb.ports`, and removed `db` options only, so no assertion moved. Behavior is
+unchanged: 189 tests pass.
 
 Tests: 189 pass, 0 fail, including `test/http.test.ts`, `test/event-hub.test.ts`,
 `test/sse.test.ts`, the label and relation suites in `test/labels.test.ts` and
@@ -187,10 +210,13 @@ the issue filter and human-only edit cases in `test/issues.test.ts`, and
 `test/projects.test.ts` for create and list, duplicate and validation, the
 transaction-scoped ports commit and rollback, and repository find by key.
 `ARCH.md` codifies the target layers and the one-way dependency rule; step 2
-(domain extraction) and step 3's first three slices (ports plus the projects
-resource, then the issue lifecycle and read model, then agents, queue, blocking,
-and comments) have landed, the rest of step 3 and steps 4 to 6 remain, and the
-next frontier is `LAS-173`.
+(domain extraction) and all four of step 3's resource slices (ports plus the
+projects resource, then the issue lifecycle and read model, then agents, queue,
+blocking, and comments, then labels, relations, and the GitHub use case) have
+landed. The remaining step-3 item is moving event-hub construction out of
+`createApp` into a composition root; steps 4 to 6 follow, so `ARCH.md`'s
+Current/Target markers still matter. The next frontier is that composition work
+and step 4, not `LAS-173`.
 `/home/dietkyle/projects/templates/ARCH.md`
 carries the same rules as a project-agnostic template.
 
@@ -203,8 +229,8 @@ carries the same rules as a project-agnostic template.
 | `AGENTS.md` | This file: constraints and startup path. |
 | `MEMORY.md` | Verified state, decisions, session log. Update it every session. |
 | `src/domain/` | Pure rules and types: status and transition contract, actor matrix, claim and move policy, validation, key parsing, domain errors, shared record types. |
-| `src/application/` | Ports (`ports.ts`) and the migrated use cases (`projects.ts`); the rest of the resources still live in `src/services/`. |
-| `src/adapters/` | Outbound adapters: `postgres/` (pool, ports factory, project repository) and `token-codec.ts`. |
+| `src/application/` | Ports (`ports.ts`) and the full SQL-free use-case set: `projects.ts`, `issues.ts` with `issue-read-model.ts`, `agents.ts`, `queue.ts`, `blocking.ts`, `comments.ts`, `labels.ts`, `relations.ts`, and `github.ts`. |
+| `src/adapters/` | Outbound adapters: `postgres/` (`ports.ts` binding the pool and transactions, plus `repositories/`: projects, issues, issue events, issue meta, agents, labels, relations) and `token-codec.ts`. |
 | `src/http/` | HTTP router, auth boundary, SSE hub and stream, and SPA fallback. |
 | `src/server.ts` | HTTP entry. Reads `PORT` and requires `CURVED_UI_TOKEN`. |
 | `web/` | Vite + React SPA. `npm run build` writes `web/dist`; `npm run dev` proxies `/api`. |

@@ -1,7 +1,7 @@
 import { createHmac } from "node:crypto";
 import type { Ports } from "../application/ports.ts";
 import { ServiceError } from "../domain/errors.ts";
-import { applyPullRequestEvent } from "../services/github.ts";
+import { applyPullRequestEvent } from "../application/github.ts";
 import { constantTimeEqual } from "./auth.ts";
 
 const WEBHOOK_BODY_LIMIT_BYTES = 1024 * 1024;

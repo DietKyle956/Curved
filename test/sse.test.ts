@@ -175,7 +175,6 @@ beforeEach(async () => {
   });
   hubOpened = true;
   app = createApp({
-    db: testDb.db,
     ports: testDb.ports,
     databaseUrl: testDb.databaseUrl,
     uiToken: UI_TOKEN,

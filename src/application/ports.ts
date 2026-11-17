@@ -100,6 +100,16 @@ export interface AgentRepository {
   acquireClaimLock(name: string): Promise<void>;
 }
 
+export interface LabelRepository {
+  /** Upserts the project's labels by name and replaces the issue's label set; no return value. */
+  replace(input: { issueId: number; projectId: number; names: readonly string[] }): Promise<void>;
+}
+
+export interface RelationRepository {
+  /** Inserts the edge idempotently; true when a row was created. */
+  add(input: { blockingIssueId: number; blockedIssueId: number }): Promise<boolean>;
+}
+
 /** Mints a fresh agent token and hashes a presented one for lookup. */
 export interface TokenCodec {
   mint(): string;
@@ -125,6 +135,8 @@ export interface TransactionPorts {
   events: IssueEventRepository;
   meta: IssueMetaRepository;
   agents: AgentRepository;
+  labels: LabelRepository;
+  relations: RelationRepository;
   tokens: TokenCodec;
 }
 

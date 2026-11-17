@@ -146,7 +146,6 @@ async function main(): Promise<void> {
   const db = createDatabase(config.databaseUrl);
   const ports = createPorts(db);
   const app = createApp({
-    db,
     ports,
     databaseUrl: config.databaseUrl,
     uiToken: config.uiToken,

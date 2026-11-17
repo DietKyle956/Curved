@@ -10,7 +10,7 @@ import {
 import type { Issue, IssueEvent } from "../src/domain/types.ts";
 import { createProject } from "../src/application/projects.ts";
 import { claimNext, listReady } from "../src/application/queue.ts";
-import { addRelation } from "../src/services/relations.ts";
+import { addRelation } from "../src/application/relations.ts";
 import { openTestDatabase, type TestDatabase } from "./helpers/db.ts";
 
 let testDb: TestDatabase;
@@ -72,7 +72,7 @@ test("addRelation records both directions and one event on the blocked issue", a
   const blocker = await seedIssue("TAC", "Blocker", "backlog");
   const blocked = await seedIssue("TAC", "Blocked", "todo");
 
-  const result = await addRelation(testDb.db, {
+  const result = await addRelation(testDb.ports, {
     blocked: blocked.key,
     blocking: blocker.key,
   });
@@ -120,11 +120,11 @@ test("adding the same relation twice is idempotent and writes no second event", 
   const blocker = await seedIssue("TAC", "Blocker", "backlog");
   const blocked = await seedIssue("TAC", "Blocked", "todo");
 
-  const first = await addRelation(testDb.db, {
+  const first = await addRelation(testDb.ports, {
     blocked: blocked.key,
     blocking: blocker.key,
   });
-  const second = await addRelation(testDb.db, {
+  const second = await addRelation(testDb.ports, {
     blocked: blocked.key,
     blocking: blocker.key,
   });
@@ -146,19 +146,19 @@ test("addRelation validates the edge and rejects unknown issues and agent actors
   const blocked = await seedIssue("TAC", "Blocked", "todo");
 
   await assert.rejects(
-    addRelation(testDb.db, { blocked: blocker.key, blocking: blocker.key }),
+    addRelation(testDb.ports, { blocked: blocker.key, blocking: blocker.key }),
     rejectsWithServiceCode("validation"),
   );
   await assert.rejects(
-    addRelation(testDb.db, { blocked: "TAC-99", blocking: blocker.key }),
+    addRelation(testDb.ports, { blocked: "TAC-99", blocking: blocker.key }),
     rejectsWithServiceCode("not_found"),
   );
   await assert.rejects(
-    addRelation(testDb.db, { blocked: blocked.key, blocking: "TAC-99" }),
+    addRelation(testDb.ports, { blocked: blocked.key, blocking: "TAC-99" }),
     rejectsWithServiceCode("not_found"),
   );
   await assert.rejects(
-    addRelation(testDb.db, {
+    addRelation(testDb.ports, {
       blocked: blocked.key,
       blocking: blocker.key,
       actor: "agent",
@@ -184,7 +184,7 @@ test("an open blocker keeps a todo issue out of the ready queue until it is done
   await seedAgent("alpha");
   const blocker = await seedIssue("TAC", "Blocker", "backlog");
   const blocked = await seedIssue("TAC", "Blocked", "todo");
-  await addRelation(testDb.db, {
+  await addRelation(testDb.ports, {
     blocked: blocked.key,
     blocking: blocker.key,
   });
@@ -216,7 +216,7 @@ test("a blocker in another project also gates the ready queue", async () => {
   await seedAgent("alpha");
   const blocker = await seedIssue("AAA", "Cross-project blocker", "backlog");
   const blocked = await seedIssue("TAC", "Cross-project blocked", "todo");
-  await addRelation(testDb.db, {
+  await addRelation(testDb.ports, {
     blocked: blocked.key,
     blocking: blocker.key,
   });

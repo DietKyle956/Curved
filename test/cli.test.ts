@@ -4,9 +4,9 @@ import { resolve } from "node:path";
 import { after, before, beforeEach, test } from "node:test";
 import { openTestDatabase, type TestDatabase } from "./helpers/db.ts";
 import { createIssue } from "../src/application/issues.ts";
-import { setIssueLabels } from "../src/services/labels.ts";
+import { setIssueLabels } from "../src/application/labels.ts";
 import { createProject } from "../src/application/projects.ts";
-import { addRelation } from "../src/services/relations.ts";
+import { addRelation } from "../src/application/relations.ts";
 
 const REPO_ROOT = resolve(import.meta.dirname, "..");
 
@@ -389,8 +389,8 @@ test("issue show renders labels and relations seeded through the service layer",
   await createProject(testDb.ports, { key: "TAC", name: "Tac" });
   await createIssue(testDb.ports, { project: "TAC", title: "Blocked work" });
   await createIssue(testDb.ports, { project: "TAC", title: "Blocking work" });
-  await setIssueLabels(testDb.db, { key: "TAC-1", labels: ["ui", "bug"] });
-  await addRelation(testDb.db, { blocked: "TAC-1", blocking: "TAC-2" });
+  await setIssueLabels(testDb.ports, { key: "TAC-1", labels: ["ui", "bug"] });
+  await addRelation(testDb.ports, { blocked: "TAC-1", blocking: "TAC-2" });
 
   const blocked = await runCli(["issue", "show", "TAC-1"]);
   assert.equal(blocked.code, 0, blocked.stderr);

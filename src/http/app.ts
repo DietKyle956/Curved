@@ -1,5 +1,4 @@
 import { resolve } from "node:path";
-import type { Database } from "../db.ts";
 import { ServiceError } from "../domain/errors.ts";
 import { errorBody, httpStatusFor } from "./errors.ts";
 import { blockIssue, unblockIssue } from "../application/blocking.ts";
@@ -12,11 +11,11 @@ import {
   updateIssue,
 } from "../application/issues.ts";
 import type { IssueContext } from "../domain/actors.ts";
-import { setIssueLabels } from "../services/labels.ts";
+import { setIssueLabels } from "../application/labels.ts";
 import type { Ports } from "../application/ports.ts";
 import { createProject, listProjects } from "../application/projects.ts";
 import { claimNext, listReady, releaseClaim } from "../application/queue.ts";
-import { addRelation } from "../services/relations.ts";
+import { addRelation } from "../application/relations.ts";
 import {
   constantTimeEqual,
   resolveActor,
@@ -38,7 +37,6 @@ const NOT_FOUND_BODY = {
 } as const;
 
 export interface CreateAppOptions {
-  db: Database;
   ports: Ports;
   databaseUrl: string;
   uiToken: string;
@@ -204,7 +202,7 @@ export function createApp(options: CreateAppOptions): App {
     throw new Error("CURVED_UI_TOKEN is required to start the HTTP app");
   }
 
-  const { db, ports, uiToken } = options;
+  const { ports, uiToken } = options;
   const webDistDir = options.webDistDir ?? resolve(process.cwd(), "web/dist");
   const logger =
     options.logger ??
@@ -401,7 +399,7 @@ export function createApp(options: CreateAppOptions): App {
       if (action === "labels" && method === "POST") {
         requireHuman(await auth());
         const body = await requestBody();
-        const issue = await setIssueLabels(db, {
+        const issue = await setIssueLabels(ports, {
           key,
           labels: stringArrayField(body, "labels"),
           actor: "human",
@@ -412,7 +410,7 @@ export function createApp(options: CreateAppOptions): App {
       if (action === "relations" && method === "POST") {
         requireHuman(await auth());
         const body = await requestBody();
-        const issue = await addRelation(db, {
+        const issue = await addRelation(ports, {
           blocked: key,
           blocking: stringField(body, "blocking"),
           actor: "human",
