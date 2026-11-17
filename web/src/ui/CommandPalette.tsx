@@ -57,6 +57,7 @@ export function CommandPalette({
   const reduce = useReducedMotion();
   const inputRef = useRef<HTMLInputElement>(null);
   const panelRef = useRef<HTMLDivElement>(null);
+  const listRef = useRef<HTMLDivElement>(null);
   const [query, setQuery] = useState("");
   const [active, setActive] = useState(0);
 
@@ -141,7 +142,7 @@ export function CommandPalette({
   );
   const visibleIssues = issues
     .filter((issue) => matchesQuery(issue, query))
-    .slice(0, 8)
+    .slice(0, 50)
     .map<PaletteItem>((issue) => ({
       id: `issue-${issue.key}`,
       group: "Issues",
@@ -168,6 +169,17 @@ export function CommandPalette({
       results.length === 0 ? 0 : Math.min(current, results.length - 1),
     );
   }, [open, results.length]);
+
+  useEffect(() => {
+    const list = listRef.current;
+    if (!open || list === null) {
+      return;
+    }
+    const option = list.querySelector<HTMLElement>(
+      '[role="option"][aria-selected="true"]',
+    );
+    option?.scrollIntoView({ block: "nearest" });
+  }, [open, active, query]);
 
   function runActive(): void {
     if (activeItem === undefined) {
@@ -197,7 +209,7 @@ export function CommandPalette({
             role="dialog"
             aria-modal="true"
             aria-label="Command palette"
-            className="w-full max-w-xl overflow-hidden rounded-ui border border-line bg-panel shadow-float"
+            className="flex max-h-[calc(100dvh-12vh-1rem)] w-full max-w-xl flex-col overflow-hidden rounded-ui border border-line bg-panel shadow-float"
             initial={reduce ? false : { opacity: 0, y: -6, scale: 0.995 }}
             animate={{ opacity: 1, y: 0, scale: 1 }}
             exit={reduce ? undefined : { opacity: 0, y: -4, scale: 0.995 }}
@@ -241,7 +253,7 @@ export function CommandPalette({
               }
             }}
           >
-            <div className="flex items-center gap-2.5 border-b border-line px-3.5">
+            <div className="flex shrink-0 items-center gap-2.5 border-b border-line px-3.5">
               <MagnifyingGlass
                 className="size-4 shrink-0 text-fg-muted"
                 aria-hidden="true"
@@ -266,10 +278,11 @@ export function CommandPalette({
             </div>
 
             <div
+              ref={listRef}
               id="palette-results"
               role="listbox"
               aria-label="Results"
-              className="scroll-area max-h-[min(26rem,60vh)] overflow-y-auto py-1.5"
+              className="scroll-area min-h-0 flex-1 overflow-y-auto py-1.5 scroll-pb-1.5"
             >
               {results.length === 0 ? (
                 <div className="px-4 py-8 text-center">
@@ -319,7 +332,18 @@ export function CommandPalette({
                           {item.label}
                         </span>
                         {item.group === "Issues" ? (
-                          <IssueBadge keyName={item.hint ?? ""} issues={issues} />
+                          <>
+                            <span
+                              data-testid="palette-key"
+                              className="shrink-0 font-mono text-[9.5px] text-fg-secondary"
+                            >
+                              {item.hint}
+                            </span>
+                            <IssueBadge
+                              keyName={item.hint ?? ""}
+                              issues={issues}
+                            />
+                          </>
                         ) : item.hint !== undefined ? (
                           <span className="max-w-[10rem] truncate font-mono text-[9.5px] text-fg-secondary">
                             {item.hint}
@@ -332,7 +356,7 @@ export function CommandPalette({
               )}
             </div>
 
-            <div className="flex items-center gap-3 border-t border-line px-3.5 py-2 text-[10px] text-fg-muted">
+            <div className="flex shrink-0 items-center gap-3 border-t border-line px-3.5 py-2 text-[10px] text-fg-muted">
               <span className="inline-flex items-center gap-1">
                 <Kbd>↑</Kbd>
                 <Kbd>↓</Kbd>
@@ -356,9 +380,7 @@ export function CommandPalette({
 function IssueBadge({ keyName, issues }: { keyName: string; issues: Issue[] }) {
   const issue = issues.find((item) => item.key === keyName);
   if (issue === undefined) {
-    return (
-      <span className="font-mono text-[9.5px] text-fg-muted">{keyName}</span>
-    );
+    return null;
   }
   return (
     <span className="flex shrink-0 items-center gap-1.5">

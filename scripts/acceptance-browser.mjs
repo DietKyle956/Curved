@@ -44,6 +44,10 @@ const SCREENSHOT_SECOND_TAB = path.join(
   tmpdir(),
   `curved-acceptance-${RUN_ID}-second-tab.png`,
 );
+const SCREENSHOT_PALETTE = path.join(
+  tmpdir(),
+  `curved-acceptance-${RUN_ID}-palette.png`,
+);
 
 const CHROMIUM_CANDIDATES = [
   "chromium",
@@ -53,6 +57,9 @@ const CHROMIUM_CANDIDATES = [
 ];
 const HARD_TIMEOUT_MS = 120_000;
 const COMMENT_LATENCY_LIMIT_MS = 1100;
+// The active palette row must keep a visible gutter above the listbox bottom;
+// a row flush against the edge reads as a clipped row.
+const PALETTE_BOTTOM_GUTTER_PX = 4;
 
 const HELPER_METHODS = [
   "waitFor",
@@ -70,6 +77,9 @@ const SIGNIN_SUBMIT = '[data-testid="signin-submit"]';
 const STATUS_TAB = '[data-testid^="status-tab-"]';
 const PALETTE = '[role="dialog"][aria-label="Command palette"]';
 const PALETTE_INPUT = 'input[role="combobox"]';
+const PALETTE_RESULTS = "#palette-results";
+const PALETTE_OPTION = '#palette-results [role="option"]';
+const PALETTE_KEY = '[data-testid="palette-key"]';
 const NEW_ISSUE_TITLE = '[data-testid="new-issue-title"]';
 const NEW_ISSUE_SUBMIT = '[data-testid="new-issue-submit"]';
 const ISSUE_DETAIL = '[data-testid="issue-detail"]';
@@ -92,6 +102,20 @@ const CTRL_K = {
   modifiers: 2,
 };
 
+const ARROW_DOWN = {
+  key: "ArrowDown",
+  code: "ArrowDown",
+  windowsVirtualKeyCode: 40,
+  modifiers: 0,
+};
+
+const ESCAPE_KEY = {
+  key: "Escape",
+  code: "Escape",
+  windowsVirtualKeyCode: 27,
+  modifiers: 0,
+};
+
 const state = {
   phase: "startup",
   chromePath: null,
@@ -101,6 +125,7 @@ const state = {
   tabs: [],
   tmpDir: null,
   consoleLines: [],
+  palette: null,
   finished: false,
   cleanedUp: false,
 };
@@ -875,6 +900,10 @@ async function fail(reason) {
     lines.push(...bodyLines.slice(0, 40));
   }
 
+  if (state.palette !== null) {
+    lines.push("palette diagnostics:", ...state.palette);
+  }
+
   if (state.consoleLines.length > 0) {
     lines.push("console tail:");
     lines.push(...state.consoleLines.slice(-15));
@@ -995,6 +1024,126 @@ function assertStatusTabs(rows) {
   return counts;
 }
 
+async function waitForSelectorGone(tab, selector, timeoutMs) {
+  const started = Date.now();
+  while (Date.now() - started < timeoutMs) {
+    if ((await tab.count(selector)) === 0) {
+      return;
+    }
+    await sleep(40);
+  }
+  throw new Error(
+    `tab ${tab.label} still rendered ${JSON.stringify(selector)} after ${timeoutMs}ms`,
+  );
+}
+
+/**
+ * Reads the palette's issue options plus, when exactly one matches, its key
+ * span. The key text is the raw textContent, so a lowercase label regression
+ * fails even though a CSS `uppercase` would not change textContent.
+ */
+function readPaletteOptions(tab) {
+  return tab.evaluate(
+    `(() => {
+      const list = document.querySelector(${JSON.stringify(PALETTE_RESULTS)});
+      if (list === null) {
+        return { list: false };
+      }
+      const options = Array.from(list.querySelectorAll('[role="option"]'));
+      const issueOptions = options.filter((option) =>
+        String(option.id).startsWith("palette-issue-"),
+      );
+      const option = issueOptions.length === 1 ? issueOptions[0] : null;
+      const key = option === null ? null : option.querySelector('[data-testid="palette-key"]');
+      const optionBox = option === null ? null : option.getBoundingClientRect();
+      const keyBox = key === null ? null : key.getBoundingClientRect();
+      const box = (rect) =>
+        rect === null ? null : { width: rect.width, height: rect.height };
+      return {
+        list: true,
+        optionCount: options.length,
+        issueOptionIds: issueOptions.map((item) => item.id),
+        keyPresent: key !== null,
+        keyText: key === null ? null : String(key.textContent ?? ""),
+        optionBox: box(optionBox),
+        keyBox: box(keyBox),
+      };
+    })()`,
+  );
+}
+
+/** Reads the listbox scroll geometry and the selected row's bounds. */
+function readPaletteScroll(tab) {
+  return tab.evaluate(
+    `(() => {
+      const list = document.querySelector(${JSON.stringify(PALETTE_RESULTS)});
+      if (list === null) {
+        return { list: false };
+      }
+      const options = Array.from(list.querySelectorAll('[role="option"]'));
+      const selected = list.querySelector('[role="option"][aria-selected="true"]');
+      const input = document.querySelector('input[role="combobox"]');
+      const listBox = list.getBoundingClientRect();
+      const rowBox = selected === null ? null : selected.getBoundingClientRect();
+      return {
+        list: true,
+        optionCount: options.length,
+        lastOptionId: options.length === 0 ? null : options[options.length - 1].id,
+        selectedId: selected?.id ?? null,
+        activeDescendant:
+          input === null ? null : input.getAttribute("aria-activedescendant"),
+        scrollTop: list.scrollTop,
+        scrollHeight: list.scrollHeight,
+        clientHeight: list.clientHeight,
+        listTop: listBox.top,
+        listBottom: listBox.bottom,
+        rowTop: rowBox === null ? null : rowBox.top,
+        rowBottom: rowBox === null ? null : rowBox.bottom,
+      };
+    })()`,
+  );
+}
+
+/**
+ * Polls until the palette's issue-option count satisfies `settled`. Typing
+ * updates React state asynchronously, so reading the list immediately after a
+ * key event would still see the previous query's rows.
+ */
+async function waitForIssueOptions(tab, settled, timeoutMs) {
+  const started = Date.now();
+  let snapshot = null;
+  while (Date.now() - started < timeoutMs) {
+    snapshot = await readPaletteOptions(tab);
+    if (
+      snapshot !== null &&
+      snapshot.list === true &&
+      settled(snapshot.issueOptionIds.length)
+    ) {
+      return snapshot;
+    }
+    await sleep(50);
+  }
+  return snapshot;
+}
+
+/**
+ * Polls until the listbox has scrolled, then returns the settled snapshot. A
+ * list that never scrolls still returns its snapshot so the caller's assertion
+ * reports the real geometry instead of a timeout.
+ */
+async function waitForPaletteScroll(tab, timeoutMs) {
+  const started = Date.now();
+  let snapshot = null;
+  while (Date.now() - started < timeoutMs) {
+    snapshot = await readPaletteScroll(tab);
+    if (snapshot !== null && snapshot.list === true && snapshot.scrollTop > 0) {
+      return snapshot;
+    }
+    await sleep(50);
+  }
+  return snapshot;
+}
+
 /* -------------------------------------------------------------------------- */
 /* Flow                                                                       */
 /* -------------------------------------------------------------------------- */
@@ -1075,6 +1224,132 @@ async function main() {
   await sleep(150);
   const screenshotBoardBytes = await tabA.screenshot(SCREENSHOT_BOARD);
 
+  // LAS-154 regression: an issue row must render its key in the palette, and a
+  // key search must narrow the list to that one issue. The seeded set holds
+  // exactly one issue whose key matches this fragment (no other key, and no
+  // title, contains it), while the query is lowercase and the rendered key is
+  // uppercase, so a case-sensitive filter would return nothing.
+  state.phase = "palette key search";
+  const keyedIssueKey = `${projectKey}-4`;
+  const keyedFragment = keyedIssueKey.toLowerCase();
+  await tabA.pressKey(CTRL_K);
+  await tabA.waitFor(PALETTE, 5000);
+  await tabA.setValue(PALETTE_INPUT, keyedFragment);
+  const keyMatch = await waitForIssueOptions(tabA, (count) => count === 1, 5000);
+  state.palette = [
+    `key search ${JSON.stringify(keyedFragment)} -> ${JSON.stringify(keyMatch)}`,
+  ];
+  assert(
+    keyMatch !== null && keyMatch.list === true,
+    `palette results listbox ${PALETTE_RESULTS} was not found during the key search check`,
+  );
+  assert(
+    keyMatch.issueOptionIds.length === 1,
+    `expected exactly one issue option for ${JSON.stringify(keyedFragment)}, found ${keyMatch.issueOptionIds.length} (${keyMatch.issueOptionIds.join(", ") || "none"})`,
+  );
+  assert(
+    keyMatch.issueOptionIds[0] === `palette-issue-${keyedIssueKey}`,
+    `single issue option for ${JSON.stringify(keyedFragment)} was ${JSON.stringify(keyMatch.issueOptionIds[0])}, expected palette-issue-${keyedIssueKey}`,
+  );
+  assert(
+    keyMatch.keyPresent,
+    `issue option for ${keyedIssueKey} rendered no ${PALETTE_KEY} span`,
+  );
+  assert(
+    keyMatch.keyText === keyedIssueKey,
+    `palette key span read ${JSON.stringify(keyMatch.keyText)}, expected ${JSON.stringify(keyedIssueKey)}`,
+  );
+  assert(
+    keyMatch.optionBox !== null &&
+      keyMatch.optionBox.width > 0 &&
+      keyMatch.optionBox.height > 0,
+    `palette issue option for ${keyedIssueKey} is not visible (${JSON.stringify(keyMatch.optionBox)})`,
+  );
+  assert(
+    keyMatch.keyBox !== null &&
+      keyMatch.keyBox.width > 0 &&
+      keyMatch.keyBox.height > 0,
+    `palette key span for ${keyedIssueKey} is not visible (${JSON.stringify(keyMatch.keyBox)})`,
+  );
+  await tabA.pressKey(ESCAPE_KEY);
+  await waitForSelectorGone(tabA, PALETTE, 5000);
+
+  // LAS-154 regression: keyboard navigation must scroll the active row into
+  // view instead of leaving it clipped below the listbox.
+  state.phase = "palette keyboard scroll";
+  await tabA.pressKey(CTRL_K);
+  await tabA.waitFor(PALETTE_RESULTS, 5000);
+  // Focusing the input keeps ArrowDown on the palette's handler, and an empty
+  // query keeps every seeded issue listed.
+  await tabA.setValue(PALETTE_INPUT, "");
+  const seededOptions = await waitForIssueOptions(tabA, (count) => count >= 10, 3000);
+  const seededIssueCount = seededOptions?.issueOptionIds?.length ?? 0;
+  assert(
+    seededOptions !== null && seededOptions.list === true && seededIssueCount >= 10,
+    `palette listed ${seededIssueCount} issue options after clearing the query; the seeded backlog issues are missing`,
+  );
+  const optionCount = await tabA.count(PALETTE_OPTION);
+  assert(
+    optionCount > seededIssueCount,
+    `palette listed ${optionCount} options but ${seededIssueCount} of them are issues; the action rows are missing`,
+  );
+  for (let index = 1; index < optionCount; index += 1) {
+    await tabA.pressKey(ARROW_DOWN);
+  }
+  const scrollSnapshot = await waitForPaletteScroll(tabA, 2000);
+  const rowBottomGap =
+    scrollSnapshot !== null &&
+    Number.isFinite(scrollSnapshot.listBottom) &&
+    Number.isFinite(scrollSnapshot.rowBottom)
+      ? scrollSnapshot.listBottom - scrollSnapshot.rowBottom
+      : null;
+  state.palette = [
+    ...(state.palette ?? []),
+    `keyboard scroll after ${optionCount - 1} ArrowDown -> ${JSON.stringify(scrollSnapshot)} (bottom gap ${rowBottomGap === null ? "unknown" : `${rowBottomGap.toFixed(1)}px`})`,
+  ];
+  assert(
+    scrollSnapshot !== null && scrollSnapshot.list === true,
+    `palette results listbox ${PALETTE_RESULTS} was not found during the scroll check`,
+  );
+  assert(
+    scrollSnapshot.selectedId !== null,
+    "palette has no aria-selected option after keyboard navigation",
+  );
+  assert(
+    scrollSnapshot.selectedId === scrollSnapshot.activeDescendant,
+    `selected option ${JSON.stringify(scrollSnapshot.selectedId)} does not match aria-activedescendant ${JSON.stringify(scrollSnapshot.activeDescendant)}`,
+  );
+  assert(
+    scrollSnapshot.selectedId === scrollSnapshot.lastOptionId,
+    `ArrowDown stopped on ${JSON.stringify(scrollSnapshot.selectedId)}, expected the last option ${JSON.stringify(scrollSnapshot.lastOptionId)}`,
+  );
+  assert(
+    scrollSnapshot.scrollHeight > scrollSnapshot.clientHeight,
+    `palette listbox does not overflow (scrollHeight ${scrollSnapshot.scrollHeight} <= clientHeight ${scrollSnapshot.clientHeight}); the seeded issues are not being listed`,
+  );
+  assert(
+    scrollSnapshot.scrollTop > 0,
+    `palette listbox never scrolled while the last option was selected (scrollTop ${scrollSnapshot.scrollTop}, scrollHeight ${scrollSnapshot.scrollHeight}, clientHeight ${scrollSnapshot.clientHeight})`,
+  );
+  assert(
+    scrollSnapshot.rowTop !== null &&
+      scrollSnapshot.rowBottom !== null &&
+      scrollSnapshot.rowTop >= scrollSnapshot.listTop - 0.5 &&
+      scrollSnapshot.rowBottom <= scrollSnapshot.listBottom + 0.5,
+    `selected option ${JSON.stringify(scrollSnapshot.selectedId)} is outside the listbox: row ${scrollSnapshot.rowTop}-${scrollSnapshot.rowBottom}, list ${scrollSnapshot.listTop}-${scrollSnapshot.listBottom}`,
+  );
+  // The listbox overflows here, so the last row must sit clear of the bottom
+  // edge: a flush row means the scroll padding regressed away.
+  assert(
+    rowBottomGap !== null && rowBottomGap >= PALETTE_BOTTOM_GUTTER_PX,
+    `selected option ${JSON.stringify(scrollSnapshot.selectedId)} is flush against the listbox bottom: gap ${rowBottomGap === null ? "unknown" : `${rowBottomGap.toFixed(1)}px`} is under the ${PALETTE_BOTTOM_GUTTER_PX}px gutter (row bottom ${scrollSnapshot.rowBottom}, list bottom ${scrollSnapshot.listBottom})`,
+  );
+  state.phase = "screenshot palette";
+  await sleep(150);
+  const screenshotPaletteBytes = await tabA.screenshot(SCREENSHOT_PALETTE);
+  await tabA.pressKey(ESCAPE_KEY);
+  await waitForSelectorGone(tabA, PALETTE, 5000);
+
   state.phase = "open command palette";
   await tabA.pressKey(CTRL_K);
   await tabA.waitFor(PALETTE, 5000);
@@ -1149,6 +1424,9 @@ async function main() {
     `PASS browser: signed in and loaded ${boardUrl} at ${viewport.width}x${viewport.height}`,
     `PASS browser: 5 status tabs visible (${summary}); tab bar ${Math.round(barRect.width)}x${Math.round(barRect.height)}px`,
     `PASS browser: board screenshot ${SCREENSHOT_BOARD} (${screenshotBoardBytes} bytes)`,
+    `PASS browser: palette key search ${JSON.stringify(keyedFragment)} matched ${keyMatch.issueOptionIds.length} issue option with key ${JSON.stringify(keyMatch.keyText)} (option ${Math.round(keyMatch.optionBox.width)}x${Math.round(keyMatch.optionBox.height)}px, key span ${Math.round(keyMatch.keyBox.width)}x${Math.round(keyMatch.keyBox.height)}px)`,
+    `PASS browser: palette ArrowDown x${scrollSnapshot.optionCount - 1} of ${scrollSnapshot.optionCount} options selected ${scrollSnapshot.selectedId} in a ${scrollSnapshot.clientHeight}px listbox holding ${scrollSnapshot.scrollHeight}px, scrollTop ${Math.round(scrollSnapshot.scrollTop)}, row ${Math.round(scrollSnapshot.rowTop)}-${Math.round(scrollSnapshot.rowBottom)} inside ${Math.round(scrollSnapshot.listTop)}-${Math.round(scrollSnapshot.listBottom)} with a ${rowBottomGap.toFixed(1)}px bottom gutter (min ${PALETTE_BOTTOM_GUTTER_PX}px)`,
+    `PASS browser: palette screenshot ${SCREENSHOT_PALETTE} (${screenshotPaletteBytes} bytes)`,
     `PASS browser: command palette + new issue dialog created ${issueKey} at ${issuePath} (toast shown)`,
     `PASS browser: detail screenshot ${SCREENSHOT_DETAIL} (${screenshotDetailBytes} bytes)`,
     `PASS browser: second tab opened ${issuePath} with ${eventsB} timeline event(s)`,

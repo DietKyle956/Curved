@@ -1779,3 +1779,48 @@ verification until those land.
   a local Chromium and Docker.
 - Next best step: `LAS-153` (issue detail and human actions acceptance tests).
 
+### Session 030
+
+- Date: 2026-11-17
+- Goal: re-check the three stale open issues and close the ones that already
+  meet their acceptance criteria.
+- Completed: `LAS-153` and `LAS-151` passed every acceptance criterion with no
+  code change and are Done. `LAS-154` failed two criteria in the real browser;
+  both are fixed. Issue result rows now render the issue key in a
+  `[data-testid="palette-key"]` span (filtering by key previously matched
+  invisibly), the issue result cap went from 8 to 50, the listbox is a capped
+  flex column (`max-h-[calc(100dvh-12vh-1rem)]`, `min-h-0 flex-1
+  overflow-y-auto`, `scroll-pb-1.5`) instead of `max-h-[min(26rem,60vh)]`, and
+  an effect scrolls the active option into view with a 6px bottom gutter.
+  `scripts/acceptance.mjs` now seeds 24 backlog issues over the human bearer
+  (`palette-seed` leg) so the palette list overflows, and
+  `scripts/acceptance-browser.mjs` asserts a unique lowercase key query renders
+  the uppercase key span and that ArrowDown to the last of 31 options leaves the
+  selected row fully inside the scrolled listbox with at least a 4px bottom
+  gutter; it also captures a palette screenshot.
+- Evidence: verification ran against throwaway databases with the real entry
+  points and no repo edits. `LAS-153`: 8/8 criteria in headless Chromium at
+  390x844 and 1440x900 (whitespace-preserving description, comment 3 -> 4 events
+  with one navigation entry, exactly one button per `allowedTransitions`, unblock
+  with reason, edits, new-issue navigation to TAC-6, blocked queue state, human
+  vs agent `allowedTransitions` and 403s, a forced-payload render check, both
+  viewports). `LAS-151`: 8/8 criteria over HTTP and CLI, 29 checks, including
+  503, 401, raw-body HMAC, opened/reopened/merged/unmerged, title-derived and
+  padded keys, ignored replays with unchanged event counts, git events, and
+  `git-branch TAC-014` -> `TAC-14-...`. `LAS-154`: palette fix verified by
+  `npm run acceptance`, 145 checks, palette key search `tac-4` -> visible
+  `TAC-4`, and the last of 31 options selected with `scrollTop 530` and a 5.7px
+  bottom gutter. `./scripts/init.sh` green after the fix.
+- Deviations: none in product behavior beyond the two palette fixes; the
+  palette now lists up to 50 matching issues instead of 8, which the "finds any
+  issue" criterion requires.
+- Tracker: `LAS-151`, `LAS-153`, and `LAS-154` are Done with the verification
+  evidence in comments. No Curved issue remains open.
+- Known risk: on the active palette row the small uppercase status label
+  measures about 3.5:1 contrast, and the active state is carried mostly by the
+  amber icon rather than the row background; both are palette design traits,
+  recorded not changed.
+- Next best step: none open in this project; the next tracker work is outside
+  Curved.
+
+

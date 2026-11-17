@@ -48,13 +48,19 @@ const SSE_READY_TIMEOUT_MS = 5_000;
 const SSE_CHANGE_TIMEOUT_MS = 1_000;
 const STOP_GRACE_MS = 5_000;
 const CHILD_TIMEOUT_MS = 60_000;
+/**
+ * Backlog rows seeded before the browser leg. With the palette's action rows
+ * they overflow the panel's `calc(100dvh - 12vh - 1rem)` height at the browser
+ * leg's 390x844 viewport, which is what the palette scroll assertion needs.
+ */
+const PALETTE_FILLER_ISSUES = 24;
 
 const USAGE = `Usage: node scripts/acceptance.mjs [--skip-browser] [--keep]
 
   --skip-browser  Skip the browser leg (scripts/acceptance-browser.mjs).
   --keep          Keep the throwaway database and print its name.
 
-Legs: database, cli, mcp, server, http+sse, webhook, browser.
+Legs: database, cli, mcp, server, http+sse, webhook, palette-seed, browser.
 `;
 
 /** One failed check; the scorer never swallows these. */
@@ -1145,6 +1151,68 @@ async function webhookLeg(server, databaseUrl) {
   );
 }
 
+/**
+ * Seeds backlog rows through the HTTP API so the browser leg's palette has
+ * enough results to scroll. These are real rows in the throwaway database, so
+ * the UI's own issue fetch picks them up with no browser-side setup.
+ */
+async function paletteSeedLeg(server) {
+  const leg = "palette-seed";
+  const { baseUrl, uiToken } = server;
+  const headers = {
+    authorization: `Bearer ${uiToken}`,
+    "content-type": "application/json",
+  };
+  const created = [];
+  // Node's fetch (undici) pools and keeps the connection alive per origin, so
+  // the loop reuses one socket instead of opening 24.
+  for (let index = 1; index <= PALETTE_FILLER_ISSUES; index += 1) {
+    const title = `Palette filler ${index}`;
+    const response = await fetch(`${baseUrl}/api/issues`, {
+      method: "POST",
+      headers,
+      body: JSON.stringify({
+        project: PROJECT_KEY,
+        title,
+        status: "backlog",
+      }),
+      signal: AbortSignal.timeout(HTTP_REQUEST_TIMEOUT_MS),
+    });
+    const raw = await response.text();
+    assert(
+      leg,
+      response.status === 201,
+      `POST /api/issues (${title}) returned ${response.status}: ${truncate(raw)}`,
+    );
+    let body = null;
+    try {
+      body = JSON.parse(raw);
+    } catch {
+      body = null;
+    }
+    const key = body?.issue?.key;
+    assert(
+      leg,
+      typeof key === "string" && key.startsWith(`${PROJECT_KEY}-`),
+      `POST /api/issues (${title}) returned no ${PROJECT_KEY} key: ${truncate(raw)}`,
+    );
+    // The browser leg's palette scroll assertion needs a list that overflows,
+    // so every seeded row must land in backlog exactly as asked.
+    assert(
+      leg,
+      body?.issue?.status === "backlog",
+      `POST /api/issues (${title}) created status ${JSON.stringify(body?.issue?.status)}`,
+    );
+    created.push(key);
+  }
+  assert(
+    leg,
+    new Set(created).size === created.length,
+    `palette seed produced duplicate keys: ${created.join(", ")}`,
+  );
+  return created.length;
+}
+
 async function browserLeg(server, databaseUrl) {
   const leg = "browser";
   // Detached so the leg leads its own process group: chromium inherits that
@@ -1388,6 +1456,14 @@ async function main() {
     pass("webhook", `${checks - legChecks} checks: opened moved ${PROJECT_KEY}-2 to in_review, replay ignored`);
 
     if (!options.skipBrowser) {
+      gate.currentLeg = "palette-seed";
+      legChecks = checks;
+      const paletteSeeded = await paletteSeedLeg(server);
+      pass(
+        "palette-seed",
+        `${checks - legChecks} checks: ${paletteSeeded} backlog issues created over the human bearer`,
+      );
+
       gate.currentLeg = "browser";
       legChecks = checks;
       await browserLeg(server, acceptanceUrl);
