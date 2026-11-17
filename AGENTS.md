@@ -258,6 +258,21 @@ module importing both `ui` and `application` and the only one constructing
 adapters. `web/src/app.tsx`, `web/src/lib/`, `web/src/components/`, and the root
 `web/src/styles.css` are deleted with no shims. Behavior and visuals are
 unchanged. All six refactor steps and the import-direction gate are complete.
+LAS-176 is complete: the refactor completion gate re-ran `./scripts/init.sh` and
+`./scripts/clean-state.sh` green, with 195 tests passing and
+`architecture: ok (74 files)`. The static audit proved `src/domain/` and
+`src/application/` import only inward (the latter naming only `../domain/*.ts`,
+`./ports.ts`, and its own use cases), with all 12 old-layer paths gone and no
+`export ... from` shims anywhere in `src/` or `web/src/`. The real entry points
+were re-exercised: the CLI project, issue, and agent commands, MCP over stdio
+with a real `crv_` agent token, HTTP plus SSE in Chromium at 1440x900 and
+390x844 with cross-tab updates and reconnect after a server restart, the GitHub
+webhook signature, replay, and ignore paths including the unconfigured 503, and
+the built SPA served by the HTTP process. No observable product behavior
+changed. The only recorded deviations are the MCP blank-token hint naming
+`node src/composition/cli.ts agent add <name>`, the `src/composition/*` command
+paths in `package.json` and `scripts/db.sh`, and the pre-existing fixed
+near-black palette with self-hosted fonts.
 
 Tests: 195 pass, 0 fail, including `test/http.test.ts`, `test/event-hub.test.ts`,
 `test/sse.test.ts`, the label and relation suites in `test/labels.test.ts` and
@@ -269,8 +284,10 @@ transaction-scoped ports commit and rollback, and repository find by key, plus
 fail (application -> adapter, domain -> `pg`, web ui -> adapter, web application
 -> adapter, web domain -> a backend module other than `src/domain/status.ts`).
 `ARCH.md` codifies the layers and the one-way dependency rule; all six steps
-have landed, along with the import-direction gate. The next frontier is
-`LAS-176` (the refactor completion gate and handoff), which `LAS-175` unblocks.
+have landed, along with the import-direction gate and the completion handoff,
+so the refactor parent `LAS-167` and `LAS-176` are complete. The next frontier
+is `LAS-155` (the end-to-end acceptance gate); `LAS-153` and `LAS-154` remain
+open in the tracker with acceptance tests outstanding.
 `scripts/check-architecture.mjs` enforces
 the rule set over `src/**/*.ts` and `web/src/**/*.ts(x)` from inside
 `npm run check`.

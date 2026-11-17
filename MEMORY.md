@@ -2,7 +2,7 @@
 
 - **Last updated:** 2026-11-17
 - **Project:** curved
-- **Phase:** HTTP API and auth boundary complete (`LAS-148`), plus a working SPA prototype, the SSE realtime stream (`LAS-150`), the GitHub webhook with its branch helper (`LAS-151`), the SPA foundation ticket (`LAS-152`), the architecture contract (`LAS-168`, documentation only), the pure domain layer (`LAS-169`, no behavior change), and step 3's slices, ports plus the projects resource (`LAS-170`) then the issue lifecycle and read model on ports (`LAS-171`), agents, claims, review, comments, and blocking on ports (`LAS-172`), then labels, relations, and the GitHub use case on ports (`LAS-173`), then the inbound-adapter rewire, composition roots, and the import-direction gate (`LAS-174`), then the web layering (`LAS-175`), all with no behavior change; all six refactor steps and the architecture gate are complete. Toolchain, Postgres 18, migrations, the projects resource, the issues resource (atomic keys, append-only events), comment events with the full timeline read path, the transition graph with its actor matrix, token-authenticated agents with the one-active-issue fence, agent block with human unblock, the MCP server over stdio, the authenticated HTTP API with its SPA fallback, the React/Vite board, queue, detail, and palette, the SSE stream that refreshes them, the HMAC-verified GitHub webhook that moves issues from pull requests, and the routed board with its mobile status bar are live.
+- **Phase:** HTTP API and auth boundary complete (`LAS-148`), plus a working SPA prototype, the SSE realtime stream (`LAS-150`), the GitHub webhook with its branch helper (`LAS-151`), the SPA foundation ticket (`LAS-152`), the architecture contract (`LAS-168`, documentation only), the pure domain layer (`LAS-169`, no behavior change), and step 3's slices, ports plus the projects resource (`LAS-170`) then the issue lifecycle and read model on ports (`LAS-171`), agents, claims, review, comments, and blocking on ports (`LAS-172`), then labels, relations, and the GitHub use case on ports (`LAS-173`), then the inbound-adapter rewire, composition roots, and the import-direction gate (`LAS-174`), then the web layering (`LAS-175`), then the completion gate, boundary audit, and handoff (`LAS-176`), all with no behavior change; all six refactor steps, the architecture gate, and the completion handoff are complete. Toolchain, Postgres 18, migrations, the projects resource, the issues resource (atomic keys, append-only events), comment events with the full timeline read path, the transition graph with its actor matrix, token-authenticated agents with the one-active-issue fence, agent block with human unblock, the MCP server over stdio, the authenticated HTTP API with its SPA fallback, the React/Vite board, queue, detail, and palette, the SSE stream that refreshes them, the HMAC-verified GitHub webhook that moves issues from pull requests, and the routed board with its mobile status bar are live.
 
 ## Current verified state
 
@@ -12,8 +12,13 @@
 - Startup path: `./scripts/init.sh` runs install, database, check, build.
   `--no-install` skips only install; the database step still runs.
 - End-of-session gate: `./scripts/clean-state.sh`
-- Baseline: green. `npm run typecheck` covers server and web configs; `npm test`
-  runs 195 tests on the Node test runner (189 behavior, 6 architecture).
+- Baseline: green, and `LAS-176` re-ran and recorded the full gate on
+  2026-11-17. `./scripts/init.sh` and `./scripts/clean-state.sh` both pass;
+  `npm run typecheck` covers server and web configs; `npm test` runs 195 tests
+  on the Node test runner (189 behavior, 6 architecture);
+  `architecture: ok (74 files)`; the vite build and the codegraph sync are
+  green. The completion gate also re-exercised the real entry points and found
+  no behavior change.
 - Architecture contract: `ARCH.md` codifies target hexagonal layers (domain,
   application, inbound and outbound adapters, composition roots), rule ownership
   with bounded mirrors, ports and transactions, error translation, web layering,
@@ -23,6 +28,9 @@
   block; `LAS-173` labels, relations, and the GitHub use case), then step 4
   with the step-6 import-direction gate (`LAS-174`), and step 5's web layering
   (`LAS-175`); all six steps are done, so no section carries target markers.
+  `LAS-176` then re-ran the gates on 2026-11-17 and recorded them: init and
+  clean-state green, 195 tests, 74 architecture files, the entry-point smokes,
+  and no behavior change.
 - Templates: `/home/dietkyle/projects/templates/ARCH.md` (111 lines) is the
   project-agnostic version of the same contract, listed as copy-first item 2 in
   that directory's `index.md`; `templates/AGENTS.md` now reads `ARCH.md` in its
@@ -621,12 +629,12 @@
 
 ## Next best step
 
-`LAS-176` (the refactor completion gate and handoff) is next. All six refactor
-steps landed (`LAS-168` to `LAS-175`), ending with the web layering on
-2026-11-17, so what remains is the closing gate: prove the whole rule set,
-delete any leftover target language, and hand the contract off. `LAS-152`,
-`LAS-153`, and `LAS-154` still need their acceptance tests, and `LAS-155`
-remains the end-to-end gate.
+`LAS-155` (the end-to-end acceptance gate) is next. `LAS-176` closed the
+refactor: the completion gate re-ran the baseline and the import-direction
+check on 2026-11-17 and found no behavior change. `LAS-153` and `LAS-154`
+remain open in the tracker with acceptance tests outstanding, so the browser
+pass, the cross-tab realtime path, and the palette still rely on manual
+verification until those land.
 
 ## Tracker
 
@@ -657,9 +665,9 @@ remains the end-to-end gate.
   2026-11-17), `LAS-172` agents, claims, review, comments, and blocking on ports
   (done 2026-11-17), `LAS-173` labels, relations, and the GitHub use case on
   ports (done 2026-11-17), `LAS-174` the inbound-adapter rewire, composition
-  roots, and the import-direction gate (done 2026-11-17), and `LAS-175` the web
-  layering (done 2026-11-17); next is `LAS-176` (the refactor completion gate
-  and handoff).
+  roots, and the import-direction gate (done 2026-11-17), `LAS-175` the web
+  layering (done 2026-11-17), and `LAS-176` the completion gate and handoff
+  (done 2026-11-17). The parent `LAS-167` is complete.
 
 ## Session log
 
@@ -1643,3 +1651,69 @@ remains the end-to-end gate.
   re-export would still need review eyes. `web/src` now imports the backend
   status contract only through `domain/types.ts` and `domain/presentation.ts`.
 - Next best step: `LAS-176` (the refactor completion gate and handoff).
+
+### Session 028
+
+- Date: 2026-11-17
+- Goal: close `LAS-176`, the completion gate of the `LAS-167` refactor, and
+  hand the contract off. No behavior change.
+- Completed: a static boundary audit of `src/domain/` and `src/application/`, a
+  behavior audit over `899e62f..c97af0f`, a full baseline and suite re-run, and
+  runtime smokes of every real entry point, then this handoff. `AGENTS.md` and
+  this file now describe the verified final structure, the gates with their
+  numbers, and the intentional deviations.
+- Evidence: `./scripts/init.sh` and `./scripts/clean-state.sh` both green, with
+  install "up to date", the database healthy and "already up to date",
+  `npm run check` green, `architecture: ok (74 files)`, `npm test` 195 pass and
+  0 fail (189 behavior plus 6 architecture), the vite build writing `web/dist`,
+  and codegraph "Already up to date". Boundary audit: `src/domain/` is 9 files
+  with 16 import specifiers, all sibling domain modules and no package
+  specifier; `src/application/` is 11 files importing only `../domain/*.ts`,
+  `./ports.ts`, and its own use-case modules, with no `pg`, `node:*`, `react`,
+  crypto, adapter, composition, or `process.env` reference. All 12 old-layer
+  paths are absent (`src/services/`, `src/db.ts`, `src/config.ts`,
+  `src/migrate.ts`, `src/server.ts`, `src/cli.ts`, `src/http/`, `src/mcp/`,
+  `web/src/app.tsx`, `web/src/lib/`, `web/src/components/`, and
+  `web/src/styles.css`), and no `export ... from` shim exists in `src/` or
+  `web/src/`. Behavior audit over `899e62f..c97af0f` (899e62f is the commit
+  before `LAS-169`; b079662 is `LAS-169` itself) found no unrecorded product
+  behavior difference: the test deltas are imports, `testDb.db` to
+  `testDb.ports`, `createApp` options, spawn paths, helper calls, three
+  semantically identical expression updates (`hashAgentToken` to
+  `createTokenCodec().hash`, the rollback test using the transaction handle it
+  tests, and the missing-build test de-wrapped because `App.close` is gone),
+  and the architecture fixture rename `web/src/lib` to `web/src/domain` plus
+  one new case (189 to 195 tests). Internal seams changed: `createApp` takes an
+  injected `EventHub` and has no `close()`, and the history hook memoizes route
+  and navigate. Runtime smokes, each on a throwaway `curved_test_*e2e176*`
+  database dropped afterward with no listeners left: the CLI project, issue,
+  and agent commands (`created project TAC (Toolchain)`, a `project list` line
+  reading `TAC` and `Toolchain` separated by a tab,
+  `created issue TAC-1 (First issue)`, list, show, move, and a minted `crv_`
+  token); MCP over stdio with that real token, listing exactly the eight tools
+  and exercising `list_ready`, `claim_next`, the `agent_busy` fence,
+  `comment`, `submit_for_review`, `get_issue`, `release_claim` from
+  `in_review` (`illegal_transition`), `mark_blocked`, `create_issue`, and a
+  bogus token (`not_authenticated: agent token is not valid`); HTTP plus SSE in
+  Chromium at 1440x900 and 390x844, with the built SPA and its assets 200, a
+  rejected UI token inline, the `curved_session` cookie, first-run setup, the
+  five-lane board with counts, CLI writes appearing in two tabs without reload,
+  the deep-linked detail timeline, `Ctrl/Cmd+K`, 44x78 px phone tabs, a first
+  `event: ready` frame, reconnect from `readyState=2` to `readyState=1` about
+  5 ms after a restarted server accepted connections, 0 console entries on
+  clean loads, and a JSON 404 for unknown `/api` paths; and the GitHub webhook,
+  where a valid signed `opened` pull request moved an `in_progress` issue to
+  `in_review` with exactly one `git` status event, a replay answered
+  `{"ok":true,"ignored":true}` with no second event, wrong and missing
+  signatures returned 401, unknown keys, `push`, and unmerged closes answered
+  200 ignored, malformed JSON with a valid signature returned 400, a merged
+  close moved `in_review` to done, `GET` returned 404, and a server without
+  `GITHUB_WEBHOOK_SECRET` returned 503 `webhook_not_configured` with data
+  untouched.
+- Tracker: `LAS-176` and the parent `LAS-167` are Done, recorded after the gate
+  passed. `LAS-151` shows In Review; `LAS-153` and `LAS-154` remain open with
+  acceptance tests outstanding.
+- Known risk: the architecture check is still path-based, so a duplicated rule
+  or a browser global reached through a re-export needs review eyes; there is
+  still no frontend test runner, so the browser pass is manual.
+- Next best step: `LAS-155` (the end-to-end acceptance gate).

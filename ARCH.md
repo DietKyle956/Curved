@@ -3,11 +3,15 @@
 Where code lives in `curved`, what may import what, and which module owns each
 rule. Read this before adding a module or moving one.
 
-The migration in section 3 is complete: all six steps are done, ending with web
-layering (LAS-175) and the import-direction gate (LAS-174). `src/` and
-`web/src/` are both in their final layouts: every path named below as a home
-exists today, and section 9's check enforces the import rules on it. No path or
-layer in this file is described as future work.
+The migration in section 3 is complete: all seven steps are done, ending with
+web layering (LAS-175), the import-direction gate (LAS-174), and the completion
+gate (LAS-176). `src/` and `web/src/` are both in their final layouts: every
+path named below as a home exists today, and section 9's check enforces the
+import rules on it. LAS-176 closed the refactor on 2026-11-17 by re-running the
+baseline and clean-state gates, the 195-test suite, the architecture check over
+74 files, and real entry-point smoke tests, with no observable product behavior
+change; section 10 records that evidence. No path or layer in this file is
+described as future work.
 
 The product constraints themselves (status machine, one active claim per agent,
 append-only history) are in `AGENTS.md` and `initial_idea.md`. This file is about
@@ -183,7 +187,7 @@ imports the matrix; that keeps the domain import graph acyclic.
 
 ## 3. Current state and migration path
 
-All six steps are done. The pure rules live in `src/domain/`, every resource
+All seven steps are done. The pure rules live in `src/domain/`, every resource
 runs through application use cases over ports, the inbound adapters and
 composition roots are in place, and `web/src` is layered. `src/services/`,
 `src/db.ts`, `src/config.ts`, `src/migrate.ts`, `src/server.ts`, `src/cli.ts`,
@@ -215,6 +219,7 @@ The migration was expand-contract, one step per work item:
 | 4. Rewire inbound adapters, delete old modules | Done (LAS-174, 2026-11-17): HTTP, MCP, CLI, GitHub, SSE, static moved under `src/adapters/`; `src/composition/` added; `src/db.ts`, `src/config.ts`, `src/migrate.ts`, `src/server.ts`, `src/cli.ts`, `src/http/`, and `src/mcp/` deleted; event-hub construction moved to `src/composition/server.ts` | Met: no import of a deleted path; behavior unchanged; the suite green |
 | 5. Web layering | Done (LAS-175, 2026-11-17): `web/src` split into `domain/`, `application/`, `adapters/`, and `ui/`; orchestration moved out of `app.tsx` into `web/src/application/workspace.ts`; `api` imports removed from components; `web/src/app.tsx`, `web/src/lib/`, `web/src/components/`, and `web/src/styles.css` deleted | Met: typecheck and build green; components import no transport; no module imports `web/src/lib/`; 195 tests green; browser pass at 390x844 and desktop |
 | 6. Completion gate | Done (LAS-174, 2026-11-17): `scripts/check-architecture.mjs` and `npm run check:arch`, wired into `npm run check`, with five failing fixture trees | Met: `npm run check` green with no undocumented exception |
+| 7. Completion gate | Done (LAS-176, 2026-11-17): baseline and clean-state gates, 195 tests, `architecture: ok (74 files)`, CLI, MCP stdio with a real agent token, HTTP+SSE in Chromium at 1440x900 and 390x844 with cross-tab updates and reconnect, the GitHub webhook through the HTTP app, and the built SPA served by the HTTP process | Met: every acceptance item verified; no unrecorded behavior difference |
 
 Step 4's rewiring was mechanical: adapter import paths changed, `createApp`
 takes `{ ports, events, uiToken, ... }` where `events` is an injected
@@ -537,16 +542,17 @@ Additional rules:
   seam an agent or human actually uses, which fails without the change.
 
 Web testing today: there is no unit test framework for the SPA (no web test
-script, no DOM test runner). Current evidence is `npm run check` (typecheck,
-architecture check, and 195 tests), `npm run build` (`npm run typecheck` then
-`npm run build:web`, a `vite build`), and a browser pass at 390x844 and desktop,
-which LAS-175 performed: both viewports, sign-out and sign-in with rejected and
-accepted tokens, first-run project setup on a fresh database, board, ready
-queue, issue detail transition and comment, Ctrl/Cmd+K palette, and cross-tab
-SSE refresh, with no console errors. This is a known constraint: web formatting,
-filtering, and route parsing have no automated proof today. When a web runner is
-added, the pure web domain (status maps, filters, sorting, route parsing) is the
-first place to test, not component snapshots.
+script, no DOM test runner). Current evidence, re-run by LAS-176 from a clean
+state, is `npm run check` (typecheck, architecture check, and 195 tests),
+`npm run build` (`npm run typecheck` then `npm run build:web`, a `vite build`),
+and a browser pass at 390x844 and desktop, which LAS-175 performed and LAS-176
+repeated: both viewports, sign-out and sign-in with rejected and accepted
+tokens, first-run project setup on a fresh database, board, ready queue, issue
+detail transition and comment, Ctrl/Cmd+K palette, cross-tab SSE refresh, and a
+server-restart reconnect, with no console errors. This is a known constraint:
+web formatting, filtering, and route parsing have no automated proof today. When
+a web runner is added, the pure web domain (status maps, filters, sorting,
+route parsing) is the first place to test, not component snapshots.
 
 ## 8. Review checklist
 
@@ -638,3 +644,113 @@ Two limits worth stating rather than hiding:
   "UI receives data and callbacks" rule is enforced by review and by the web
   application ports until a lint rule covers them. The specifier scan is also
   text-based: a computed `import()` or `require()` target is not seen.
+
+## 10. Verification record (LAS-176)
+
+LAS-176 closed the refactor on 2026-11-17. It re-ran the baseline and
+clean-state gates and repeated the entry-point smokes; this section records what
+was proven, so a later change can tell evidence from assumption. No gate failed
+and no product behavior changed.
+
+### Static boundary proof
+
+- `src/domain/` holds 9 files and 16 import specifiers, all sibling domain
+  modules: zero bare or package specifiers.
+- `src/application/` holds 11 files importing only `../domain/*.ts`,
+  `./ports.ts`, and its own use-case modules. No `pg`, `node:*`, `react`,
+  crypto, adapter, composition, or `process.env` reference appears there.
+- All 12 old-layer paths are absent: `src/services/`, `src/db.ts`,
+  `src/config.ts`, `src/migrate.ts`, `src/server.ts`, `src/cli.ts`,
+  `src/http/`, `src/mcp/`, `web/src/app.tsx`, `web/src/lib/`,
+  `web/src/components/`, and `web/src/styles.css`. No `export ... from`
+  re-export shim exists anywhere in `src/` or `web/src/`.
+- The nine rules in `scripts/check-architecture.mjs` match section 9, every
+  file under the walked trees falls in a layer, and the check reports
+  `architecture: ok (74 files)`.
+
+### Behavior audit
+
+The audit covered `899e62f..c97af0f`, where `899e62f` is the commit before
+LAS-169 and `b079662` is the LAS-169 commit itself. It found no unrecorded
+product behavior difference. The only deltas:
+
+- Test wiring and imports: `testDb.db` -> `testDb.ports`, `createApp` options,
+  spawn paths, and helper calls.
+- Three semantically identical test expressions: `hashAgentToken` ->
+  `createTokenCodec().hash`, the rollback test using the transaction handle it
+  was testing, and the missing-build test de-wrapped because `App.close` is
+  gone.
+- The architecture suite's fixture rename `web/src/lib` -> `web/src/domain`
+  and one new architecture case, taking the suite from 189 to 195 tests.
+- One user-visible text change: the MCP blank-token hint now names
+  `node src/composition/cli.ts agent add <name>`. The CLI hint still uses
+  `curved agent add <name>`, and no test pinned either path.
+- Entrypoint commands moved to `src/composition/*` in `package.json` and
+  `scripts/db.sh`.
+- Internal seams: `createApp` takes an injected `EventHub` and has no
+  `close()`; the web history hook memoizes route and navigate.
+
+### Runtime evidence
+
+Each smoke ran against a throwaway `curved_test_*e2e176*` database, dropped
+afterward. No repository file was edited and no listener was left behind.
+
+- CLI on a fresh database: `project add`, `project list`, `issue add`,
+  `issue list`, `issue show`, `issue move`, and `agent add --json` (which
+  minted a `crv_` token) all produced the documented output.
+- MCP over stdio with that real token: `tools/list` returned exactly the eight
+  tools; `list_ready`, `claim_next` (claiming the issue and naming the agent),
+  a second `claim_next` returning `agent_busy` with the active key, `comment`,
+  `submit_for_review` (which kept the claim), `get_issue`, `claim_next` while
+  in review returning `agent_busy`, `release_claim` from in review returning
+  `illegal_transition`, a human move to done, `claim_next` claiming the next
+  issue, `mark_blocked`, and `create_issue` all behaved as documented; a bogus
+  token returned `not_authenticated: agent token is not valid`.
+- HTTP and SSE in Chromium at 1440x900 and 390x844: `/` served the built SPA
+  with CSS, JS, and fonts at 200; a wrong UI token was rejected inline and the
+  real token set the HttpOnly `curved_session` cookie; first-run setup created
+  the project with a toast; `/new` created an issue and the board showed all
+  five lanes with counts; a CLI-created issue appeared in both tabs without a
+  reload over one `EventSource` and one navigation entry; the queue showed
+  READY 1 / IN FLIGHT 1; the issue deep link rendered its timeline and accepted
+  a UI comment; Ctrl/Cmd+K searched and navigated; the phone tab showed the
+  five status tabs at 44x78 px with counts and no horizontal overflow. The
+  first SSE frame was `event: ready`.
+- Reconnect: with the server stopped, both tabs recorded `EventSource` errors
+  and `readyState=2`; after restart the adapter reconnected (a new stream,
+  `readyState=1`, `ready` within about 5 ms of the port accepting connections,
+  inside the 1 s retry), and a new CLI comment and issue appeared in both tabs
+  without a reload. Clean loads produced 0 console entries and 0 page errors.
+- Webhook through the HTTP app: a valid signed `opened` pull request moved an
+  in-progress issue to in review with exactly one `git` status event; replay
+  was ignored with `{"ok":true,"ignored":true}` and no second event; wrong and
+  missing signatures returned 401 `not_authenticated`; an unknown key, an
+  `opened` PR for a todo issue, `push`, and an unmerged closed PR were ignored
+  with 200; malformed JSON with a valid signature returned 400 `validation`; a
+  merged closed PR moved in review to done; `GET /webhooks/github` returned
+  404; a server started without `GITHUB_WEBHOOK_SECRET` returned 503
+  `webhook_not_configured` and left data untouched.
+- Unknown `/api` paths returned JSON 404, not HTML.
+
+### Intentional deviations
+
+- Fixed warm near-black palette, no light mode, and self-hosted fonts (LAS-152)
+  remain. They are recorded product decisions; the refactor did not revisit
+  them.
+- The MCP blank-token hint names the composition entrypoint rather than the
+  `curved` binary. The old adapter paths are gone, and no test or documented
+  contract pinned the string.
+- HTTP, MCP, and CLI error codes and messages are otherwise unchanged;
+  rendering stays `"<code>: <message>"` per section 5.
+- `createApp` takes an injected `EventHub` and exposes no `close()`; the tests
+  own hub lifetime. The HTTP surface and payloads are unchanged.
+
+### Known limits
+
+- The architecture check is path- and specifier-based: it cannot see a
+  duplicated rule or literal, a computed `import()`/`require()` target, or a
+  browser global used directly.
+- There is no frontend test runner, so web formatting, filtering, and route
+  parsing still have no automated proof.
+- The browser smoke is manual and was run twice (LAS-175, LAS-176); it is not a
+  CI job.
