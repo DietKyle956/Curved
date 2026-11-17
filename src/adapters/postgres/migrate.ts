@@ -1,15 +1,7 @@
 import { readdir, readFile } from "node:fs/promises";
 import { resolve } from "node:path";
-import { pathToFileURL } from "node:url";
 import pg from "pg";
 import type { Client } from "pg";
-import { loadConfig } from "./config.ts";
-import { ServiceError } from "./domain/errors.ts";
-
-export interface MigrateOptions {
-  databaseUrl?: string;
-  migrationsDir?: string;
-}
 
 /** Advisory lock key shared by every migration runner against one database. */
 const MIGRATION_LOCK_KEY = 727274;
@@ -73,15 +65,16 @@ async function applyMigration(
  * Applies every pending migration and returns the versions applied by this
  * run. One transaction per file; a session advisory lock serializes runners.
  */
-export async function runMigrations(
-  options: MigrateOptions = {},
-): Promise<string[]> {
-  const databaseUrl = options.databaseUrl ?? loadConfig().databaseUrl;
+export async function runMigrations(options: {
+  databaseUrl: string;
+  migrationsDir?: string;
+}): Promise<string[]> {
   const migrationsDir =
-    options.migrationsDir ?? resolve(import.meta.dirname, "..", "migrations");
+    options.migrationsDir ??
+    resolve(import.meta.dirname, "..", "..", "..", "migrations");
 
   const migrations = await readMigrationFiles(migrationsDir);
-  const client = new pg.Client({ connectionString: databaseUrl });
+  const client = new pg.Client({ connectionString: options.databaseUrl });
   await client.connect();
 
   let locked = false;
@@ -112,30 +105,4 @@ export async function runMigrations(
   }
 
   return applied;
-}
-
-async function main(): Promise<void> {
-  const applied = await runMigrations();
-  if (applied.length === 0) {
-    console.log("already up to date");
-    return;
-  }
-  for (const version of applied) {
-    console.log(`applied ${version}`);
-  }
-}
-
-if (pathToFileURL(process.argv[1] ?? "").href === import.meta.url) {
-  try {
-    await main();
-  } catch (error) {
-    const message =
-      error instanceof ServiceError
-        ? `${error.code}: ${error.message}`
-        : error instanceof Error
-          ? error.message
-          : String(error);
-    console.error(message);
-    process.exitCode = 1;
-  }
 }

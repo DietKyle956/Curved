@@ -1,5 +1,6 @@
 import pg from "pg";
 import type { Notification } from "pg";
+import type { EventHub } from "../../application/ports.ts";
 
 /** The Postgres channel carrying a project id whenever its issues change. */
 export const ISSUES_CHANGED_CHANNEL = "issues_changed";
@@ -9,17 +10,6 @@ const RECONNECT_DELAY_MS = 1000;
 
 /** Upper bound on how long closing waits for a socket to finish ending. */
 const CLIENT_END_TIMEOUT_MS = 1000;
-
-/**
- * A single `LISTEN` connection fanned out to in-process subscribers. The
- * notification payload is only a hint that a project changed, so failures are
- * never fatal: the hub reconnects while anyone is listening.
- */
-export interface EventHub {
-  subscribe(listener: (projectId: number) => void): Promise<() => void>;
-  stats(): { subscribers: number; clients: number };
-  close(): Promise<void>;
-}
 
 export function createEventHub(options: {
   databaseUrl: string;

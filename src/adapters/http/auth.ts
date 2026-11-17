@@ -1,8 +1,9 @@
-import { createHash, timingSafeEqual } from "node:crypto";
-import { ServiceError } from "../domain/errors.ts";
-import type { ActorType } from "../domain/status.ts";
-import { authenticateAgent } from "../application/agents.ts";
-import type { Ports } from "../application/ports.ts";
+import { createHash } from "node:crypto";
+import { ServiceError } from "../../domain/errors.ts";
+import type { ActorType } from "../../domain/status.ts";
+import { authenticateAgent } from "../../application/agents.ts";
+import type { Ports } from "../../application/ports.ts";
+import { constantTimeEqual } from "../timing-safe.ts";
 
 export const SESSION_COOKIE_NAME = "curved_session";
 export const SESSION_MAX_AGE_SECONDS = 2592000;
@@ -27,17 +28,6 @@ export interface AuthContext {
 /** Lowercase SHA-256 hex digest, the stored form of every secret. */
 export function sha256Hex(value: string): string {
   return createHash("sha256").update(value, "utf8").digest("hex");
-}
-
-/**
- * Compares two secrets without leaking their contents through timing. Both
- * sides are hashed first so the comparison length is fixed regardless of the
- * input lengths.
- */
-export function constantTimeEqual(left: string, right: string): boolean {
-  const leftDigest = createHash("sha256").update(left, "utf8").digest();
-  const rightDigest = createHash("sha256").update(right, "utf8").digest();
-  return timingSafeEqual(leftDigest, rightDigest);
 }
 
 /** The session cookie value for a UI token. */

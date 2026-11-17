@@ -62,7 +62,7 @@ function runCli(
   env: NodeJS.ProcessEnv = {},
 ): Promise<CliResult> {
   const { promise, resolve, reject } = Promise.withResolvers<CliResult>();
-  const child = spawn(process.execPath, ["src/cli.ts", ...args], {
+  const child = spawn(process.execPath, ["src/composition/cli.ts", ...args], {
     cwd: REPO_ROOT,
     env: {
       ...process.env,

@@ -1,6 +1,6 @@
 // HTTP status mapping and the HTTP error body shape live in the HTTP adapter, never in the domain.
-import type { ErrorCode } from "../domain/errors.ts";
-import { ServiceError } from "../domain/errors.ts";
+import type { ErrorCode } from "../../domain/errors.ts";
+import { ServiceError } from "../../domain/errors.ts";
 
 const HTTP_STATUS: Record<ErrorCode, number> = {
   validation: 400,

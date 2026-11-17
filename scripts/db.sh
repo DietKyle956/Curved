@@ -30,4 +30,4 @@ if [ "$ready" -ne 1 ]; then
   exit 1
 fi
 
-node src/migrate.ts
+node src/composition/migrate.ts

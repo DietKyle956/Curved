@@ -1,4 +1,4 @@
-import type { EventHub } from "./event-hub.ts";
+import type { EventHub } from "../../application/ports.ts";
 
 /** How often an idle stream emits a comment-free keep-alive frame. */
 export const SSE_PING_INTERVAL_MS = 25_000;

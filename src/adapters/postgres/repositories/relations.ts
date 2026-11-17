@@ -1,5 +1,5 @@
 import type { QueryResultRow } from "pg";
-import type { Db } from "../../../db.ts";
+import type { Db } from "../pool.ts";
 import type { RelationRepository } from "../../../application/ports.ts";
 
 interface InsertedRelationRow extends QueryResultRow {

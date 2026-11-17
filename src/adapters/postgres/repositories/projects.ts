@@ -1,6 +1,6 @@
 import type { QueryResultRow } from "pg";
-import type { Db } from "../../../db.ts";
-import { pgErrorCode } from "../../../db.ts";
+import type { Db } from "../pool.ts";
+import { pgErrorCode } from "../pool.ts";
 import type { ProjectRepository } from "../../../application/ports.ts";
 import { ServiceError } from "../../../domain/errors.ts";
 import type { Project } from "../../../domain/types.ts";

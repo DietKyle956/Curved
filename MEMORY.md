@@ -2,7 +2,7 @@
 
 - **Last updated:** 2026-11-17
 - **Project:** curved
-- **Phase:** HTTP API and auth boundary complete (`LAS-148`), plus a working SPA prototype, the SSE realtime stream (`LAS-150`), the GitHub webhook with its branch helper (`LAS-151`), the SPA foundation ticket (`LAS-152`), the architecture contract (`LAS-168`, documentation only), the pure domain layer (`LAS-169`, no behavior change), and step 3's slices, ports plus the projects resource (`LAS-170`) then the issue lifecycle and read model on ports (`LAS-171`), agents, claims, review, comments, and blocking on ports (`LAS-172`), then labels, relations, and the GitHub use case on ports (`LAS-173`), all with no behavior change; step 3's resource migration is complete through `LAS-173`, and its remaining item is moving event-hub construction out of `createApp` into a composition root. Toolchain, Postgres 18, migrations, the projects resource, the issues resource (atomic keys, append-only events), comment events with the full timeline read path, the transition graph with its actor matrix, token-authenticated agents with the one-active-issue fence, agent block with human unblock, the MCP server over stdio, the authenticated HTTP API with its SPA fallback, the React/Vite board, queue, detail, and palette, the SSE stream that refreshes them, the HMAC-verified GitHub webhook that moves issues from pull requests, and the routed board with its mobile status bar are live.
+- **Phase:** HTTP API and auth boundary complete (`LAS-148`), plus a working SPA prototype, the SSE realtime stream (`LAS-150`), the GitHub webhook with its branch helper (`LAS-151`), the SPA foundation ticket (`LAS-152`), the architecture contract (`LAS-168`, documentation only), the pure domain layer (`LAS-169`, no behavior change), and step 3's slices, ports plus the projects resource (`LAS-170`) then the issue lifecycle and read model on ports (`LAS-171`), agents, claims, review, comments, and blocking on ports (`LAS-172`), then labels, relations, and the GitHub use case on ports (`LAS-173`), then the inbound-adapter rewire, composition roots, and the import-direction gate (`LAS-174`), all with no behavior change; steps 1 through 4 and the architecture gate are complete, and step 5 (web layering) is the only remaining refactor step. Toolchain, Postgres 18, migrations, the projects resource, the issues resource (atomic keys, append-only events), comment events with the full timeline read path, the transition graph with its actor matrix, token-authenticated agents with the one-active-issue fence, agent block with human unblock, the MCP server over stdio, the authenticated HTTP API with its SPA fallback, the React/Vite board, queue, detail, and palette, the SSE stream that refreshes them, the HMAC-verified GitHub webhook that moves issues from pull requests, and the routed board with its mobile status bar are live.
 
 ## Current verified state
 
@@ -13,17 +13,16 @@
   `--no-install` skips only install; the database step still runs.
 - End-of-session gate: `./scripts/clean-state.sh`
 - Baseline: green. `npm run typecheck` covers server and web configs; `npm test`
-  runs 189 tests on the Node test runner.
+  runs 194 tests on the Node test runner (189 behavior, 5 architecture).
 - Architecture contract: `ARCH.md` codifies target hexagonal layers (domain,
   application, inbound and outbound adapters, composition roots), rule ownership
   with bounded mirrors, ports and transactions, error translation, web layering,
   testing policy, and enforcement. Steps 1 and 2, plus all four of step 3's
   resource slices (`LAS-170` ports and the projects resource; `LAS-171` the issue
   lifecycle and read model; `LAS-172` agents, claims, review, comments, and
-  blocking; `LAS-173` labels, relations, and the GitHub use case), are
-  implemented; the remaining step-3 item is event-hub construction in a
-  composition root, then steps 4 to 6, so its Current/Target markers still
-  matter.
+  blocking; `LAS-173` labels, relations, and the GitHub use case), and so is
+  step 4 with the step-6 import-direction gate (`LAS-174`); step 5 (web
+  layering) remains, so only the web sections still carry target markers.
 - Templates: `/home/dietkyle/projects/templates/ARCH.md` (111 lines) is the
   project-agnostic version of the same contract, listed as copy-first item 2 in
   that directory's `index.md`; `templates/AGENTS.md` now reads `ARCH.md` in its
@@ -1439,3 +1438,54 @@ move. Steps 5 and 6 follow: web layering, then the import-direction check.
 - Next best step: step 4 (move the inbound adapters under `src/adapters/`, add
   `src/composition/`, delete `src/db.ts`, and move event-hub construction out of
   `createApp`).
+
+### Session 025
+
+- Date: 2026-11-17
+- Goal: execute `LAS-174` (rewire inbound adapters and delete the old layers),
+  step 4 of the `LAS-167` refactor plus the import-direction gate. No observable
+  behavior change.
+- Completed: the tree is now `src/{domain,application,adapters,composition}`.
+  Outbound: `src/adapters/postgres/pool.ts` (verbatim `src/db.ts` move),
+  `migrate.ts` (runner plus ledger SQL; `runMigrations` requires `databaseUrl`
+  and reads no config), `event-hub.ts` (LISTEN client implementing the new
+  `EventHub` port in `src/application/ports.ts`), and
+  `src/adapters/timing-safe.ts` (`constantTimeEqual`). Inbound:
+  `src/adapters/http/{app,transport,auth,errors,webhook}.ts`,
+  `src/adapters/mcp/{server,tools}.ts`, `src/adapters/cli/cli.ts`,
+  `src/adapters/github/{signature,payload}.ts`, `src/adapters/sse/stream.ts`,
+  `src/adapters/static/spa.ts`. Composition: `src/composition/{config,server,cli,mcp,migrate}.ts`.
+  Deleted with no shims: `src/db.ts`, `src/config.ts`, `src/migrate.ts`,
+  `src/server.ts`, `src/cli.ts`, `src/http/`, `src/mcp/`. `createApp` now
+  requires `ports` and an injected `events: EventHub`, takes no `databaseUrl`,
+  and exposes no `close()`; `src/composition/server.ts` owns the hub and the
+  shutdown order (hub, server, db). `runCli(argv, deps)` and `CliDeps` split argv
+  and output from config/pool ownership; MCP `resolveAgentFromToken(ports,
+  agentToken)` no longer sees `Config`. `package.json` scripts and
+  `scripts/db.sh` point at the composition entrypoints.
+- Architecture gate: `scripts/check-architecture.mjs` walks `src/**` and
+  `web/src/**`, applies nine import-direction rules, prints
+  `path: forbidden import "specifier" (rule)`, exits 1 on violation, and runs in
+  `npm run check` via `check:arch`; `test/architecture.test.ts` proves the real
+  repo passes and four fixtures fail.
+- Verification run: `npm run typecheck` green; `node scripts/check-architecture.mjs`
+  printed `architecture: ok (68 files)`; `./scripts/init.sh --no-install` green
+  (database, check, vite build); `npm test` 194 pass, 0 fail (189 existing plus
+  5 architecture cases); live smoke of `node src/composition/server.ts` on 4790:
+  `/api/me` 200 with the UI bearer, unauthenticated 401 `not_authenticated`,
+  `/api/projects` through the ports, `/api/events` cookie-only `event: ready`
+  frame, `/` 200 SPA from `web/dist`; `node src/composition/cli.ts project list`
+  printed `CRV\tCurved`.
+- Evidence captured: test changes are adapter import paths, `createApp` options
+  with a real hub, and the two spawn entrypoints; no assertion moved. The SQL
+  invariants, route tables, status codes, error codes, CLI output, MCP results,
+  and SSE frames are unchanged. The only user-visible text change is the MCP
+  `no agent token` hint path, now `node src/composition/cli.ts agent add <name>`;
+  no test pinned the old path.
+- Known risk: the architecture check is path-based and catches neither a
+  duplicated rule nor browser globals, so those stay review items. `web/src` is
+  still the step-5 target layout (`lib/`, `app.tsx`), and the web rules in the
+  check currently pass trivially.
+- Next best step: step 5 (web layering: split `web/src` into `domain/`,
+  `application/`, `adapters/`, `ui/`, delete `web/src/lib/`, move orchestration
+  out of `web/src/app.tsx`).

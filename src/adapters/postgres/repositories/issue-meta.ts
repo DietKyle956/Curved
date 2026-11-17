@@ -1,5 +1,5 @@
 import type { QueryResultRow } from "pg";
-import type { Db } from "../../../db.ts";
+import type { Db } from "../pool.ts";
 import type { IssueMetaRepository } from "../../../application/ports.ts";
 import { emptyMeta } from "../../../domain/types.ts";
 import type { IssueMeta } from "../../../domain/types.ts";

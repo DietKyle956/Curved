@@ -1,6 +1,6 @@
 import type { QueryResultRow } from "pg";
-import type { Db } from "../../../db.ts";
-import { pgErrorConstraint } from "../../../db.ts";
+import type { Db } from "../pool.ts";
+import { pgErrorConstraint } from "../pool.ts";
 import type {
   IssueRecord,
   IssueRepository,

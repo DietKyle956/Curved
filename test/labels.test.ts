@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { after, before, beforeEach, test } from "node:test";
-import type { Db } from "../src/db.ts";
+import type { Db } from "../src/adapters/postgres/pool.ts";
 import { bindPorts } from "../src/adapters/postgres/ports.ts";
 import { ServiceError, type ErrorCode } from "../src/domain/errors.ts";
 import {

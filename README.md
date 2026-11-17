@@ -26,8 +26,8 @@ nobody can say who did what when. Curved moves those rules out of the prompt.
   detail view with the full timeline, and a `Cmd/Ctrl+K` palette. Sign-in uses the
   UI token; the first run creates a project.
 - **Automation**: `POST /webhooks/github`, which moves issues when a pull request
-  opens, reopens, or merges, and `node src/cli.ts git-branch <KEY>`, which names
-  the branch for an issue.
+  opens, reopens, or merges, and `node src/composition/cli.ts git-branch <KEY>`,
+  which names the branch for an issue.
 - **Transport**: one process serving the HTTP API, the SPA, and the SSE stream.
 
 Target stack: Node with TypeScript, Postgres, Hono, React with Vite, and MCP over
@@ -76,10 +76,10 @@ to `todo`, clears the claim, stores the reason in `blocked_reason`, and appends 
 and appends an `unblocked` event, leaving status and claim untouched. A blocked
 issue is absent from `ready` and cannot be claimed until it is unblocked.
 
-The authenticated HTTP boundary is live. `npm start` runs `node src/server.ts` on
-`PORT` (default 4747) and refuses to start without `CURVED_UI_TOKEN`. The web
-client is a Vite + React + Tailwind app in `web/`, built into `web/dist` and served
-by the same process. Requests
+The authenticated HTTP boundary is live. `npm start` runs
+`node src/composition/server.ts` on `PORT` (default 4747) and refuses to start
+without `CURVED_UI_TOKEN`. The web client is a Vite + React + Tailwind app in
+`web/`, built into `web/dist` and served by the same process. Requests
 authenticate as a human through the session cookie or the UI bearer token, or as
 an agent through a `crv_` bearer token; failures and service errors share one JSON
 error shape, and there is no CORS. The API covers projects, issues, comments,
@@ -107,34 +107,37 @@ issue payload carries `labels` and `relations: { blocks, blockedBy }`, where
 `blocks` holds the keys this issue blocks and `blockedBy` the keys blocking it.
 `ready` and `claim` exclude an issue while any issue blocking it is not `done`.
 
-- `node src/cli.ts issue add <PROJECT> <title...>` - create an issue; keys are
-  assigned atomically.
-- `node src/cli.ts issue list [PROJECT]` - list issues, optionally scoped to one
-  project; the fifth column is the blocked reason or `-`.
-- `node src/cli.ts issue show <KEY>` - print the issue and its timeline in ascending
-  event order, plus its `labels`, `blocks`, and `blocked_by`.
-- `node src/cli.ts issue comment <KEY> <body...> [--actor <type>]
+- `node src/composition/cli.ts issue add <PROJECT> <title...>` - create an issue;
+  keys are assigned atomically.
+- `node src/composition/cli.ts issue list [PROJECT]` - list issues, optionally
+  scoped to one project; the fifth column is the blocked reason or `-`.
+- `node src/composition/cli.ts issue show <KEY>` - print the issue and its
+  timeline in ascending event order, plus its `labels`, `blocks`, and
+  `blocked_by`.
+- `node src/composition/cli.ts issue comment <KEY> <body...> [--actor <type>]
   [--agent <name>]` - append a comment event to the timeline.
-- `node src/cli.ts issue move <KEY> <status> [--body <text>] [--actor <type>]
-  [--agent <name>]` - move an issue along a legal edge for the given actor.
-- `node src/cli.ts issue block <KEY> <reason...>` - block a claimed issue with a
-  reason; returns it to `todo`, clears the claim, and appends a `blocked` event;
-  requires `CURVED_AGENT_TOKEN`.
-- `node src/cli.ts issue unblock <KEY> [--actor <type>] [--agent <name>]` - clear
-  a blocked issue's reason and append an `unblocked` event; humans only.
-- `node src/cli.ts agent add <name>` - create an agent; prints its `crv_` token
-  once, and only the SHA-256 hash is stored.
-- `node src/cli.ts ready [PROJECT] [--human]` - list unblocked `todo` issues by
-  priority then number, with the caller's busy key; requires
+- `node src/composition/cli.ts issue move <KEY> <status> [--body <text>]
+  [--actor <type>] [--agent <name>]` - move an issue along a legal edge for the
+  given actor.
+- `node src/composition/cli.ts issue block <KEY> <reason...>` - block a claimed
+  issue with a reason; returns it to `todo`, clears the claim, and appends a
+  `blocked` event; requires `CURVED_AGENT_TOKEN`.
+- `node src/composition/cli.ts issue unblock <KEY> [--actor <type>]
+  [--agent <name>]` - clear a blocked issue's reason and append an `unblocked`
+  event; humans only.
+- `node src/composition/cli.ts agent add <name>` - create an agent; prints its
+  `crv_` token once, and only the SHA-256 hash is stored.
+- `node src/composition/cli.ts ready [PROJECT] [--human]` - list unblocked
+  `todo` issues by priority then number, with the caller's busy key; requires
   `CURVED_AGENT_TOKEN` unless `--human` is passed.
-- `node src/cli.ts claim [PROJECT]` - claim the next ready issue with
-  `for update skip locked`; requires `CURVED_AGENT_TOKEN`.
-- `node src/cli.ts review <KEY> <summary...>` - submit a claimed issue for
-  review; requires `CURVED_AGENT_TOKEN`.
-- `node src/cli.ts release <KEY>` - return a claimed issue to `todo`; requires
-  `CURVED_AGENT_TOKEN`.
-- `node src/cli.ts git-branch <KEY> [--json]` - print the branch name for an
-  issue, the canonical key plus a slug of its title; `--json` prints
+- `node src/composition/cli.ts claim [PROJECT]` - claim the next ready issue
+  with `for update skip locked`; requires `CURVED_AGENT_TOKEN`.
+- `node src/composition/cli.ts review <KEY> <summary...>` - submit a claimed
+  issue for review; requires `CURVED_AGENT_TOKEN`.
+- `node src/composition/cli.ts release <KEY>` - return a claimed issue to
+  `todo`; requires `CURVED_AGENT_TOKEN`.
+- `node src/composition/cli.ts git-branch <KEY> [--json]` - print the branch
+  name for an issue, the canonical key plus a slug of its title; `--json` prints
   `{ "key": ..., "branch": ... }`.
 - `npm run db` - start Postgres and apply migrations.
 - `npm run dev` - run the Vite dev server on port 5173 and proxy `/api` to
@@ -145,14 +148,16 @@ issue payload carries `labels` and `relations: { blocks, blockedBy }`, where
 - `./scripts/init.sh` - install, database, check, build.
 - `./scripts/clean-state.sh` - end-of-session gate.
 - `npm test` - tests run against the isolated `curved_test` database.
+- `npm run check` - typecheck, the import-direction architecture check, then the
+  tests.
 - Working agreement: `AGENTS.md`
 - Current state and next step: `MEMORY.md`
 
 ## HTTP API
 
-`node src/server.ts` (or `npm start`) serves the JSON API under `/api`, the GitHub
-webhook at `/webhooks/github`, and the SPA for every other path. One process owns
-all of it.
+`node src/composition/server.ts` (or `npm start`) serves the JSON API under
+`/api`, the GitHub webhook at `/webhooks/github`, and the SPA for every other
+path. One process owns all of it.
 
 Prerequisites:
 
@@ -161,7 +166,8 @@ Prerequisites:
 3. A UI token: export any secret as `CURVED_UI_TOKEN`. The server refuses to start
    without it and exits 1 with
    `CURVED_UI_TOKEN is required to start the HTTP server`.
-4. Agent tokens for `crv_` bearers: `node src/cli.ts agent add <name>`.
+4. Agent tokens for `crv_` bearers:
+   `node src/composition/cli.ts agent add <name>`.
 5. For the GitHub webhook: export `GITHUB_WEBHOOK_SECRET`, the same secret you
    give the repository webhook. `POST /webhooks/github` answers
    `503 webhook_not_configured` until it is set.
@@ -328,12 +334,13 @@ Prerequisites:
 
 1. Postgres: `docker compose up -d`.
 2. Schema: `npm run migrate`.
-3. An agent identity: `node src/cli.ts agent add <name>` prints a `crv_` token
-   once. Export it as `CURVED_AGENT_TOKEN`; only its hash is stored, so save it.
+3. An agent identity: `node src/composition/cli.ts agent add <name>` prints a
+   `crv_` token once. Export it as `CURVED_AGENT_TOKEN`; only its hash is stored,
+   so save it.
 
-Start the server with `npm run mcp`, which is `node src/mcp/main.ts`. stdout
-belongs to the JSON-RPC protocol; logs go to stderr. Writing anything else to
-stdout corrupts the stream.
+Start the server with `npm run mcp`, which is `node src/composition/mcp.ts`.
+stdout belongs to the JSON-RPC protocol; logs go to stderr. Writing anything else
+to stdout corrupts the stream.
 
 Harness config example:
 
@@ -342,7 +349,7 @@ Harness config example:
   "mcpServers": {
     "curved": {
       "command": "node",
-      "args": ["/absolute/path/to/curved/src/mcp/main.ts"],
+      "args": ["/absolute/path/to/curved/src/composition/mcp.ts"],
       "env": {
         "DATABASE_URL": "postgres://curved:curved@localhost:55432/curved",
         "CURVED_AGENT_TOKEN": "crv_..."

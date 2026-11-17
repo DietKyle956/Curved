@@ -1,5 +1,5 @@
 import type { QueryResultRow } from "pg";
-import type { Db } from "../../../db.ts";
+import type { Db } from "../pool.ts";
 import type { IssueEventRepository } from "../../../application/ports.ts";
 import type { ActorType, EventKind, Status } from "../../../domain/status.ts";
 import type { IssueEvent } from "../../../domain/types.ts";

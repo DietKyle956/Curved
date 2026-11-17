@@ -1,23 +1,22 @@
 import { resolve } from "node:path";
-import { ServiceError } from "../domain/errors.ts";
+import { ServiceError } from "../../domain/errors.ts";
 import { errorBody, httpStatusFor } from "./errors.ts";
-import { blockIssue, unblockIssue } from "../application/blocking.ts";
-import { commentOnIssue } from "../application/comments.ts";
+import { blockIssue, unblockIssue } from "../../application/blocking.ts";
+import { commentOnIssue } from "../../application/comments.ts";
 import {
   createIssue,
   getIssueTimeline,
   listIssues,
   moveIssue,
   updateIssue,
-} from "../application/issues.ts";
-import type { IssueContext } from "../domain/actors.ts";
-import { setIssueLabels } from "../application/labels.ts";
-import type { Ports } from "../application/ports.ts";
-import { createProject, listProjects } from "../application/projects.ts";
-import { claimNext, listReady, releaseClaim } from "../application/queue.ts";
-import { addRelation } from "../application/relations.ts";
+} from "../../application/issues.ts";
+import type { IssueContext } from "../../domain/actors.ts";
+import { setIssueLabels } from "../../application/labels.ts";
+import type { Ports } from "../../application/ports.ts";
+import { createProject, listProjects } from "../../application/projects.ts";
+import { claimNext, listReady, releaseClaim } from "../../application/queue.ts";
+import { addRelation } from "../../application/relations.ts";
 import {
-  constantTimeEqual,
   resolveActor,
   resolveSessionActor,
   serializeClearedSessionCookie,
@@ -25,10 +24,10 @@ import {
   sessionCookieValue,
 } from "./auth.ts";
 import type { AuthContext } from "./auth.ts";
-import { createEventHub } from "./event-hub.ts";
-import type { EventHub } from "./event-hub.ts";
-import { serveSpa } from "./spa.ts";
-import { createEventStreamResponse } from "./sse.ts";
+import type { EventHub } from "../../application/ports.ts";
+import { constantTimeEqual } from "../timing-safe.ts";
+import { serveSpa } from "../static/spa.ts";
+import { createEventStreamResponse } from "../sse/stream.ts";
 import { handleGithubWebhook } from "./webhook.ts";
 
 const JSON_BODY_LIMIT_BYTES = 1024 * 1024;
@@ -38,18 +37,16 @@ const NOT_FOUND_BODY = {
 
 export interface CreateAppOptions {
   ports: Ports;
-  databaseUrl: string;
+  events: EventHub;
   uiToken: string;
   webhookSecret?: string;
   webDistDir?: string;
-  events?: EventHub;
   eventPingIntervalMs?: number;
   logger?: (error: unknown) => void;
 }
 
 export interface App {
   handle(request: Request): Promise<Response>;
-  close(): Promise<void>;
 }
 
 function json(
@@ -202,31 +199,13 @@ export function createApp(options: CreateAppOptions): App {
     throw new Error("CURVED_UI_TOKEN is required to start the HTTP app");
   }
 
-  const { ports, uiToken } = options;
+  const { ports, uiToken, events } = options;
   const webDistDir = options.webDistDir ?? resolve(process.cwd(), "web/dist");
   const logger =
     options.logger ??
     ((error: unknown) => {
       console.error(error);
     });
-
-  // An injected hub belongs to the caller; only a hub created here is closed here.
-  const injectedHub = options.events;
-  const events =
-    injectedHub ?? createEventHub({ databaseUrl: options.databaseUrl, logger });
-  const ownedHub = injectedHub === undefined ? events : null;
-
-  let closing: Promise<void> | null = null;
-  function close(): Promise<void> {
-    if (closing === null) {
-      closing = (async () => {
-        if (ownedHub !== null) {
-          await ownedHub.close();
-        }
-      })();
-    }
-    return closing;
-  }
 
   async function handleApi(request: Request, url: URL): Promise<Response> {
     const method = request.method;
@@ -505,5 +484,5 @@ export function createApp(options: CreateAppOptions): App {
     }
   }
 
-  return { handle, close };
+  return { handle };
 }

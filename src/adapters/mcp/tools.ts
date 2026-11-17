@@ -1,20 +1,20 @@
 import type { CallToolResult } from "@modelcontextprotocol/server";
 import { z } from "zod";
-import { ServiceError } from "../domain/errors.ts";
-import { ISSUE_KEY_PATTERN, PROJECT_KEY_PATTERN } from "../domain/keys.ts";
-import type { Ports } from "../application/ports.ts";
-import { blockIssue } from "../application/blocking.ts";
-import { commentOnIssue } from "../application/comments.ts";
+import { ServiceError } from "../../domain/errors.ts";
+import { ISSUE_KEY_PATTERN, PROJECT_KEY_PATTERN } from "../../domain/keys.ts";
+import type { Ports } from "../../application/ports.ts";
+import { blockIssue } from "../../application/blocking.ts";
+import { commentOnIssue } from "../../application/comments.ts";
 import {
   createIssue as createIssueService,
   getIssueTimeline,
-} from "../application/issues.ts";
+} from "../../application/issues.ts";
 import {
   claimNext as claimNextService,
   listReady as listReadyService,
   releaseClaim as releaseClaimService,
   submitForReview as submitForReviewService,
-} from "../application/queue.ts";
+} from "../../application/queue.ts";
 
 export const projectSchema = z
   .string()

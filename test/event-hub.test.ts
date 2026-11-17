@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { after, before, beforeEach, test } from "node:test";
-import { createEventHub, type EventHub } from "../src/http/event-hub.ts";
+import { createEventHub } from "../src/adapters/postgres/event-hub.ts";
+import type { EventHub } from "../src/application/ports.ts";
 import { openTestDatabase, type TestDatabase } from "./helpers/db.ts";
 
 let testDb: TestDatabase;

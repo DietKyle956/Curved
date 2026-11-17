@@ -1,10 +1,9 @@
-import { createHmac } from "node:crypto";
-import type { Ports } from "../application/ports.ts";
-import { ServiceError } from "../domain/errors.ts";
-import { applyPullRequestEvent } from "../application/github.ts";
-import { constantTimeEqual } from "./auth.ts";
+import type { Ports } from "../../application/ports.ts";
+import { ServiceError } from "../../domain/errors.ts";
+import { applyPullRequestEvent } from "../../application/github.ts";
+import { parseGithubPayload, readGithubRawBody } from "../github/payload.ts";
+import { verifyGithubSignature } from "../github/signature.ts";
 
-const WEBHOOK_BODY_LIMIT_BYTES = 1024 * 1024;
 const NOT_FOUND_BODY = {
   error: { code: "not_found", message: "route not found" },
 } as const;
@@ -20,11 +19,6 @@ function json(payload: unknown, status = 200): Response {
     status,
     headers: { "content-type": "application/json; charset=utf-8" },
   });
-}
-
-/** The `x-hub-signature-256` value for a raw body. */
-export function githubSignature(secret: string, rawBody: string): string {
-  return `sha256=${createHmac("sha256", secret).update(rawBody, "utf8").digest("hex")}`;
 }
 
 /**
@@ -47,28 +41,14 @@ export async function handleGithubWebhook(
     );
   }
 
-  const rawBody = await request.text();
-  if (rawBody.length > WEBHOOK_BODY_LIMIT_BYTES) {
-    throw new ServiceError(
-      "validation",
-      "request body must be at most 1 MiB",
-    );
-  }
+  const rawBody = await readGithubRawBody(request);
 
   const signature = request.headers.get("x-hub-signature-256");
-  if (
-    signature === null ||
-    !constantTimeEqual(signature, githubSignature(secret, rawBody))
-  ) {
+  if (!verifyGithubSignature(secret, rawBody, signature)) {
     throw new ServiceError("not_authenticated", "webhook signature mismatch");
   }
 
-  let payload: unknown;
-  try {
-    payload = JSON.parse(rawBody);
-  } catch {
-    throw new ServiceError("validation", "webhook body must be valid JSON");
-  }
+  const payload = parseGithubPayload(rawBody);
 
   const issue = await applyPullRequestEvent(
     options.ports,

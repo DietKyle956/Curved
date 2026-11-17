@@ -116,6 +116,13 @@ export interface TokenCodec {
   hash(token: string): string;
 }
 
+/** Fan-out of project changes to in-process subscribers, backed by LISTEN/NOTIFY. */
+export interface EventHub {
+  subscribe(listener: (projectId: number) => void): Promise<() => void>;
+  stats(): { subscribers: number; clients: number };
+  close(): Promise<void>;
+}
+
 /**
  * Port-level error: the adapter throws it when a write violates the
  * `issues_one_active_claim_per_agent` constraint. A use case maps it to the

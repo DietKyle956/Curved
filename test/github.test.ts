@@ -1,9 +1,11 @@
 import assert from "node:assert/strict";
 import { createHmac } from "node:crypto";
 import { after, afterEach, before, beforeEach, test } from "node:test";
-import { createApp } from "../src/http/app.ts";
+import { createApp } from "../src/adapters/http/app.ts";
+import { createEventHub } from "../src/adapters/postgres/event-hub.ts";
 import { issueKeyFromText, branchNameForIssue } from "../src/domain/keys.ts";
 import type { Issue, IssueEvent } from "../src/domain/types.ts";
+import type { EventHub } from "../src/application/ports.ts";
 import { createAgent } from "../src/application/agents.ts";
 import { applyPullRequestEvent } from "../src/application/github.ts";
 import {
@@ -23,7 +25,6 @@ const NOT_FOUND_BODY = {
 
 interface HttpApp {
   handle(request: Request): Promise<Response>;
-  close(): Promise<void>;
 }
 
 interface ErrorResponse {
@@ -37,7 +38,7 @@ interface WebhookResponse {
 
 let testDb: TestDatabase;
 let app: HttpApp;
-const openedApps: HttpApp[] = [];
+const openedHubs: EventHub[] = [];
 
 before(async () => {
   testDb = await openTestDatabase();
@@ -49,8 +50,8 @@ beforeEach(async () => {
 });
 
 afterEach(async () => {
-  const pending = openedApps.splice(0);
-  await Promise.all(pending.map((created) => created.close()));
+  const pending = openedHubs.splice(0);
+  await Promise.all(pending.map((hub) => hub.close()));
 });
 
 after(async () => {
@@ -58,15 +59,18 @@ after(async () => {
 });
 
 function createTestApp(webhookSecret: string | null = SECRET): HttpApp {
-  const created = createApp({
-    ports: testDb.ports,
+  const hub = createEventHub({
     databaseUrl: testDb.databaseUrl,
+    logger: () => {},
+  });
+  openedHubs.push(hub);
+  return createApp({
+    ports: testDb.ports,
+    events: hub,
     uiToken: UI_TOKEN,
     logger: () => {},
     ...(webhookSecret === null ? {} : { webhookSecret }),
   });
-  openedApps.push(created);
-  return created;
 }
 
 function sign(rawBody: string, secret: string = SECRET): string {

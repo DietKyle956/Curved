@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { after, before, beforeEach, test } from "node:test";
-import { pgErrorCode, pgErrorConstraint } from "../src/db.ts";
+import { pgErrorCode, pgErrorConstraint } from "../src/adapters/postgres/pool.ts";
 import { ServiceError, type ErrorCode } from "../src/domain/errors.ts";
 import {
   authenticateAgent,

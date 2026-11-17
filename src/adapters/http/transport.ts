@@ -1,12 +1,12 @@
 import { createServer } from "node:http";
-import type { IncomingMessage, ServerResponse } from "node:http";
+import type { IncomingMessage, Server, ServerResponse } from "node:http";
 import { Readable } from "node:stream";
-import { loadConfig } from "./config.ts";
-import { createDatabase } from "./db.ts";
-import { createPorts } from "./adapters/postgres/ports.ts";
-import { createApp } from "./http/app.ts";
+import type { App } from "./app.ts";
 
-function toRequest(request: IncomingMessage, signal: AbortSignal): Request {
+export function toRequest(
+  request: IncomingMessage,
+  signal: AbortSignal,
+): Request {
   const method = request.method ?? "GET";
   const host = request.headers.host ?? "127.0.0.1";
   const url = new URL(request.url ?? "/", `http://${host}`);
@@ -45,7 +45,7 @@ function waitForDrain(outgoing: ServerResponse): Promise<void> {
   return promise;
 }
 
-async function streamEventStream(
+export async function streamEventStream(
   response: Response,
   outgoing: ServerResponse,
 ): Promise<void> {
@@ -95,7 +95,7 @@ async function streamEventStream(
   }
 }
 
-async function writeResponse(
+export async function writeResponse(
   response: Response,
   outgoing: ServerResponse,
 ): Promise<void> {
@@ -134,25 +134,9 @@ async function writeResponse(
   outgoing.end(body);
 }
 
-async function main(): Promise<void> {
-  const config = loadConfig();
-  if (config.uiToken === "") {
-    process.stderr.write(
-      "CURVED_UI_TOKEN is required to start the HTTP server\n",
-    );
-    process.exit(1);
-  }
-
-  const db = createDatabase(config.databaseUrl);
-  const ports = createPorts(db);
-  const app = createApp({
-    ports,
-    databaseUrl: config.databaseUrl,
-    uiToken: config.uiToken,
-    webhookSecret: config.webhookSecret,
-  });
-
-  const server = createServer((incoming, outgoing) => {
+/** Bridges Node's HTTP server onto an {@link App}. */
+export function createNodeServer(app: App): Server {
+  return createServer((incoming, outgoing) => {
     const abort = new AbortController();
     const onDisconnect = (): void => {
       abort.abort();
@@ -177,52 +161,4 @@ async function main(): Promise<void> {
         incoming.off("aborted", onDisconnect);
       });
   });
-
-  const listening = Promise.withResolvers<void>();
-  server.once("error", listening.reject);
-  server.listen(config.port, () => {
-    server.off("error", listening.reject);
-    listening.resolve();
-  });
-  await listening.promise;
-  process.stdout.write(
-    `curved listening on http://127.0.0.1:${config.port}\n`,
-  );
-
-  let closing = false;
-  const shutdown = (): void => {
-    if (closing) {
-      return;
-    }
-    closing = true;
-    void (async () => {
-      try {
-        await app.close();
-      } catch (error: unknown) {
-        console.error(error);
-      }
-      const closed = Promise.withResolvers<void>();
-      server.close(() => {
-        closed.resolve();
-      });
-      server.closeAllConnections();
-      await closed.promise;
-      void db.close().then(
-        () => {
-          process.exit(0);
-        },
-        () => {
-          process.exit(0);
-        },
-      );
-    })();
-  };
-  process.on("SIGINT", shutdown);
-  process.on("SIGTERM", shutdown);
 }
-
-main().catch((error: unknown) => {
-  const message = error instanceof Error ? error.message : String(error);
-  process.stderr.write(`${message}\n`);
-  process.exit(1);
-});

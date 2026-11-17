@@ -12,7 +12,7 @@ import { createProject } from "../src/application/projects.ts";
 import { openTestDatabase, type TestDatabase } from "./helpers/db.ts";
 
 const REPO_ROOT = resolve(import.meta.dirname, "..");
-const SERVER_ENTRY = "src/mcp/main.ts";
+const SERVER_ENTRY = "src/composition/mcp.ts";
 const AGENT_NAME = "alice";
 
 const TOOL_NAMES = [

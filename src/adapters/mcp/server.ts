@@ -1,12 +1,7 @@
 import { McpServer } from "@modelcontextprotocol/server";
-import { serveStdio } from "@modelcontextprotocol/server/stdio";
-import { loadConfig } from "../config.ts";
-import type { Config } from "../config.ts";
-import { createDatabase } from "../db.ts";
-import { createPorts } from "../adapters/postgres/ports.ts";
-import type { Ports } from "../application/ports.ts";
-import { ServiceError } from "../domain/errors.ts";
-import { authenticateAgent } from "../application/agents.ts";
+import type { Ports } from "../../application/ports.ts";
+import { ServiceError } from "../../domain/errors.ts";
+import { authenticateAgent } from "../../application/agents.ts";
 import {
   claimNext,
   claimNextInput,
@@ -34,13 +29,13 @@ import type { ToolDeps } from "./tools.ts";
  */
 export async function resolveAgentFromToken(
   ports: Ports,
-  config: Config,
+  agentToken: string,
 ): Promise<string> {
-  const token = config.agentToken.trim();
+  const token = agentToken.trim();
   if (token.length === 0) {
     throw new ServiceError(
       "not_authenticated",
-      'no agent token: set CURVED_AGENT_TOKEN to a token created with "node src/cli.ts agent add <name>"',
+      'no agent token: set CURVED_AGENT_TOKEN to a token created with "node src/composition/cli.ts agent add <name>"',
     );
   }
   const agent = await authenticateAgent(ports, token);
@@ -140,47 +135,4 @@ export function createCurvedMcpServer(deps: ToolDeps): McpServer {
   );
 
   return server;
-}
-
-/** Serves MCP over stdio until stdin ends or the process is signalled. */
-export async function main(): Promise<void> {
-  const config = loadConfig();
-  const db = createDatabase(config.databaseUrl);
-  const ports = createPorts(db);
-  const handle = serveStdio(
-    () =>
-      createCurvedMcpServer({
-        ports,
-        resolveAgent: () => resolveAgentFromToken(ports, config),
-      }),
-    {
-      onerror: (error) => {
-        process.stderr.write(`curved mcp: ${error.message}\n`);
-      },
-    },
-  );
-
-  let closing: Promise<void> | null = null;
-  const shutdown = (): Promise<void> => {
-    if (closing === null) {
-      closing = (async () => {
-        process.off("SIGINT", onSignal);
-        process.off("SIGTERM", onSignal);
-        process.stdin.off("end", onStdinEnd);
-        await handle.close();
-        await db.close();
-      })();
-    }
-    return closing;
-  };
-  const onSignal = (): void => {
-    void shutdown();
-  };
-  const onStdinEnd = (): void => {
-    void shutdown();
-  };
-
-  process.on("SIGINT", onSignal);
-  process.on("SIGTERM", onSignal);
-  process.stdin.on("end", onStdinEnd);
 }

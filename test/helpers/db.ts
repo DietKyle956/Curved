@@ -1,9 +1,9 @@
 import pg from "pg";
 import { createPorts } from "../../src/adapters/postgres/ports.ts";
 import type { Ports } from "../../src/application/ports.ts";
-import { loadConfig } from "../../src/config.ts";
-import { createDatabase, type Database } from "../../src/db.ts";
-import { runMigrations } from "../../src/migrate.ts";
+import { loadConfig } from "../../src/composition/config.ts";
+import { createDatabase, type Database } from "../../src/adapters/postgres/pool.ts";
+import { runMigrations } from "../../src/adapters/postgres/migrate.ts";
 
 export interface TestDatabase {
   db: Database;

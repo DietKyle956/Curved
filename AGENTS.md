@@ -46,12 +46,12 @@ issue per agent globally. LAS-146 is live: `issue block` records a 1..2000 chara
 reason, returns the issue to Todo, clears the claim, and appends a `blocked` event;
 `issue unblock` is human only, clears the reason, and appends `unblocked`; blocked
 issues are absent from `ready` and unclaimable. LAS-147 is live: MCP-over-stdio
-(`npm run mcp`, `node src/mcp/main.ts`) exposes the eight tools (`claim_next`,
+(`npm run mcp`, `node src/composition/mcp.ts`) exposes the eight tools (`claim_next`,
 `comment`, `create_issue`, `get_issue`, `list_ready`, `mark_blocked`,
 `release_claim`, `submit_for_review`) over the shared service layer, resolving the
 agent from `CURVED_AGENT_TOKEN` on every call. LAS-148 is live: an HTTP API and
-auth boundary (`npm start`, `node src/server.ts`) on `PORT` (default 4747) that
-requires `CURVED_UI_TOKEN`, authenticates humans by UI bearer or the
+auth boundary (`npm start`, `node src/composition/server.ts`) on `PORT` (default
+4747) that requires `CURVED_UI_TOKEN`, authenticates humans by UI bearer or the
 `curved_session` cookie (SHA-256 of the UI token) and agents by `crv_` bearer,
 and serves `/api/me`, `/api/session`, projects, issues (list with `project` and
 `status` filters, create, show, human-only `PATCH`), per-issue transition,
@@ -68,18 +68,18 @@ add a blocking relation; issue payloads carry `labels` and `relations` with
 `blocks` and `blockedBy`; and `ready` and claim skip issues whose blocking
 relation is not Done.
 LAS-150 is live: migration `0005` adds notification triggers that `pg_notify` the
-owning project id on issue insert/update and issue-event insert; `src/http/event-hub.ts`
-owns one lazily opened shared `pg.Client` per app running `LISTEN issues_changed`,
-fans numeric project ids out to subscribers, and reconnects once after 1s while
-subscribers remain; `GET /api/events` is a cookie-only `text/event-stream`
-(`ready`, `issues_changed` with the project id as `data`, and a 25 second `ping`)
-authenticated by the `curved_session` cookie because `EventSource` cannot set
-headers, so a bearer-only request is `401`; `createApp` now requires `databaseUrl`
-and owns the hub unless one is injected; `src/server.ts` streams event-stream
-responses chunked with backpressure and aborts each request's signal on client
-disconnect; and the SPA's 20 second poll is replaced by one `EventSource` that
-reconnects after 1s, filters by project, and refreshes the board and open issue
-detail.
+owning project id on issue insert/update and issue-event insert;
+`src/adapters/postgres/event-hub.ts` owns one lazily opened shared `pg.Client` per
+app running `LISTEN issues_changed`, fans numeric project ids out to subscribers,
+and reconnects once after 1s while subscribers remain; `GET /api/events` is a
+cookie-only `text/event-stream` (`ready`, `issues_changed` with the project id as
+`data`, and a 25 second `ping`) authenticated by the `curved_session` cookie
+because `EventSource` cannot set headers, so a bearer-only request is `401`;
+`createApp` then required `databaseUrl` and owned the hub unless one was injected;
+`src/adapters/http/transport.ts` streams event-stream responses chunked with
+backpressure and aborts each request's signal on client disconnect; and the SPA's
+20 second poll is replaced by one `EventSource` that reconnects after 1s, filters
+by project, and refreshes the board and open issue detail.
 The SPA prototype is live in `web/`: Vite + React + Tailwind v4 built into
 `web/dist`, served by the HTTP process. It covers sign-in with the UI token,
 first-run project setup, a five-lane board with drag transitions gated by
@@ -92,10 +92,11 @@ against `GITHUB_WEBHOOK_SECRET` before parsing, moves `pull_request` `opened` an
 `reopened` events to In Review and `closed` events with a merged pull request to
 Done as the `git` actor with a `pull request #<n> <action>` status event, answers
 `200 {"ok":true,"ignored":true}` for unknown keys, illegal transitions, replays,
-and non-PR events so GitHub never retries, and `node src/cli.ts git-branch <KEY>`
-prints the canonical branch name. LAS-152 is live: the hand-rolled history router
-(`web/src/lib/router.ts`) parses `/`, `/p/<KEY>`, `/p/<KEY>/queue`, `/p/<KEY>/i/<ISSUE>`,
-and `/new` or `/p/<KEY>/new`, writes history with `pushState`/`replaceState`, listens
+and non-PR events so GitHub never retries, and
+`node src/composition/cli.ts git-branch <KEY>` prints the canonical branch name.
+LAS-152 is live: the hand-rolled history router (`web/src/lib/router.ts`) parses
+`/`, `/p/<KEY>`, `/p/<KEY>/queue`, `/p/<KEY>/i/<ISSUE>`, and `/new` or
+`/p/<KEY>/new`, writes history with `pushState`/`replaceState`, listens
 to `popstate`, and dispatches a `navigate` `CustomEvent` (`{ path, replace }`) for
 every one; the new-issue dialog is route-driven, so direct loads, browser Back, and
 the create redirect all agree. The board switches to five horizontally scrollable
@@ -118,9 +119,8 @@ types. At that point the services kept the SQL for the resources not yet
 migrated, the issue read model, and orchestration, and imported every pure rule
 from the domain; `src/services/` has since been retired by `LAS-170` to
 `LAS-173`. The HTTP status mapping (`HTTP_STATUS`, `httpStatusFor`) lives in
-`src/http/errors.ts`. The
-old shared status module and the old root error module are deleted. Behavior is
-unchanged; the baseline stays green.
+`src/adapters/http/errors.ts`. The old shared status module and the old root error
+module are deleted. Behavior is unchanged; the baseline stays green.
 LAS-170 is live: step 3's first slice adds `src/application/ports.ts`
 (`ProjectRepository`, `TokenCodec`, `ActiveClaimConflict`, `Ports`,
 `TransactionPorts`), `src/application/projects.ts` (create and list use cases with
@@ -195,28 +195,46 @@ created), and `TransactionPorts` carries `labels` and `relations`.
 none importing `pg`, `src/db.ts`, or `node:*`. They are implemented in
 `src/adapters/postgres/repositories/labels.ts` (`createLabelRepository`, the same
 three statements) and `relations.ts` (`createRelationRepository`, the same
-idempotent insert), both wired in `bindPorts`. `src/http/webhook.ts` keeps HMAC
-verification, the raw-body read, the 1 MiB body cap, JSON parsing, and the
+idempotent insert), both wired in `bindPorts`. `src/adapters/http/webhook.ts` keeps
+HMAC verification, the raw-body read, the 1 MiB body cap, JSON parsing, and the
 non-POST 404, and now calls the use case. `createApp` no longer accepts a `db`
-option: the label and relation routes take `ports`, `src/server.ts` and six test
-files were updated, and the test changes are imports, `testDb.db` to
+option: the label and relation routes take `ports`, `src/composition/server.ts` and
+six test files were updated, and the test changes are imports, `testDb.db` to
 `testDb.ports`, and removed `db` options only, so no assertion moved. Behavior is
 unchanged: 189 tests pass.
+LAS-174 is live: step 4 of the `ARCH.md` refactor plus the step-6 import-direction
+gate. Inbound adapters moved under `src/adapters/` (`http/`, `mcp/`, `cli/`,
+`github/`, `sse/`, `static/`) and outbound pieces under `src/adapters/postgres/`:
+`pool.ts` is the verbatim move of the old `src/db.ts` (pool, `Database`,
+`createDatabase`, `pgErrorCode`, `pgErrorConstraint`), `migrate.ts` is the runner
+plus ledger SQL, exporting `runMigrations({ databaseUrl, migrationsDir? })` with
+`databaseUrl` required and never reading config, and `event-hub.ts` implements the
+`EventHub` port. `src/adapters/token-codec.ts` and `src/adapters/timing-safe.ts`
+(`constantTimeEqual`, shared by HTTP auth and the GitHub signature) round out the
+outbound side. Composition roots live in `src/composition/` (`config.ts` with
+`loadConfig`/`Config`, `server.ts`, `cli.ts`, `mcp.ts`, `migrate.ts`). `src/db.ts`,
+`src/config.ts`, `src/migrate.ts`, `src/server.ts`, `src/cli.ts`, `src/http/`, and
+`src/mcp/` are deleted with no shims. `src/application/ports.ts` declares
+`EventHub` (`subscribe`, `stats`, `close`) outside `Ports`/`TransactionPorts`;
+`createApp` takes an injected `events: EventHub` and no longer takes `databaseUrl`,
+and `src/composition/server.ts` owns the hub and the shutdown order (hub, then
+server, then pool). `npm run check` now runs `check:arch` between typecheck and
+tests. 194 tests pass. Step 5 (web layering) is the only remaining refactor step.
 
-Tests: 189 pass, 0 fail, including `test/http.test.ts`, `test/event-hub.test.ts`,
+Tests: 194 pass, 0 fail, including `test/http.test.ts`, `test/event-hub.test.ts`,
 `test/sse.test.ts`, the label and relation suites in `test/labels.test.ts` and
 `test/relations.test.ts`, the webhook and branch suite in `test/github.test.ts`,
-the issue filter and human-only edit cases in `test/issues.test.ts`, and
+the issue filter and human-only edit cases in `test/issues.test.ts`,
 `test/projects.test.ts` for create and list, duplicate and validation, the
-transaction-scoped ports commit and rollback, and repository find by key.
-`ARCH.md` codifies the target layers and the one-way dependency rule; step 2
-(domain extraction) and all four of step 3's resource slices (ports plus the
-projects resource, then the issue lifecycle and read model, then agents, queue,
-blocking, and comments, then labels, relations, and the GitHub use case) have
-landed. The remaining step-3 item is moving event-hub construction out of
-`createApp` into a composition root; steps 4 to 6 follow, so `ARCH.md`'s
-Current/Target markers still matter. The next frontier is that composition work
-and step 4, not `LAS-173`.
+transaction-scoped ports commit and rollback, and repository find by key, plus
+`test/architecture.test.ts`, which proves the real tree passes and four fixtures
+fail (application -> adapter, domain -> `pg`, web ui -> adapter, web lib ->
+backend).
+`ARCH.md` codifies the target layers and the one-way dependency rule; steps 2, 3,
+and 4 have landed, along with the step-6 gate. The next frontier is step 5 (web
+layering), not `LAS-173` or `LAS-174`. `scripts/check-architecture.mjs` enforces
+the rule set over `src/**/*.ts` and `web/src/**/*.ts(x)` from inside
+`npm run check`.
 `/home/dietkyle/projects/templates/ARCH.md`
 carries the same rules as a project-agnostic template.
 
@@ -230,11 +248,11 @@ carries the same rules as a project-agnostic template.
 | `MEMORY.md` | Verified state, decisions, session log. Update it every session. |
 | `src/domain/` | Pure rules and types: status and transition contract, actor matrix, claim and move policy, validation, key parsing, domain errors, shared record types. |
 | `src/application/` | Ports (`ports.ts`) and the full SQL-free use-case set: `projects.ts`, `issues.ts` with `issue-read-model.ts`, `agents.ts`, `queue.ts`, `blocking.ts`, `comments.ts`, `labels.ts`, `relations.ts`, and `github.ts`. |
-| `src/adapters/` | Outbound adapters: `postgres/` (`ports.ts` binding the pool and transactions, plus `repositories/`: projects, issues, issue events, issue meta, agents, labels, relations) and `token-codec.ts`. |
-| `src/http/` | HTTP router, auth boundary, SSE hub and stream, and SPA fallback. |
-| `src/server.ts` | HTTP entry. Reads `PORT` and requires `CURVED_UI_TOKEN`. |
+| `src/adapters/` | Adapters. Inbound: `http/` (router, auth, error mapping, request/response transport, webhook), `mcp/`, `cli/`, `github/` (signature and payload), `sse/`, `static/`. Outbound: `postgres/` (`pool.ts`, `migrate.ts`, `event-hub.ts`, `ports.ts` binding the pool and transactions, plus `repositories/`: projects, issues, issue events, issue meta, agents, labels, relations), `token-codec.ts`, `timing-safe.ts`. |
+| `src/composition/` | Composition roots: `config.ts` (`loadConfig`), `server.ts` (HTTP entry, requires `CURVED_UI_TOKEN`, owns the event hub and shutdown), `cli.ts`, `mcp.ts`, `migrate.ts`. |
 | `web/` | Vite + React SPA. `npm run build` writes `web/dist`; `npm run dev` proxies `/api`. |
 | `scripts/init.sh` | Baseline runner: install, check, build. `--no-install` skips install. |
+| `scripts/check-architecture.mjs` | Import-direction check over `src/**/*.ts` and `web/src/**/*.ts(x)`; exits 1 on any violation. |
 | `scripts/clean-state.sh` | End-of-session gate. Idempotent, writes nothing. |
 | `.codegraph/` | Local index, gitignored. Refresh with `codegraph sync`. |
 

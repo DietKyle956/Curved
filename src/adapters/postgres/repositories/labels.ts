@@ -1,5 +1,5 @@
 import type { QueryResultRow } from "pg";
-import type { Db } from "../../../db.ts";
+import type { Db } from "../pool.ts";
 import type { LabelRepository } from "../../../application/ports.ts";
 
 interface LabelIdRow extends QueryResultRow {

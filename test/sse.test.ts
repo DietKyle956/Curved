@@ -3,8 +3,9 @@ import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
 import { resolve } from "node:path";
 import { after, afterEach, before, beforeEach, test } from "node:test";
-import { createApp, type App } from "../src/http/app.ts";
-import { createEventHub, type EventHub } from "../src/http/event-hub.ts";
+import { createApp, type App } from "../src/adapters/http/app.ts";
+import { createEventHub } from "../src/adapters/postgres/event-hub.ts";
+import type { EventHub } from "../src/application/ports.ts";
 import { commentOnIssue } from "../src/application/comments.ts";
 import { createIssue, updateIssue } from "../src/application/issues.ts";
 import { createProject } from "../src/application/projects.ts";
@@ -121,7 +122,7 @@ class EventStreamReader {
 function runCli(args: readonly string[]): Promise<CliResult> {
   const { promise, resolve: settle, reject } =
     Promise.withResolvers<CliResult>();
-  const child = spawn(process.execPath, ["src/cli.ts", ...args], {
+  const child = spawn(process.execPath, ["src/composition/cli.ts", ...args], {
     cwd: REPO_ROOT,
     env: {
       ...process.env,
@@ -156,8 +157,6 @@ function runCli(args: readonly string[]): Promise<CliResult> {
 let testDb: TestDatabase;
 let hub: EventHub;
 let app: App;
-let hubOpened = false;
-let appOpened = false;
 let readers: EventStreamReader[] = [];
 
 before(async () => {
@@ -165,36 +164,26 @@ before(async () => {
 });
 
 beforeEach(async () => {
-  hubOpened = false;
-  appOpened = false;
   readers = [];
   await testDb.reset();
   hub = createEventHub({
     databaseUrl: testDb.databaseUrl,
     logger: () => {},
   });
-  hubOpened = true;
   app = createApp({
     ports: testDb.ports,
-    databaseUrl: testDb.databaseUrl,
-    uiToken: UI_TOKEN,
     events: hub,
+    uiToken: UI_TOKEN,
     eventPingIntervalMs: PING_INTERVAL_MS,
     logger: () => {},
   });
-  appOpened = true;
 });
 
 afterEach(async () => {
   for (const reader of readers) {
     await reader.cancel();
   }
-  if (appOpened) {
-    await app.close();
-  }
-  if (hubOpened) {
-    await hub.close();
-  }
+  await hub.close();
 });
 
 after(async () => {

@@ -1,4 +1,4 @@
-import type { Database, Db } from "../../db.ts";
+import type { Database, Db } from "./pool.ts";
 import type { Ports, TransactionPorts } from "../../application/ports.ts";
 import { createAgentRepository } from "./repositories/agents.ts";
 import { createEventRepository } from "./repositories/issue-events.ts";

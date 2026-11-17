@@ -1,29 +1,23 @@
-import { loadConfig } from "./config.ts";
-import type { Config } from "./config.ts";
-import type { Database } from "./db.ts";
-import { createDatabase } from "./db.ts";
-import { ServiceError } from "./domain/errors.ts";
-import { branchNameForIssue } from "./domain/keys.ts";
-import { runMigrations } from "./migrate.ts";
-import { authenticateAgent, createAgent } from "./application/agents.ts";
-import { blockIssue, unblockIssue } from "./application/blocking.ts";
-import { commentOnIssue } from "./application/comments.ts";
+import { ServiceError } from "../../domain/errors.ts";
+import { branchNameForIssue } from "../../domain/keys.ts";
+import { authenticateAgent, createAgent } from "../../application/agents.ts";
+import { blockIssue, unblockIssue } from "../../application/blocking.ts";
+import { commentOnIssue } from "../../application/comments.ts";
 import {
   createIssue,
   getIssue,
   getIssueTimeline,
   listIssues,
   moveIssue,
-} from "./application/issues.ts";
-import type { Ports } from "./application/ports.ts";
-import { createProject, listProjects } from "./application/projects.ts";
+} from "../../application/issues.ts";
+import type { Ports } from "../../application/ports.ts";
+import { createProject, listProjects } from "../../application/projects.ts";
 import {
   claimNext,
   listReady,
   releaseClaim,
   submitForReview,
-} from "./application/queue.ts";
-import { createPorts } from "./adapters/postgres/ports.ts";
+} from "../../application/queue.ts";
 
 const USAGE = `Usage: curved <command> [options]
 
@@ -58,26 +52,21 @@ Options:
   --json    Print machine-readable JSON on stdout
 `;
 
+/** The process-level dependencies a CLI invocation needs. */
+export interface CliDeps {
+  agentToken: string;
+  withPorts<T>(fn: (ports: Ports) => Promise<T>): Promise<T>;
+  migrate(): Promise<string[]>;
+}
+
 class UsageError extends Error {}
 
 function printJson(value: unknown): void {
   process.stdout.write(`${JSON.stringify(value, null, 2)}\n`);
 }
 
-async function withDatabase<T>(
-  fn: (db: Database, config: Config) => Promise<T>,
-): Promise<T> {
-  const config = loadConfig();
-  const db = createDatabase(config.databaseUrl);
-  try {
-    return await fn(db, config);
-  } finally {
-    await db.close();
-  }
-}
-
-function requireAgentToken(config: Config): string {
-  const token = config.agentToken.trim();
+function requireAgentToken(agentToken: string): string {
+  const token = agentToken.trim();
   if (token.length === 0) {
     throw new ServiceError(
       "not_authenticated",
@@ -89,10 +78,10 @@ function requireAgentToken(config: Config): string {
 
 async function withAgent<T>(
   ports: Ports,
-  config: Config,
+  deps: CliDeps,
   fn: (agentName: string) => Promise<T>,
 ): Promise<T> {
-  const agent = await authenticateAgent(ports, requireAgentToken(config));
+  const agent = await authenticateAgent(ports, requireAgentToken(deps.agentToken));
   return fn(agent.name);
 }
 
@@ -100,6 +89,7 @@ async function runProjectCommand(
   subcommand: string | undefined,
   rest: readonly string[],
   json: boolean,
+  deps: CliDeps,
 ): Promise<void> {
   if (subcommand === "add") {
     const [key, ...words] = rest;
@@ -107,8 +97,8 @@ async function runProjectCommand(
       throw new UsageError("project add requires <KEY> <name>");
     }
     const name = words.join(" ");
-    const project = await withDatabase((db) =>
-      createProject(createPorts(db), { key, name }),
+    const project = await deps.withPorts((ports) =>
+      createProject(ports, { key, name }),
     );
     if (json) {
       printJson(project);
@@ -119,7 +109,7 @@ async function runProjectCommand(
   }
 
   if (subcommand === "list") {
-    const projects = await withDatabase((db) => listProjects(createPorts(db)));
+    const projects = await deps.withPorts((ports) => listProjects(ports));
     if (json) {
       printJson(projects);
     } else {
@@ -323,6 +313,7 @@ async function runIssueCommand(
   subcommand: string | undefined,
   rest: readonly string[],
   json: boolean,
+  deps: CliDeps,
 ): Promise<void> {
   if (subcommand === "add") {
     const { positionals, flags } = parseIssueAddArgs(rest);
@@ -331,8 +322,8 @@ async function runIssueCommand(
       throw new UsageError("issue add requires <PROJECT> <title...>");
     }
     const title = words.join(" ");
-    const issue = await withDatabase((db) =>
-      createIssue(createPorts(db), {
+    const issue = await deps.withPorts((ports) =>
+      createIssue(ports, {
         project,
         title,
         description: flags.description,
@@ -355,9 +346,7 @@ async function runIssueCommand(
       throw new UsageError("issue list accepts at most one PROJECT argument");
     }
     const filter = project === undefined ? undefined : { project };
-    const issues = await withDatabase((db) =>
-      listIssues(createPorts(db), filter),
-    );
+    const issues = await deps.withPorts((ports) => listIssues(ports, filter));
     if (json) {
       printJson(issues);
     } else {
@@ -383,8 +372,8 @@ async function runIssueCommand(
       throw new UsageError("issue comment requires a body");
     }
     const body = words.join(" ");
-    const event = await withDatabase((db) =>
-      commentOnIssue(createPorts(db), { key, body, actor, agent }),
+    const event = await deps.withPorts((ports) =>
+      commentOnIssue(ports, { key, body, actor, agent }),
     );
     if (json) {
       printJson(event);
@@ -404,12 +393,9 @@ async function runIssueCommand(
       throw new UsageError("issue block requires a reason");
     }
     const reason = words.join(" ");
-    const issue = await withDatabase((db, config) => {
-      const ports = createPorts(db);
-      return withAgent(ports, config, (agent) =>
-        blockIssue(ports, { key, agent, reason }),
-      );
-    });
+    const issue = await deps.withPorts((ports) =>
+      withAgent(ports, deps, (agent) => blockIssue(ports, { key, agent, reason })),
+    );
     if (json) {
       printJson(issue);
     } else {
@@ -427,8 +413,8 @@ async function runIssueCommand(
     if (extra.length > 0) {
       throw new UsageError("issue unblock accepts exactly one KEY argument");
     }
-    const issue = await withDatabase((db) =>
-      unblockIssue(createPorts(db), { key, actor, agent }),
+    const issue = await deps.withPorts((ports) =>
+      unblockIssue(ports, { key, actor, agent }),
     );
     if (json) {
       printJson(issue);
@@ -446,8 +432,8 @@ async function runIssueCommand(
     if (extra.length > 0) {
       throw new UsageError("issue show accepts exactly one KEY argument");
     }
-    const { issue, events } = await withDatabase((db) =>
-      getIssueTimeline(createPorts(db), key),
+    const { issue, events } = await deps.withPorts((ports) =>
+      getIssueTimeline(ports, key),
     );
     if (json) {
       printJson({ ...issue, events });
@@ -488,8 +474,8 @@ async function runIssueCommand(
     if (extra.length > 0) {
       throw new UsageError("issue move requires exactly <KEY> <status>");
     }
-    const issue = await withDatabase((db) =>
-      moveIssue(createPorts(db), { key, to: status, actor, agent, body }),
+    const issue = await deps.withPorts((ports) =>
+      moveIssue(ports, { key, to: status, actor, agent, body }),
     );
     if (json) {
       printJson(issue);
@@ -510,6 +496,7 @@ async function runAgentCommand(
   subcommand: string | undefined,
   rest: readonly string[],
   json: boolean,
+  deps: CliDeps,
 ): Promise<void> {
   if (subcommand === "add") {
     const positionals: string[] = [];
@@ -526,9 +513,7 @@ async function runAgentCommand(
     if (extra.length > 0) {
       throw new UsageError("agent add requires exactly one name");
     }
-    const created = await withDatabase((db) =>
-      createAgent(createPorts(db), name),
-    );
+    const created = await deps.withPorts((ports) => createAgent(ports, name));
     if (json) {
       printJson({ ...created.agent, token: created.token });
     } else {
@@ -549,6 +534,7 @@ async function runAgentCommand(
 async function runReadyCommand(
   rest: readonly string[],
   json: boolean,
+  deps: CliDeps,
 ): Promise<void> {
   const positionals: string[] = [];
   let human = false;
@@ -569,12 +555,11 @@ async function runReadyCommand(
     throw new UsageError("ready accepts at most one PROJECT argument");
   }
   const options = project === undefined ? undefined : { project };
-  const queue = await withDatabase(async (db, config) => {
-    const ports = createPorts(db);
+  const queue = await deps.withPorts(async (ports) => {
     if (human) {
       return listReady(ports, options, { actor: "human" });
     }
-    return withAgent(ports, config, (agent) =>
+    return withAgent(ports, deps, (agent) =>
       listReady(ports, options, { actor: "agent", agent }),
     );
   });
@@ -592,6 +577,7 @@ async function runReadyCommand(
 async function runClaimCommand(
   rest: readonly string[],
   json: boolean,
+  deps: CliDeps,
 ): Promise<void> {
   const positionals: string[] = [];
   for (const arg of rest) {
@@ -605,12 +591,9 @@ async function runClaimCommand(
     throw new UsageError("claim accepts at most one PROJECT argument");
   }
   const options = project === undefined ? {} : { project };
-  const issue = await withDatabase((db, config) => {
-    const ports = createPorts(db);
-    return withAgent(ports, config, (agent) =>
-      claimNext(ports, options, agent),
-    );
-  });
+  const issue = await deps.withPorts((ports) =>
+    withAgent(ports, deps, (agent) => claimNext(ports, options, agent)),
+  );
   if (json) {
     printJson(issue);
   } else {
@@ -621,6 +604,7 @@ async function runClaimCommand(
 async function runReviewCommand(
   rest: readonly string[],
   json: boolean,
+  deps: CliDeps,
 ): Promise<void> {
   const positionals: string[] = [];
   for (const arg of rest) {
@@ -634,12 +618,11 @@ async function runReviewCommand(
     throw new UsageError("review requires <KEY> <summary...>");
   }
   const summary = words.join(" ");
-  const issue = await withDatabase((db, config) => {
-    const ports = createPorts(db);
-    return withAgent(ports, config, (agent) =>
+  const issue = await deps.withPorts((ports) =>
+    withAgent(ports, deps, (agent) =>
       submitForReview(ports, { key, agent, summary }),
-    );
-  });
+    ),
+  );
   if (json) {
     printJson(issue);
   } else {
@@ -650,6 +633,7 @@ async function runReviewCommand(
 async function runReleaseCommand(
   rest: readonly string[],
   json: boolean,
+  deps: CliDeps,
 ): Promise<void> {
   const positionals: string[] = [];
   for (const arg of rest) {
@@ -665,12 +649,9 @@ async function runReleaseCommand(
   if (extra.length > 0) {
     throw new UsageError("release accepts exactly one KEY argument");
   }
-  const issue = await withDatabase((db, config) => {
-    const ports = createPorts(db);
-    return withAgent(ports, config, (agent) =>
-      releaseClaim(ports, { key, agent }),
-    );
-  });
+  const issue = await deps.withPorts((ports) =>
+    withAgent(ports, deps, (agent) => releaseClaim(ports, { key, agent })),
+  );
   if (json) {
     printJson(issue);
   } else {
@@ -681,6 +662,7 @@ async function runReleaseCommand(
 async function runGitBranchCommand(
   rest: readonly string[],
   json: boolean,
+  deps: CliDeps,
 ): Promise<void> {
   const positionals: string[] = [];
   for (const arg of rest) {
@@ -696,8 +678,8 @@ async function runGitBranchCommand(
   if (extra.length > 0) {
     throw new UsageError("git-branch accepts exactly one KEY argument");
   }
-  const issue = await withDatabase((db) =>
-    getIssue(createPorts(db), key, { actor: "human" }),
+  const issue = await deps.withPorts((ports) =>
+    getIssue(ports, key, { actor: "human" }),
   );
   const branch = branchNameForIssue(issue.key, issue.title);
   if (json) {
@@ -707,7 +689,7 @@ async function runGitBranchCommand(
   }
 }
 
-async function main(argv: readonly string[]): Promise<void> {
+async function main(argv: readonly string[], deps: CliDeps): Promise<void> {
   const json = argv.includes("--json");
   const args = argv.filter((arg) => arg !== "--json");
   const [command, subcommand, ...rest] = args;
@@ -722,8 +704,7 @@ async function main(argv: readonly string[]): Promise<void> {
   }
 
   if (command === "migrate") {
-    const config = loadConfig();
-    const applied = await runMigrations({ databaseUrl: config.databaseUrl });
+    const applied = await deps.migrate();
     if (json) {
       printJson(applied);
     } else if (applied.length === 0) {
@@ -735,60 +716,67 @@ async function main(argv: readonly string[]): Promise<void> {
   }
 
   if (command === "project") {
-    await runProjectCommand(subcommand, rest, json);
+    await runProjectCommand(subcommand, rest, json, deps);
     return;
   }
 
   if (command === "issue") {
-    await runIssueCommand(subcommand, rest, json);
+    await runIssueCommand(subcommand, rest, json, deps);
     return;
   }
 
   if (command === "agent") {
-    await runAgentCommand(subcommand, rest, json);
+    await runAgentCommand(subcommand, rest, json, deps);
     return;
   }
 
   if (command === "ready") {
-    await runReadyCommand(args.slice(1), json);
+    await runReadyCommand(args.slice(1), json, deps);
     return;
   }
 
   if (command === "claim") {
-    await runClaimCommand(args.slice(1), json);
+    await runClaimCommand(args.slice(1), json, deps);
     return;
   }
 
   if (command === "review") {
-    await runReviewCommand(args.slice(1), json);
+    await runReviewCommand(args.slice(1), json, deps);
     return;
   }
 
   if (command === "release") {
-    await runReleaseCommand(args.slice(1), json);
+    await runReleaseCommand(args.slice(1), json, deps);
     return;
   }
 
   if (command === "git-branch") {
-    await runGitBranchCommand(args.slice(1), json);
+    await runGitBranchCommand(args.slice(1), json, deps);
     return;
   }
 
   throw new UsageError(`unknown command "${command}"`);
 }
 
-try {
-  await main(process.argv.slice(2));
-} catch (error) {
-  if (error instanceof UsageError) {
-    process.stderr.write(`${error.message}\n\n${USAGE}`);
-    process.exitCode = 2;
-  } else if (error instanceof ServiceError) {
-    process.stderr.write(`${error.code}: ${error.message}\n`);
-    process.exitCode = 1;
-  } else {
+/** Runs one CLI invocation and returns the process exit code. */
+export async function runCli(
+  argv: readonly string[],
+  deps: CliDeps,
+): Promise<number> {
+  try {
+    await main(argv, deps);
+    return 0;
+  } catch (error) {
+    if (error instanceof UsageError) {
+      process.stderr.write(`${error.message}\n\n${USAGE}`);
+      return 2;
+    }
+    if (error instanceof ServiceError) {
+      process.stderr.write(`${error.code}: ${error.message}\n`);
+      return 1;
+    }
     const message = error instanceof Error ? error.message : String(error);
     process.stderr.write(`${message}\n`);
-    process.exitCode = 1;
+    return 1;
   }
 }

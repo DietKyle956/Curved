@@ -3,7 +3,7 @@ import { readdir } from "node:fs/promises";
 import { resolve } from "node:path";
 import { test } from "node:test";
 import pg from "pg";
-import { runMigrations } from "../src/migrate.ts";
+import { runMigrations } from "../src/adapters/postgres/migrate.ts";
 import { createTestDatabase, dropTestDatabase } from "./helpers/db.ts";
 
 const MIGRATIONS_DIR = resolve(import.meta.dirname, "..", "migrations");
