@@ -559,15 +559,12 @@
 
 ## Next best step
 
-Step 4 (rewire the inbound adapters) is the next refactor step. Step 3's
-resource migration is complete through `LAS-173`; the one item it leaves open is
-moving event-hub construction out of `createApp` into a composition root. Step 4
-then moves HTTP, MCP, CLI, GitHub, SSE, and static serving under
-`src/adapters/`, adds `src/composition/`, deletes `src/db.ts` (the pool and the
-pg error helpers move behind the Postgres adapter), and finishes that event-hub
-move. Steps 5 and 6 follow: web layering, then the import-direction check.
-`LAS-152`, `LAS-153`, and `LAS-154` still need their acceptance tests, and
-`LAS-155` remains the end-to-end gate.
+Step 5 (web layering) is the last refactor step: split `web/src` into
+`domain/`, `application/`, `adapters/`, and `ui/`, delete `web/src/lib/`, and
+move orchestration out of `web/src/app.tsx`. Steps 1 through 4 and step 6's
+import-direction gate all landed (`LAS-168` to `LAS-174`); `LAS-171` was verified
+against the tracker on 2026-11-17 and closed. `LAS-152`, `LAS-153`, and `LAS-154`
+still need their acceptance tests, and `LAS-155` remains the end-to-end gate.
 
 ## Tracker
 
@@ -1489,3 +1486,52 @@ move. Steps 5 and 6 follow: web layering, then the import-direction check.
 - Next best step: step 5 (web layering: split `web/src` into `domain/`,
   `application/`, `adapters/`, `ui/`, delete `web/src/lib/`, move orchestration
   out of `web/src/app.tsx`).
+
+### Session 026
+
+- Date: 2026-11-17
+- Goal: close `LAS-171` (issue lifecycle and read model on ports), which the
+  tracker still showed as Todo even though the work landed in `7342d04`.
+- Completed: audited all ten acceptance criteria against `HEAD` (`867d57e`) with
+  four read-only slices; every criterion passes and no code change was needed.
+  Criterion 1: `src/application/issues.ts` and `issue-read-model.ts` import only
+  domain and `./ports.ts`, with no SQL, no `pg`, no `node:*`. Criterion 2:
+  `IssueRepository` declares create (one data-modifying CTE that bumps
+  `projects.next_number` and inserts, so allocation is atomic and gap-free),
+  findById, findByKey, lockByKey (`for update`), filtered list, updateFields,
+  and updateStatus writing `status` and `claimed_by` in one statement. Criterion
+  3: `issue-events.ts` appends one row and lists `order by id asc`; the 23001
+  trigger is the only enforcement. Criterion 4: `issue-meta.ts` runs exactly two
+  statements for labels and relations (zero for an empty batch). Criterion 5:
+  `toIssue` derives `allowedTransitions` from `domain/actors.ts` and attaches
+  meta; no derived column exists in the schema. Criterion 6: create and move
+  run entirely inside `ports.transaction`; create's row reload is the read-back
+  inside `IssueRepository.create`, and move does lock, checks, update, one
+  event, and `hydrateIssue`. Criterion 7: `23505` on
+  `issues_one_active_claim_per_agent` becomes `ActiveClaimConflict` and then
+  `agent_busy` naming the active key, in both `moveIssue` and `claimNext`.
+  Criterion 8: the list path is exactly three statements (row query, labels,
+  relations), pinned by `test/labels.test.ts`. Criterion 9: the full test diff
+  for `7342d04` and the range `b079662^..867d57e` shows only import paths,
+  `testDb.db` to `testDb.ports`, and `listEvents`/`appendEvent` to
+  `ports.events.*`; the 23001 trigger, 23505 fence, statement budget, and
+  concurrency assertions are unchanged. Criterion 10: every HTTP issue route,
+  CLI issue command, and MCP tool enters the application layer with ports.
+- Verification run: `npm run check` green (typecheck, `architecture: ok`, 194
+  tests, 0 fail). End-to-end smoke on a disposable `curved_test_e2e171`
+  database: HTTP sign-in, project create, issue create/patch/transition
+  (legal and illegal), labels, relation, comment, list and status filter,
+  unknown-project 404, ready; CLI `issue show`, `issue list`, `issue move`; MCP
+  over stdio `get_issue` (labels, relations, `allowedTransitions`),
+  `list_ready`, `claim_next`, second `claim_next` returning
+  `agent_busy` naming the held key, `comment`, `submit_for_review`,
+  `create_issue`, and a non-owned `mark_blocked` rejected with
+  `forbidden_transition`. The throwaway database and smoke script were removed.
+- Tracker: `LAS-171` moved to Done with the audit evidence in a comment. No
+  behavior, error-code, message, or test-assertion change; the commit that
+  follows carries this MEMORY entry only.
+- Known risk: the three list statements run on pool connections rather than one
+  snapshot transaction (pre-existing behavior), so a concurrent label write can
+  appear between reads; a non-agent `ActiveClaimConflict` would escape
+  untranslated, but `nextClaimedBy` makes that unreachable.
+- Next best step: step 5 (web layering).
