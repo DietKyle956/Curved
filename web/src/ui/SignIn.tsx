@@ -2,14 +2,13 @@ import { Eye, EyeSlash } from "@phosphor-icons/react";
 import { useState } from "react";
 import type { FormEvent } from "react";
 
-import { api, ApiError } from "../lib/api.ts";
-import type { Actor } from "../lib/types.ts";
+import { isApplicationError } from "../application/errors.ts";
 import { Button, Field, LogoMark } from "./ui.tsx";
 
 export function SignIn({
-  onAuthenticated,
+  onSignIn,
 }: {
-  onAuthenticated: (actor: Actor) => void;
+  onSignIn: (token: string) => Promise<void>;
 }) {
   const [token, setToken] = useState("");
   const [showToken, setShowToken] = useState(false);
@@ -25,11 +24,10 @@ export function SignIn({
     setSubmitting(true);
     setError(null);
     try {
-      const result = await api.signIn(token.trim());
-      onAuthenticated(result.actor);
+      await onSignIn(token.trim());
     } catch (caught) {
       setError(
-        caught instanceof ApiError
+        isApplicationError(caught)
           ? caught.message
           : "Sign in failed. Try again.",
       );

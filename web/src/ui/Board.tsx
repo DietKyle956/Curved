@@ -14,8 +14,8 @@ import {
   matchesQuery,
   relativeTime,
   sortForColumn,
-} from "../lib/presentation.ts";
-import type { Issue, Status } from "../lib/types.ts";
+} from "../domain/presentation.ts";
+import type { Issue, Status } from "../domain/types.ts";
 import {
   AgentMark,
   Button,

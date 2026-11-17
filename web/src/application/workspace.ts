@@ -1,90 +1,118 @@
-import { WarningCircle } from "@phosphor-icons/react";
+// Workspace orchestration: auth and session state, project selection, issue,
+// ready-queue, and timeline loading, refresh and tick handling, and action
+// execution with error mapping. The hook below is implemented in this module;
+// the interface is the contract the ui layer consumes.
+
 import { useCallback, useEffect, useRef, useState } from "react";
 
-import { Board } from "./components/Board.tsx";
-import { CommandPalette } from "./components/CommandPalette.tsx";
-import { IssueDetail } from "./components/IssueDetail.tsx";
-import { NewIssueDialog } from "./components/NewIssueDialog.tsx";
-import type { NewIssueInput } from "./components/NewIssueDialog.tsx";
-import { ProjectSetup } from "./components/ProjectSetup.tsx";
-import { Queue } from "./components/Queue.tsx";
-import {
-  MobileNav,
-  Sidebar,
-  Topbar,
-} from "./components/Shell.tsx";
-import { SignIn } from "./components/SignIn.tsx";
-import { Toasts } from "./components/Toasts.tsx";
-import type { ToastItem, ToastKind } from "./components/Toasts.tsx";
-import { Button, LogoMark, Spinner } from "./components/ui.tsx";
-import { api, ApiError } from "./lib/api.ts";
-import { useIssueEvents } from "./lib/events.ts";
-import { STATUS_LABEL } from "./lib/presentation.ts";
+import { isUnauthorized, messageOf } from "./errors.ts";
+import type { NavigationPort, RealtimePort, ApiPort } from "./ports.ts";
+import { STATUS_LABEL } from "../domain/presentation.ts";
 import {
   boardPath,
   issuePath,
   newIssuePath,
   parseRoute,
   queuePath,
-  useRoute,
-} from "./lib/router.ts";
+} from "../domain/routes.ts";
+import type { Route } from "../domain/routes.ts";
 import type {
   Issue,
   IssueTimeline,
+  NewIssueInput,
   Priority,
   Project,
   ReadyQueue,
   Status,
-} from "./lib/types.ts";
+  ToastItem,
+  ToastKind,
+} from "../domain/types.ts";
 
-type AuthState = "checking" | "anonymous" | "human" | "error";
+export type AuthState = "checking" | "anonymous" | "human" | "error";
 
-function messageOf(error: unknown): string {
-  if (error instanceof ApiError) {
-    return error.message;
-  }
-  return "Something went wrong. Try again.";
+export interface WorkspaceDeps {
+  api: ApiPort;
+  realtime: RealtimePort;
+  navigation: NavigationPort;
 }
 
-function BootScreen({ label = "Loading workspace" }: { label?: string }) {
-  return (
-    <div className="flex min-h-[100dvh] flex-col items-center justify-center gap-4">
-      <LogoMark className="size-7 text-spice" />
-      <div className="flex items-center gap-2 text-[11px] text-fg-muted">
-        <Spinner className="size-3.5" />
-        {label}
-      </div>
-    </div>
+export interface Workspace {
+  auth: AuthState;
+  bootError: string | null;
+  projects: Project[];
+  projectsLoaded: boolean;
+  projectsError: string | null;
+  project: Project | null;
+  issues: Issue[];
+  ready: ReadyQueue | null;
+  issuesLoading: boolean;
+  issuesError: string | null;
+  refreshing: boolean;
+  timeline: IssueTimeline | null;
+  detailLoading: boolean;
+  detailError: string | null;
+  query: string;
+  labelFilter: string | null;
+  paletteOpen: boolean;
+  newIssueStatus: Status;
+  toasts: ToastItem[];
+  route: Route;
+  issueKey: string | null;
+  allLabels: string[];
+  issueKeys: string[];
+
+  navigate(path: string, options?: { replace?: boolean }): void;
+
+  retrySession(): void;
+  signIn(token: string): Promise<void>;
+  signOut(): void;
+
+  retryProjects(): void;
+  createProject(input: { key: string; name: string }): Promise<Project>;
+  projectCreated(project: Project): void;
+  selectProject(key: string): void;
+
+  refresh(): void;
+  retryDetail(): void;
+
+  setQuery(value: string): void;
+  setLabelFilter(label: string | null): void;
+  openPalette(): void;
+  closePalette(): void;
+  togglePalette(): void;
+
+  openNewIssue(status?: Status): void;
+  closeNewIssue(): void;
+  openIssue(issue: Issue): void;
+  openIssueKey(key: string): void;
+
+  createIssue(input: NewIssueInput): Promise<boolean>;
+  move(key: string, status: Status): Promise<boolean>;
+  unblock(key: string): Promise<boolean>;
+  comment(key: string, body: string): Promise<boolean>;
+  updateIssue(
+    key: string,
+    fields: { title?: string; description?: string; priority?: Priority },
+  ): Promise<boolean>;
+  setLabels(key: string, labels: string[]): Promise<boolean>;
+  addRelation(key: string, blocking: string): Promise<boolean>;
+
+  dismissToast(id: number): void;
+}
+
+export function useWorkspace({
+  api,
+  realtime,
+  navigation,
+}: WorkspaceDeps): Workspace {
+  const { route } = navigation;
+
+  const navigate = useCallback(
+    (path: string, options?: { replace?: boolean }): void => {
+      navigation.navigate(path, options);
+    },
+    [navigation],
   );
-}
-
-function BootError({
-  message,
-  onRetry,
-}: {
-  message: string;
-  onRetry: () => void;
-}) {
-  return (
-    <div className="flex min-h-[100dvh] items-center justify-center px-5">
-      <div className="w-full max-w-sm rounded-ui border border-line bg-panel p-5">
-        <WarningCircle className="size-5 text-storm" aria-hidden="true" />
-        <h1 className="mt-3 text-[16px] font-semibold tracking-[-0.01em] text-fg">
-          Cannot reach the server
-        </h1>
-        <p className="mt-1.5 text-[12px] leading-relaxed text-fg-secondary">
-          {message}
-        </p>
-        <Button variant="secondary" size="md" className="mt-4" onClick={onRetry}>
-          Retry
-        </Button>
-      </div>
-    </div>
-  );
-}
-
-export function App() {
-  const { route, navigate } = useRoute();
 
   const [auth, setAuth] = useState<AuthState>("checking");
   const [bootError, setBootError] = useState<string | null>(null);
@@ -105,8 +133,8 @@ export function App() {
   const [detailError, setDetailError] = useState<string | null>(null);
   const [detailTick, setDetailTick] = useState(0);
 
-  const [query, setQuery] = useState("");
-  const [labelFilter, setLabelFilter] = useState<string | null>(null);
+  const [query, setQueryState] = useState("");
+  const [labelFilter, setLabelFilterState] = useState<string | null>(null);
   const [paletteOpen, setPaletteOpen] = useState(false);
   const [newIssueStatus, setNewIssueStatus] = useState<Status>("backlog");
   const [toasts, setToasts] = useState<ToastItem[]>([]);
@@ -139,14 +167,14 @@ export function App() {
       await api.me();
       setAuth("human");
     } catch (error) {
-      if (error instanceof ApiError && error.status === 401) {
+      if (isUnauthorized(error)) {
         setAuth("anonymous");
       } else {
         setBootError(messageOf(error));
         setAuth("error");
       }
     }
-  }, []);
+  }, [api]);
 
   useEffect(() => {
     void checkSession();
@@ -172,7 +200,7 @@ export function App() {
         if (!alive) {
           return;
         }
-        if (error instanceof ApiError && error.status === 401) {
+        if (isUnauthorized(error)) {
           onUnauthorized();
           return;
         }
@@ -182,7 +210,7 @@ export function App() {
     return () => {
       alive = false;
     };
-  }, [auth, projectsTick, onUnauthorized]);
+  }, [auth, projectsTick, onUnauthorized, api]);
 
   const projectKeyFromRoute =
     route.project !== undefined &&
@@ -220,8 +248,8 @@ export function App() {
   }, [auth, projects, route, navigate]);
 
   useEffect(() => {
-    setQuery("");
-    setLabelFilter(null);
+    setQueryState("");
+    setLabelFilterState(null);
     setPaletteOpen(false);
   }, [projectKeyFromRoute]);
 
@@ -270,7 +298,7 @@ export function App() {
         if (!alive) {
           return;
         }
-        if (error instanceof ApiError && error.status === 401) {
+        if (isUnauthorized(error)) {
           onUnauthorized();
           return;
         }
@@ -294,7 +322,7 @@ export function App() {
       alive = false;
       window.removeEventListener("focus", onFocus);
     };
-  }, [auth, projectKeyFromRoute, dataTick, onUnauthorized]);
+  }, [auth, projectKeyFromRoute, dataTick, onUnauthorized, api]);
 
   const issueKey = route.kind === "issue" ? route.key : null;
 
@@ -305,7 +333,7 @@ export function App() {
     }
   }, [issueKey, refresh]);
 
-  useIssueEvents({
+  realtime.useIssuesChanged({
     enabled: auth === "human" && project !== null,
     projectId: project?.id ?? null,
     onChange: onEventsChange,
@@ -334,7 +362,7 @@ export function App() {
         if (!alive) {
           return;
         }
-        if (error instanceof ApiError && error.status === 401) {
+        if (isUnauthorized(error)) {
           onUnauthorized();
           return;
         }
@@ -348,7 +376,7 @@ export function App() {
     return () => {
       alive = false;
     };
-  }, [auth, issueKey, detailTick, onUnauthorized]);
+  }, [auth, issueKey, detailTick, onUnauthorized, api]);
 
   const run = useCallback(
     async (action: () => Promise<unknown>, success?: string): Promise<boolean> => {
@@ -363,7 +391,7 @@ export function App() {
         }
         return true;
       } catch (error) {
-        if (error instanceof ApiError && error.status === 401) {
+        if (isUnauthorized(error)) {
           onUnauthorized();
         }
         notify("error", messageOf(error));
@@ -418,7 +446,7 @@ export function App() {
       // The session may already be gone; clear local state regardless.
     }
     onUnauthorized();
-  }, [onUnauthorized]);
+  }, [api, onUnauthorized]);
 
   const createIssue = useCallback(
     async (input: NewIssueInput): Promise<boolean> => {
@@ -449,7 +477,7 @@ export function App() {
         navigate(issuePath(project.key, result.issue.key));
         return true;
       } catch (error) {
-        if (error instanceof ApiError && error.status === 401) {
+        if (isUnauthorized(error)) {
           onUnauthorized();
         }
         notify("error", messageOf(error));
@@ -459,7 +487,7 @@ export function App() {
     [navigate, notify, onUnauthorized, project, refresh],
   );
 
-  const handleProjectCreated = useCallback(
+  const projectCreated = useCallback(
     (created: Project): void => {
       setProjects((current) =>
         [...current.filter((item) => item.key !== created.key), created].sort(
@@ -473,18 +501,18 @@ export function App() {
     [navigate, notify],
   );
 
-  const handleProjectChange = useCallback(
+  const selectProject = useCallback(
     (key: string): void => {
       navigate(boardPath(key));
-      setQuery("");
-      setLabelFilter(null);
+      setQueryState("");
+      setLabelFilterState(null);
     },
     [navigate],
   );
 
-  const handleLabelFilter = useCallback(
+  const setLabelFilter = useCallback(
     (label: string | null): void => {
-      setLabelFilter(label);
+      setLabelFilterState(label);
       if (project !== null && route.kind === "queue") {
         navigate(boardPath(project.key));
       }
@@ -492,9 +520,9 @@ export function App() {
     [navigate, project, route.kind],
   );
 
-  const handleQueryChange = useCallback(
+  const setQuery = useCallback(
     (value: string): void => {
-      setQuery(value);
+      setQueryState(value);
       if (project !== null && route.kind === "queue" && value.length > 0) {
         navigate(boardPath(project.key));
       }
@@ -518,269 +546,158 @@ export function App() {
     };
   }, []);
 
-  if (auth === "checking") {
-    return <BootScreen />;
-  }
+  const signIn = useCallback(
+    async (token: string): Promise<void> => {
+      await api.signIn(token);
+      setAuth("human");
+    },
+    [api],
+  );
 
-  if (auth === "error") {
-    return (
-      <BootError
-        message={bootError ?? "The server did not respond."}
-        onRetry={() => {
-          void checkSession();
-        }}
-      />
-    );
-  }
+  const retrySession = useCallback((): void => {
+    void checkSession();
+  }, [checkSession]);
 
-  if (auth === "anonymous") {
-    return (
-      <SignIn
-        onAuthenticated={() => {
-          setAuth("human");
-        }}
-      />
-    );
-  }
+  const retryProjects = useCallback((): void => {
+    setProjectsTick((current) => current + 1);
+  }, []);
 
-  if (!projectsLoaded) {
-    return <BootScreen label="Loading projects" />;
-  }
+  const retryDetail = useCallback((): void => {
+    setDetailTick((current) => current + 1);
+  }, []);
 
-  if (projectsError !== null && projects.length === 0) {
-    return (
-      <BootError
-        message={projectsError}
-        onRetry={() => {
-          setProjectsTick((current) => current + 1);
-        }}
-      />
-    );
-  }
+  const createProject = useCallback(
+    async (input: { key: string; name: string }): Promise<Project> => {
+      const result = await api.createProject(input);
+      return result.project;
+    },
+    [api],
+  );
 
-  if (projects.length === 0) {
-    return (
-      <ProjectSetup
-        onCreated={handleProjectCreated}
-        onSignOut={() => {
-          void signOut();
-        }}
-      />
-    );
-  }
+  const openPalette = useCallback((): void => {
+    setPaletteOpen(true);
+  }, []);
 
-  if (project === null) {
-    return <BootScreen />;
-  }
+  const closePalette = useCallback((): void => {
+    setPaletteOpen(false);
+  }, []);
+
+  const togglePalette = useCallback((): void => {
+    setPaletteOpen((current) => !current);
+  }, []);
+
+  const move = useCallback(
+    (key: string, status: Status): Promise<boolean> =>
+      run(
+        () => api.transition(key, status),
+        `Moved ${key} to ${STATUS_LABEL[status]}`,
+      ),
+    [api, run],
+  );
+
+  const unblock = useCallback(
+    (key: string): Promise<boolean> =>
+      run(() => api.unblock(key), `Unblocked ${key}`),
+    [api, run],
+  );
+
+  const comment = useCallback(
+    (key: string, body: string): Promise<boolean> =>
+      run(() => api.comment(key, body), "Comment added"),
+    [api, run],
+  );
+
+  const updateIssue = useCallback(
+    (
+      key: string,
+      fields: { title?: string; description?: string; priority?: Priority },
+    ): Promise<boolean> =>
+      run(() => api.updateIssue(key, fields), "Issue updated"),
+    [api, run],
+  );
+
+  const setLabels = useCallback(
+    (key: string, labels: string[]): Promise<boolean> =>
+      run(() => api.setLabels(key, labels), "Labels updated"),
+    [api, run],
+  );
+
+  const addRelation = useCallback(
+    (key: string, blocking: string): Promise<boolean> =>
+      run(
+        () => api.addRelation(key, blocking),
+        `Added ${blocking} as a blocker`,
+      ),
+    [api, run],
+  );
+
+  const dismissToast = useCallback((id: number): void => {
+    setToasts((current) => current.filter((toast) => toast.id !== id));
+  }, []);
 
   const allLabels = [...new Set(issues.flatMap((issue) => issue.labels))].sort(
     (left, right) => left.localeCompare(right),
   );
   const issueKeys = issues.map((issue) => issue.key);
 
-  return (
-    <>
-      <div className="fixed inset-0 flex h-[100dvh] overflow-hidden">
-        <Sidebar
-          projects={projects}
-          project={project}
-          route={route}
-          issues={issues}
-          readyCount={ready?.ready.length ?? 0}
-          labelFilter={labelFilter}
-          onLabelFilter={handleLabelFilter}
-          onProjectChange={handleProjectChange}
-          onNavigate={navigate}
-          onSignOut={() => {
-            void signOut();
-          }}
-        />
+  return {
+    auth,
+    bootError,
+    projects,
+    projectsLoaded,
+    projectsError,
+    project,
+    issues,
+    ready,
+    issuesLoading,
+    issuesError,
+    refreshing,
+    timeline,
+    detailLoading,
+    detailError,
+    query,
+    labelFilter,
+    paletteOpen,
+    newIssueStatus,
+    toasts,
+    route,
+    issueKey,
+    allLabels,
+    issueKeys,
 
-        <div className="flex min-w-0 flex-1 flex-col">
-          <Topbar
-            projects={projects}
-            project={project}
-            route={route}
-            query={query}
-            onQueryChange={handleQueryChange}
-            onProjectChange={handleProjectChange}
-            onNewIssue={() => {
-              openNewIssue("backlog");
-            }}
-            onRefresh={() => {
-              refresh();
-            }}
-            refreshing={refreshing}
-          />
+    navigate,
 
-          <div className="flex min-h-0 min-w-0 flex-1 overflow-hidden">
-            <main className="flex min-w-0 flex-1 flex-col">
-              {issuesError !== null && issues.length > 0 ? (
-                <div className="flex items-center gap-2 border-b border-storm/25 bg-storm/[0.07] px-4 py-1.5 text-[10.5px] text-storm">
-                  <WarningCircle className="size-3.5 shrink-0" aria-hidden="true" />
-                  Refresh failed: {issuesError}
-                </div>
-              ) : null}
+    retrySession,
+    signIn,
+    signOut,
 
-              {issuesError !== null && issues.length === 0 ? (
-                <div className="flex flex-1 items-center justify-center px-5">
-                  <div className="w-full max-w-sm rounded-ui border border-line bg-panel p-4">
-                    <WarningCircle className="size-4 text-storm" aria-hidden="true" />
-                    <p className="mt-2 text-[12.5px] leading-relaxed text-fg-secondary">
-                      {issuesError}
-                    </p>
-                    <Button
-                      variant="secondary"
-                      size="md"
-                      className="mt-3"
-                      onClick={refresh}
-                    >
-                      Retry
-                    </Button>
-                  </div>
-                </div>
-              ) : route.kind === "queue" ? (
-                <Queue
-                  issues={issues}
-                  ready={ready}
-                  loading={issuesLoading}
-                  onOpenIssue={openIssue}
-                  onUnblock={async (key) => {
-                    await run(
-                      () => api.unblock(key),
-                      `Unblocked ${key}`,
-                    );
-                  }}
-                  onNewIssue={() => {
-                    openNewIssue("todo");
-                  }}
-                />
-              ) : (
-                <Board
-                  key={project.key}
-                  issues={issues}
-                  query={query}
-                  labelFilter={labelFilter}
-                  readyCount={ready?.ready.length ?? 0}
-                  loading={issuesLoading}
-                  onOpenIssue={openIssue}
-                  onMove={(key, status) => {
-                    void run(
-                      () => api.transition(key, status),
-                      `Moved ${key} to ${STATUS_LABEL[status]}`,
-                    );
-                  }}
-                  onNewIssue={openNewIssue}
-                  onClearFilters={() => {
-                    setQuery("");
-                    setLabelFilter(null);
-                  }}
-                  onOpenQueue={() => {
-                    navigate(queuePath(project.key));
-                  }}
-                />
-              )}
-            </main>
+    retryProjects,
+    createProject,
+    projectCreated,
+    selectProject,
 
-            {issueKey !== null ? (
-              <IssueDetail
-                issueKey={issueKey}
-                timeline={timeline}
-                loading={detailLoading}
-                error={detailError}
-                allLabels={allLabels}
-                issueKeys={issueKeys}
-                onClose={() => {
-                  navigate(boardPath(project.key));
-                }}
-                onOpenIssueKey={openIssueKey}
-                onRetry={() => {
-                  setDetailTick((current) => current + 1);
-                }}
-                onTransition={(key, status) =>
-                  run(
-                    () => api.transition(key, status),
-                    `Moved ${key} to ${STATUS_LABEL[status]}`,
-                  )
-                }
-                onComment={(key, body) =>
-                  run(() => api.comment(key, body), "Comment added")
-                }
-                onUpdate={(
-                  key,
-                  fields: {
-                    title?: string;
-                    description?: string;
-                    priority?: Priority;
-                  },
-                ) => run(() => api.updateIssue(key, fields), "Issue updated")}
-                onSetLabels={(key, labels) =>
-                  run(() => api.setLabels(key, labels), "Labels updated")
-                }
-                onAddRelation={(key, blocking) =>
-                  run(
-                    () => api.addRelation(key, blocking),
-                    `Added ${blocking} as a blocker`,
-                  )
-                }
-                onUnblock={(key) =>
-                  run(() => api.unblock(key), `Unblocked ${key}`)
-                }
-              />
-            ) : null}
-          </div>
+    refresh,
+    retryDetail,
 
-          <MobileNav
-            route={route}
-            readyCount={ready?.ready.length ?? 0}
-            onNavigate={navigate}
-            onNewIssue={() => {
-              openNewIssue("backlog");
-            }}
-            onOpenPalette={() => {
-              setPaletteOpen(true);
-            }}
-            projectKey={project.key}
-          />
-        </div>
-      </div>
+    setQuery,
+    setLabelFilter,
+    openPalette,
+    closePalette,
+    togglePalette,
 
-      <CommandPalette
-        open={paletteOpen}
-        onClose={() => {
-          setPaletteOpen(false);
-        }}
-        issues={issues}
-        projects={projects}
-        project={project}
-        onOpenIssue={(issue) => {
-          openIssue(issue);
-        }}
-        onNavigate={navigate}
-        onNewIssue={() => {
-          openNewIssue("backlog");
-        }}
-        onSignOut={() => {
-          void signOut();
-        }}
-        onRefresh={refresh}
-      />
+    openNewIssue,
+    closeNewIssue,
+    openIssue,
+    openIssueKey,
 
-      <NewIssueDialog
-        open={route.kind === "new"}
-        project={project}
-        defaultStatus={newIssueStatus}
-        allLabels={allLabels}
-        onClose={closeNewIssue}
-        onCreate={createIssue}
-      />
+    createIssue,
+    move,
+    unblock,
+    comment,
+    updateIssue,
+    setLabels,
+    addRelation,
 
-      <Toasts
-        items={toasts}
-        onDismiss={(id) => {
-          setToasts((current) => current.filter((toast) => toast.id !== id));
-        }}
-      />
-    </>
-  );
+    dismissToast,
+  };
 }

@@ -103,16 +103,32 @@ test("web ui code may not import an adapter", async () => {
   );
 });
 
-test("web code may only import the backend status contract", async () => {
+test("web application code may not import an adapter", async () => {
   await withFixture(
     {
-      "web/src/lib/bad.ts":
+      "web/src/application/bad.ts":
+        'import { createApiClient } from "../adapters/api-client.ts";\n',
+      "web/src/adapters/api-client.ts": "export const createApiClient = () => ({});\n",
+    },
+    async (root) => {
+      const result = await runChecker(root);
+      assert.equal(result.code, 1);
+      assert.match(result.stderr, /web\/src\/application\/bad\.ts/);
+      assert.match(result.stderr, /web-application-layer/);
+    },
+  );
+});
+
+test("web domain code may only import the backend status contract", async () => {
+  await withFixture(
+    {
+      "web/src/domain/bad.ts":
         'import type { Ports } from "../../../src/application/ports.ts";\n',
     },
     async (root) => {
       const result = await runChecker(root);
       assert.equal(result.code, 1);
-      assert.match(result.stderr, /web\/src\/lib\/bad\.ts/);
+      assert.match(result.stderr, /web\/src\/domain\/bad\.ts/);
       assert.match(result.stderr, /web-backend-import/);
     },
   );

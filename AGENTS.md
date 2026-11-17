@@ -219,20 +219,59 @@ outbound side. Composition roots live in `src/composition/` (`config.ts` with
 `createApp` takes an injected `events: EventHub` and no longer takes `databaseUrl`,
 and `src/composition/server.ts` owns the hub and the shutdown order (hub, then
 server, then pool). `npm run check` now runs `check:arch` between typecheck and
-tests. 194 tests pass. Step 5 (web layering) is the only remaining refactor step.
+tests. 195 tests pass.
 
-Tests: 194 pass, 0 fail, including `test/http.test.ts`, `test/event-hub.test.ts`,
+LAS-175 is live: step 5 of the `ARCH.md` refactor layers the React client.
+`web/src/domain/` holds the contract types (`Actor`, `Project`, `Issue`,
+`IssueEvent`, `IssueTimeline`, `ReadyQueue`, `ProjectList`, `NewIssueInput`,
+`ToastKind`, `ToastItem`) in `types.ts`; the status, priority, and event label
+and tone maps plus `STATUS_ORDER`, `initials`, `matchesQuery`, `sortForColumn`,
+`countByStatus`, `relativeTime`, `absoluteTime`, and `eventDetail` in
+`presentation.ts`; and the pure `Route`, `parseRoute`, `boardPath`,
+`queuePath`, `issuePath`, and `newIssuePath` in `routes.ts`, which touches no
+React, `window`, or `history`. That layer imports exactly one backend module,
+`src/domain/status.ts`. `web/src/application/` holds `errors.ts`
+(`ApplicationError`, `isApplicationError`, `isUnauthorized`, `messageOf`, the
+one application error type the adapters translate into), `ports.ts` (`ApiPort`,
+`RealtimePort`, `NavigationPort`, and `IssuesChangedOptions`), and
+`workspace.ts` (`useWorkspace` with the `Workspace`, `WorkspaceDeps`, and
+`AuthState` types), which owns every session, project, issue, ready, realtime,
+timeline, palette, and action concern with no JSX, no `fetch`, no
+`EventSource`, and no history write. `web/src/adapters/` holds
+`api-client.ts` (`createApiClient(): ApiPort` over `fetch`, mapping a network
+failure to `ApplicationError(0, "network", ...)` and a non-ok response to
+`ApplicationError(status, code, message)`), `realtime.ts` (`useIssuesChanged`
+plus `realtime: RealtimePort`: one `EventSource` on `/api/events`, frames
+filtered by project id, reconnect after 1s), and `history.ts`
+(`useHistoryRouter(): NavigationPort` plus `NAVIGATE_EVENT`: `pushState`,
+`replaceState`, `popstate`, and a `navigate` `CustomEvent`). `web/src/ui/` is
+React and styles only: `AppView.tsx` renders the whole shell and every gate from
+one `workspace` prop, `Boot.tsx` holds the boot screen and boot error card, and
+no component imports `fetch`, `EventSource`, `history`, or an adapter module.
+`SignIn` takes `onSignIn(token): Promise<void>` and reports
+`ApplicationError.message` inline; `ProjectSetup` takes
+`onCreate(input): Promise<Project>` plus `onCreated` and `onSignOut`.
+`web/src/main.tsx` is the composition root: it creates the fetch client, calls
+the history and realtime adapter hooks, injects the API, realtime, and
+navigation ports into `useWorkspace`, and renders `AppView`; it is the only
+module importing both `ui` and `application` and the only one constructing
+adapters. `web/src/app.tsx`, `web/src/lib/`, `web/src/components/`, and the root
+`web/src/styles.css` are deleted with no shims. Behavior and visuals are
+unchanged. All six refactor steps and the import-direction gate are complete.
+
+Tests: 195 pass, 0 fail, including `test/http.test.ts`, `test/event-hub.test.ts`,
 `test/sse.test.ts`, the label and relation suites in `test/labels.test.ts` and
 `test/relations.test.ts`, the webhook and branch suite in `test/github.test.ts`,
 the issue filter and human-only edit cases in `test/issues.test.ts`,
 `test/projects.test.ts` for create and list, duplicate and validation, the
 transaction-scoped ports commit and rollback, and repository find by key, plus
-`test/architecture.test.ts`, which proves the real tree passes and four fixtures
-fail (application -> adapter, domain -> `pg`, web ui -> adapter, web lib ->
-backend).
-`ARCH.md` codifies the target layers and the one-way dependency rule; steps 2, 3,
-and 4 have landed, along with the step-6 gate. The next frontier is step 5 (web
-layering), not `LAS-173` or `LAS-174`. `scripts/check-architecture.mjs` enforces
+`test/architecture.test.ts`, which proves the real tree passes and five fixtures
+fail (application -> adapter, domain -> `pg`, web ui -> adapter, web application
+-> adapter, web domain -> a backend module other than `src/domain/status.ts`).
+`ARCH.md` codifies the layers and the one-way dependency rule; all six steps
+have landed, along with the import-direction gate. The next frontier is
+`LAS-176` (the refactor completion gate and handoff), which `LAS-175` unblocks.
+`scripts/check-architecture.mjs` enforces
 the rule set over `src/**/*.ts` and `web/src/**/*.ts(x)` from inside
 `npm run check`.
 `/home/dietkyle/projects/templates/ARCH.md`
@@ -250,7 +289,12 @@ carries the same rules as a project-agnostic template.
 | `src/application/` | Ports (`ports.ts`) and the full SQL-free use-case set: `projects.ts`, `issues.ts` with `issue-read-model.ts`, `agents.ts`, `queue.ts`, `blocking.ts`, `comments.ts`, `labels.ts`, `relations.ts`, and `github.ts`. |
 | `src/adapters/` | Adapters. Inbound: `http/` (router, auth, error mapping, request/response transport, webhook), `mcp/`, `cli/`, `github/` (signature and payload), `sse/`, `static/`. Outbound: `postgres/` (`pool.ts`, `migrate.ts`, `event-hub.ts`, `ports.ts` binding the pool and transactions, plus `repositories/`: projects, issues, issue events, issue meta, agents, labels, relations), `token-codec.ts`, `timing-safe.ts`. |
 | `src/composition/` | Composition roots: `config.ts` (`loadConfig`), `server.ts` (HTTP entry, requires `CURVED_UI_TOKEN`, owns the event hub and shutdown), `cli.ts`, `mcp.ts`, `migrate.ts`. |
-| `web/` | Vite + React SPA. `npm run build` writes `web/dist`; `npm run dev` proxies `/api`. |
+| `web/src/domain/` | Pure client domain: `types.ts` (contract types, `NewIssueInput`, toast types), `presentation.ts` (label/tone maps and formatting helpers), `routes.ts` (`Route`, `parseRoute`, and the path builders). May import only `src/domain/status.ts` from the server. |
+| `web/src/application/` | Client ports and orchestration: `errors.ts` (`ApplicationError` and its guards), `ports.ts` (`ApiPort`, `RealtimePort`, `NavigationPort`), `workspace.ts` (`useWorkspace` and its types). React hooks allowed; no JSX, no `fetch`, no `EventSource`, no history writes. |
+| `web/src/adapters/` | Transport adapters: `api-client.ts` (`createApiClient`), `realtime.ts` (`useIssuesChanged`, `realtime`), `history.ts` (`useHistoryRouter`, `NAVIGATE_EVENT`). |
+| `web/src/ui/` | React and styles only: `AppView.tsx`, `Boot.tsx` and the shell, board, queue, detail, dialog, palette, sign-in, setup, toast, and primitive components plus `styles.css`. No transport imports. |
+| `web/src/main.tsx` | Composition root: creates the API client, calls the history and realtime adapters, injects all three ports into `useWorkspace`, renders `AppView`. |
+| `web/` | Vite + React SPA around `web/src/`. `npm run build` writes `web/dist`; `npm start` serves it; `npm run dev` proxies `/api` to 4747. |
 | `scripts/init.sh` | Baseline runner: install, check, build. `--no-install` skips install. |
 | `scripts/check-architecture.mjs` | Import-direction check over `src/**/*.ts` and `web/src/**/*.ts(x)`; exits 1 on any violation. |
 | `scripts/clean-state.sh` | End-of-session gate. Idempotent, writes nothing. |

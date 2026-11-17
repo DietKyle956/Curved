@@ -64,3 +64,19 @@ export interface ReadyQueue {
 export interface ProjectList {
   projects: Project[];
 }
+
+export interface NewIssueInput {
+  title: string;
+  description: string;
+  priority: Priority;
+  status: Status;
+  labels: string[];
+}
+
+export type ToastKind = "success" | "error" | "info";
+
+export interface ToastItem {
+  id: number;
+  kind: ToastKind;
+  message: string;
+}

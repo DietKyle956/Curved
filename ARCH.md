@@ -3,12 +3,11 @@
 Where code lives in `curved`, what may import what, and which module owns each
 rule. Read this before adding a module or moving one.
 
-The backend migration (section 3) is done through step 4, and step 6's
-import-direction gate landed with it (LAS-174). `src/` is in its final layout:
-every server path named below as a home exists today, and section 9's check
-enforces the import rules on it. Step 5 (web layering) is the only remaining
-step, so this file still marks web paths as **Target** where they do not exist
-yet; no server path is written as future work.
+The migration in section 3 is complete: all six steps are done, ending with web
+layering (LAS-175) and the import-direction gate (LAS-174). `src/` and
+`web/src/` are both in their final layouts: every path named below as a home
+exists today, and section 9's check enforces the import rules on it. No path or
+layer in this file is described as future work.
 
 The product constraints themselves (status machine, one active claim per agent,
 append-only history) are in `AGENTS.md` and `initial_idea.md`. This file is about
@@ -166,14 +165,13 @@ imports the matrix; that keeps the domain import graph acyclic.
   module is the source of truth; a value change lands in the domain module and
   the matching migration in the same commit.
 - **Web.** The SPA imports the backend contract instead of redeclaring enums:
-  `web/src/lib/types.ts` imports `ActorType`, `EventKind`, `Priority`, `Status`
-  from `src/domain/status.ts` and re-exports them, and
-  `web/src/lib/presentation.ts` imports `STATUSES` for ordering (step 5 moves
-  both files into `web/src/domain/`). Presentation maps (`STATUS_LABEL`,
-  `STATUS_TONE`, `PRIORITY_LABEL`, `EVENT_LABEL`) are display data, not a copy
-  of the contract, and are allowed in the web domain. The allowlist is the
-  limit: the only backend module a web module may import is
-  `src/domain/status.ts`. Importing any other backend module is forbidden.
+  `web/src/domain/types.ts` imports `ActorType`, `EventKind`, `Priority`, and
+  `Status` from `src/domain/status.ts` and re-exports them, and
+  `web/src/domain/presentation.ts` imports `STATUSES` for ordering. Presentation
+  maps (`STATUS_LABEL`, `STATUS_TONE`, `PRIORITY_LABEL`, `EVENT_LABEL`) are
+  display data, not a copy of the contract, and are allowed in the web domain.
+  The allowlist is the limit: the only backend module a web module may import
+  is `src/domain/status.ts`. Importing any other backend module is forbidden.
 - **Adapter pre-filters.** MCP zod schemas and HTTP field checks may restate a
   numeric bound to produce a fast, well-shaped error at the edge. They may not
   restate a pattern: a zod schema or adapter check that needs a key or name
@@ -185,13 +183,12 @@ imports the matrix; that keeps the domain import graph acyclic.
 
 ## 3. Current state and migration path
 
-Steps 1-4 are done and step 6's gate landed with step 4 in LAS-174. The pure
-rules live in `src/domain/`, every resource runs through application use cases
-over ports, and the inbound adapters, the composition roots, and the six-step
-module moves are complete. `src/services/`, `src/db.ts`, `src/config.ts`,
-`src/migrate.ts`, `src/server.ts`, `src/cli.ts`, `src/http/`, `src/mcp/`, and
-the old shared status module no longer exist, with no re-export shims. Step 5
-(web layering) is the only work item left, and it touches `web/src` only.
+All six steps are done. The pure rules live in `src/domain/`, every resource
+runs through application use cases over ports, the inbound adapters and
+composition roots are in place, and `web/src` is layered. `src/services/`,
+`src/db.ts`, `src/config.ts`, `src/migrate.ts`, `src/server.ts`, `src/cli.ts`,
+`src/http/`, `src/mcp/`, `web/src/app.tsx`, `web/src/lib/`, and
+`web/src/components/` no longer exist, with no re-export shims.
 
 Completed path mapping:
 
@@ -208,16 +205,16 @@ Completed path mapping:
 | old root error module | `src/domain/errors.ts` plus the HTTP mapping in `src/adapters/http/errors.ts` |
 | old shared status module | split into `src/domain/status.ts`, `src/domain/transition.ts`, and `src/domain/actors.ts` |
 
-Migration is expand-contract, one step per work item:
+The migration was expand-contract, one step per work item:
 
 | Step | Work | Exit criterion |
 |---|---|---|
 | 1. Codify | Done: this file, a rule inventory, the existing suite green | Met: every rule in section 2 has one named owner |
 | 2. Extract domain | Done (LAS-169, 2026-11-17): created `src/domain/`, moved the pure rules, made the services import them | Met: no domain rule remained defined outside `src/domain/`; tests changed only their import paths |
 | 3. Ports and Postgres | Done (LAS-170 to LAS-173, 2026-11-17): ports module, project, issue, agent, label, and relation repositories, the issue read model, and every resource use case; `src/services/` deleted | Met: every resource sits behind ports and `createApp` takes no `db`; the last item, event-hub construction, moved to `src/composition/server.ts` in step 4 (LAS-174) |
-| 4. Rewire inbound adapters, delete old modules | Done (LAS-174, 2026-11-17): HTTP, MCP, CLI, GitHub, SSE, static moved under `src/adapters/`; `src/composition/` added; `src/db.ts`, `src/config.ts`, `src/migrate.ts`, `src/server.ts`, `src/cli.ts`, `src/http/`, and `src/mcp/` deleted; event-hub construction moved to `src/composition/server.ts` | Met: no import of a deleted path; behavior unchanged; 194 tests green |
-| 5. Web layering | Pending: split `web/src` into `domain/`, `application/`, `adapters/`, `ui/`; move orchestration out of `app.tsx`; delete `web/src/lib/`; remove `api` imports from components | Typecheck and build green; components import no transport; no module imports `web/src/lib/`; browser pass at 390x844 and desktop |
-| 6. Completion gate | Done (LAS-174): `scripts/check-architecture.mjs` and `npm run check:arch`, wired into `npm run check` | Met: `npm run check` green with no undocumented exception |
+| 4. Rewire inbound adapters, delete old modules | Done (LAS-174, 2026-11-17): HTTP, MCP, CLI, GitHub, SSE, static moved under `src/adapters/`; `src/composition/` added; `src/db.ts`, `src/config.ts`, `src/migrate.ts`, `src/server.ts`, `src/cli.ts`, `src/http/`, and `src/mcp/` deleted; event-hub construction moved to `src/composition/server.ts` | Met: no import of a deleted path; behavior unchanged; the suite green |
+| 5. Web layering | Done (LAS-175, 2026-11-17): `web/src` split into `domain/`, `application/`, `adapters/`, and `ui/`; orchestration moved out of `app.tsx` into `web/src/application/workspace.ts`; `api` imports removed from components; `web/src/app.tsx`, `web/src/lib/`, `web/src/components/`, and `web/src/styles.css` deleted | Met: typecheck and build green; components import no transport; no module imports `web/src/lib/`; 195 tests green; browser pass at 390x844 and desktop |
+| 6. Completion gate | Done (LAS-174, 2026-11-17): `scripts/check-architecture.mjs` and `npm run check:arch`, wired into `npm run check`, with five failing fixture trees | Met: `npm run check` green with no undocumented exception |
 
 Step 4's rewiring was mechanical: adapter import paths changed, `createApp`
 takes `{ ports, events, uiToken, ... }` where `events` is an injected
@@ -227,16 +224,16 @@ The only user-visible text change was the MCP "no agent token" hint, which now
 names `node src/composition/cli.ts agent add <name>`; no test pinned the old
 path.
 
-Rules that hold across the remaining step:
+Rules that hold for every move, and for every change after them:
 
-- Behavior does not change in step 5. Public function names and input shapes
+- A refactor never changes behavior. Public function names and input shapes
   stay where callers and tests depend on them; error codes and messages stay
   identical; HTTP bodies and statuses stay identical.
-- No re-export shims and no dual conventions survive. A transitional re-export
-  is allowed only inside the single work item that moves a symbol, and it is
-  deleted before that work item ends. At completion there is one spelling per
-  path and one convention per concern. A module importing both an old and a new
-  location is a defect.
+- No re-export shims and no dual conventions. A transitional re-export is
+  allowed only inside the single work item that moves a symbol, and it is
+  deleted before that work item ends. There is one spelling per path and one
+  convention per concern. A module importing both an old and a new location is a
+  defect.
 
 ## 4. Ports and transactions
 
@@ -423,53 +420,60 @@ HTTP status table (`HTTP_STATUS` in `src/adapters/http/errors.ts`):
 
 ## 6. Web layering
 
-Step 5 is pending. The target is four layers importing one way,
-`ui -> application -> domain` and `adapters -> application ports + domain`, plus
-a web composition entrypoint. `web/src/main.tsx` is the only composition module
-that imports both `ui` and `application`, and it renders the app. `ui` is
-imported only by that entrypoint and by other ui modules. In the target
-`app.tsx` is deleted: its orchestration becomes
-`web/src/application/workspace.ts`, and the thin ui wiring (imports workspace and
-ui, renders once) stays in `web/src/main.tsx`. Today `app.tsx` is one 786-line
-module holding auth, loading, refresh, actions, and dialogs.
+The web client is layered: four layers importing one way,
+`ui -> application -> domain` and
+`adapters -> application ports and errors + domain`, plus the composition
+entrypoint. `web/src/main.tsx` is the only module that imports both `ui` and
+`application`, and the only one that wires adapters: it creates the fetch
+client, calls the history and realtime adapter hooks, injects the three ports
+into `useWorkspace`, and renders `AppView`. `ui` is imported only by that
+entrypoint and by other ui modules. `web/src/app.tsx`, `web/src/lib/`, and
+`web/src/components/` are deleted with no shims; the old 786-line `app.tsx`
+became `web/src/application/workspace.ts` (orchestration) plus
+`web/src/ui/AppView.tsx` (rendering).
 
-| Layer | Owns | Forbidden | Target home |
+| Layer | Owns | Forbidden | Home |
 |---|---|---|---|
-| Domain | `Issue`, `Project`, `IssueEvent`, `ReadyQueue`, `Actor` types; status/priority/event label and tone maps; formatting and filtering rules; pure route parsing and path builders; imports the backend status contract | React, network APIs, adapters, UI, browser storage | `web/src/domain/` |
-| Application | API port, realtime port, an application error type, workspace orchestration: auth and session state, project selection, issue/ready/timeline loading, refresh and tick handling, action execution with error mapping | Adapters, UI, React | `web/src/application/` |
-| Adapters | `fetch` client implementing the API port; `EventSource` hook implementing the realtime port; history/`popstate` router implementing navigation | UI, direct domain I/O | `web/src/adapters/` |
-| UI | React components and styles only; receives data and callbacks | `fetch`, `EventSource`, `history`, adapters, domain I/O | `web/src/ui/` |
-| Composition | Mount the app: import the application workspace and the ui components, render once | Business rules, transport, domain I/O | `web/src/main.tsx` |
+| Domain | `Issue`, `Project`, `IssueEvent`, `ReadyQueue`, `Actor`, `IssueTimeline`, `ProjectList`, `NewIssueInput`, `ToastKind`, and `ToastItem` types; status/priority/event label and tone maps; `STATUS_ORDER`; formatting and filtering rules (`initials`, `matchesQuery`, `sortForColumn`, `countByStatus`, `relativeTime`, `absoluteTime`, `eventDetail`); pure route parsing and path builders; imports the backend status contract | React, network APIs (`fetch`, `EventSource`), `history`/`window`, adapters, application, UI, browser storage, any backend module except `src/domain/status.ts` | `web/src/domain/` (`types.ts`, `presentation.ts`, `routes.ts`) |
+| Application | `ApiPort`, `RealtimePort`, `NavigationPort`, and `IssuesChangedOptions`; `ApplicationError` and its guards; `useWorkspace` orchestration: auth and session state, project selection, issue/ready/timeline loading, refresh and tick handling, action execution with error mapping, the Ctrl/Cmd+K listener | Adapters, UI, JSX or components, `fetch`, `EventSource`, history writes, backend modules. It may import React hooks (`react` state, effect, memo, callback) but renders nothing | `web/src/application/` (`ports.ts`, `errors.ts`, `workspace.ts`) |
+| Adapters | `createApiClient(): ApiPort` over `fetch`; `useIssuesChanged` and `realtime: RealtimePort` over one `EventSource`; `useHistoryRouter(): NavigationPort` over `pushState`/`replaceState`/`popstate` | UI, domain I/O; application modules other than `ports.ts` and `errors.ts` | `web/src/adapters/` (`api-client.ts`, `realtime.ts`, `history.ts`) |
+| UI | React components and styles only; receives data and callbacks | `fetch`, `EventSource`, `history`, adapters, domain I/O | `web/src/ui/` (`AppView.tsx`, `Boot.tsx`, `Board.tsx`, `CommandPalette.tsx`, `Dialog.tsx`, `IssueDetail.tsx`, `Modal.tsx`, `NewIssueDialog.tsx`, `ProjectSetup.tsx`, `Queue.tsx`, `Shell.tsx`, `SignIn.tsx`, `Toasts.tsx`, `ui.tsx`, `styles.css`) |
+| Composition | Mount the app: wire the adapters, call the history and realtime hooks, inject the three ports into `useWorkspace`, render `AppView` | Business rules, transport, domain I/O | `web/src/main.tsx` |
+
+Adapters translate transport into the application vocabulary: `api-client.ts`
+turns a network failure into `ApplicationError(0, "network", ...)` and a non-ok
+response into `ApplicationError(status, code, message)`; `realtime.ts` filters
+`issues_changed` frames by project id and reconnects after 1s; `history.ts` owns
+`pushState`/`replaceState` and `popstate`, holds the parsed route in state, and
+dispatches a `navigate` `CustomEvent` on every change, exposing only
+`NavigationPort`. The paths, verbs, and bodies the client sends are unchanged
+from before the split.
 
 Rules:
 
 - UI components receive data and callbacks. They do not call `fetch`,
-  `EventSource`, `window.history`, or any module that does.
+  `EventSource`, `window.history`, or any module that does, and no component
+  imports an adapter module.
 - Orchestration lives in application. A component may own local presentation
   state (an open dialog, a draft string); it must not own loading, refresh, or
   auth sequencing.
 - Route parsing and path building are pure domain functions. History writes and
   `popstate` listeners are the history adapter.
+- One ports module: `web/src/application/ports.ts`. An adapter implements a
+  port; application code depends on the interface only.
 
-Current web state, honestly (all files under `web/src/`, unrelated to the
-backend server tree):
-
-| Layer today | Files | Problem |
-|---|---|---|
-| Domain-ish | `lib/types.ts`, `lib/presentation.ts`, route parsing inside `lib/router.ts` | `types.ts` is already React-free and imports the backend status contract, but route parsing is mixed with React hooks and history in one file |
-| Application | `app.tsx` | One 786-line component holds auth, loading, refresh, actions, toasts, and route-driven dialog state; no port and no application module |
-| Adapters | `lib/api.ts` (fetch), `lib/events.ts` (EventSource), history calls in `lib/router.ts` | No ports; `ApiError` is both transport detail and UI-facing error |
-| UI | `components/*.tsx` | Mostly prop-driven, but `SignIn.tsx` and `ProjectSetup.tsx` import `api` from `../lib/api.ts` and call it directly |
-
-Target web tree:
+Web tree:
 
 ```
 web/src/
-  domain/        types.ts  presentation.ts  routes.ts
-  application/   ports.ts  workspace.ts  errors.ts
-  adapters/      api-client.ts  realtime.ts  history.ts
-  ui/            components/*.tsx  styles.css
-  main.tsx       composition entrypoint: only module importing both application and ui
+  domain/       types.ts  presentation.ts  routes.ts
+  application/  ports.ts  errors.ts  workspace.ts
+  adapters/     api-client.ts  realtime.ts  history.ts
+  ui/           AppView.tsx  Boot.tsx  Board.tsx  CommandPalette.tsx
+                Dialog.tsx  IssueDetail.tsx  Modal.tsx  NewIssueDialog.tsx
+                ProjectSetup.tsx  Queue.tsx  Shell.tsx  SignIn.tsx
+                Toasts.tsx  ui.tsx  styles.css
+  main.tsx      composition entrypoint: only module importing both application and ui
 ```
 
 ### Comparison with the reference client
@@ -480,7 +484,7 @@ several views call transport hooks directly. It is used here only to make the
 mapping concrete. The path is machine-local and the comparison is illustrative;
 the repository has no dependency on it.
 
-| Reference directory | What it holds | Curved target layer | What the example lacks |
+| Reference directory | What it holds | Curved layer | What the example lacks |
 |---|---|---|---|
 | `api/` (`client.ts`, `endpoints.ts`, `hooks.ts`, `auth.ts`) | `fetch` wrapper, TanStack Query hooks, auth headers from `localStorage` | Adapters (client) plus application (orchestration behind ports) | No port boundary; hooks are called straight from views; errors collapse to a generic `Error`, so no stable code reaches the UI |
 | `components/` | Presentational primitives (badge, button, card, sidebar) | UI | `@ts-nocheck`, no data/callback contract, no separation from page logic |
@@ -489,15 +493,16 @@ the repository has no dependency on it.
 | `lib/` (`cn`, `formatCurrency`, `daysUntil`) | Pure formatting helpers | Web domain | No status contract, no route parsing, no filtering rules |
 | `routes/` and `views/` | Page components; views import `api/hooks` | UI pages | Transport inside views; `currentView` navigation comes from state, not a parsed URL |
 | `stores/` (zustand) | `sidebarOpen`, `currentView` | Application/UI state | Navigation state in a store instead of route parsing |
-| `__tests__/` | Smoke tests | Testing policy for the web domain, if added | Covered by neither layer definition nor a port |
+| `__tests__/` | Smoke tests | Web domain tests (no web runner yet) | Covered by neither layer definition nor a port |
 
 ## 7. Testing policy
 
 Tests prove exterior behavior. They call the seam an end user or agent hits, not
 a private function, not SQL text, not the module graph.
 
-The existing suites are the regression contract: 194 tests in 17 files under
-`test/`, run by `npm test` (`node --test --test-concurrency=1 test/*.test.ts`).
+The existing suites are the regression contract: 195 tests in 17 files under
+`test/` (189 behavior, 6 architecture), run by `npm test`
+(`node --test --test-concurrency=1 test/*.test.ts`).
 They need the Postgres from `docker compose` on port 55432: `bash scripts/db.sh`
 bootstraps it, and `test/helpers/db.ts` refuses any database whose name does not
 start with `curved_test`.
@@ -514,7 +519,7 @@ with it and keeps asserting the same code, message, or state.
 | Spawned CLI | `test/cli.test.ts` runs `node src/composition/cli.ts` as a child process | argv parsing, output, exit codes, agent token handling |
 | Spawned MCP stdio process | `test/mcp.test.ts` runs `src/composition/mcp.ts` through `StdioClientTransport` | Tool schemas, agent resolution from `CURVED_AGENT_TOKEN`, results and error results |
 | Raw-SQL invariant proofs | `test/events.test.ts` and `test/comments.test.ts` assert SQLSTATE `23001` on UPDATE and DELETE of `issue_events`; `test/migrate.test.ts` proves concurrent migration runs apply each file once | Database-enforced invariants that no TypeScript test can prove |
-| Import direction | `test/architecture.test.ts` spawns `scripts/check-architecture.mjs` | The repository passes the nine rules and four fixture trees fail (section 9). This is a gate, not behavior coverage |
+| Import direction | `test/architecture.test.ts` spawns `scripts/check-architecture.mjs` | The repository passes the nine rules and five fixture trees fail: application -> adapter, domain -> `pg`, web ui -> adapter, web application -> adapter, and web domain -> backend module (section 9). This is a gate, not behavior coverage |
 
 Additional rules:
 
@@ -533,18 +538,22 @@ Additional rules:
 
 Web testing today: there is no unit test framework for the SPA (no web test
 script, no DOM test runner). Current evidence is `npm run check` (typecheck,
-architecture check, and 194 tests), `npm run build` (`npm run typecheck` then
-`npm run build:web`, a `vite build`), and a browser pass at 390x844 and desktop.
-This is a known constraint: web formatting, filtering, and route parsing have no
-automated proof today. When a web runner is added, the pure web domain (status
-maps, filters, sorting, route parsing) is the first target, not component
-snapshots.
+architecture check, and 195 tests), `npm run build` (`npm run typecheck` then
+`npm run build:web`, a `vite build`), and a browser pass at 390x844 and desktop,
+which LAS-175 performed: both viewports, sign-out and sign-in with rejected and
+accepted tokens, first-run project setup on a fresh database, board, ready
+queue, issue detail transition and comment, Ctrl/Cmd+K palette, and cross-tab
+SSE refresh, with no console errors. This is a known constraint: web formatting,
+filtering, and route parsing have no automated proof today. When a web runner is
+added, the pure web domain (status maps, filters, sorting, route parsing) is the
+first place to test, not component snapshots.
 
 ## 8. Review checklist
 
 For a new module or a moved one:
 
-- [ ] Which layer is this? Does its path match the layer map in section 1?
+- [ ] Which layer is this? Does its path match the layer map in section 1
+      (server) or section 6 (web)?
 - [ ] Does it import only inward (domain imports nothing; application imports
       domain and ports; adapters import domain, application ports and use cases,
       and only the sanctioned peer set `http` -> `github`, `sse`, `static`)?
@@ -564,12 +573,15 @@ For a new module or a moved one:
 - [ ] Is this a second convention (a new suffix, a new error class, a new ports
       module, a new SQL helper) where one already exists?
 - [ ] Does the change keep `npm run check` green without weakening an assertion?
-- [ ] Is a step-5 web target path from section 6 described as if it existed?
+- [ ] Does the web file sit in the layer its path names (`domain`, `application`,
+      `adapters`, `ui`), with ports declared in `application/ports.ts` and
+      components free of transport (`fetch`, `EventSource`, `history`, adapter
+      modules)?
 
 ## 9. Enforcement
 
 `npm run check` is the normal gate. It runs `npm run typecheck` (server and web
-configs), `npm run check:arch`, and `npm test` (194 tests). `./scripts/init.sh`
+configs), `npm run check:arch`, and `npm test` (195 tests). `./scripts/init.sh`
 runs install, database (`bash scripts/db.sh`), check, then build;
 `--no-install` skips only install. `./scripts/clean-state.sh` is the
 end-of-session gate.
@@ -594,16 +606,17 @@ against the repository root, and applies nine rules:
 
 Root-level `src/adapters/*.ts` files have no adapter subdirectory, so
 `adapter-boundary` permits any adapter to import them; that is the shared-utility
-escape hatch in section 1. The four web layer rules apply only once step 5
-creates those directories; until then they are inert but wired.
+escape hatch in section 1. The four web layer rules apply to the landed
+`web/src/{domain,application,adapters,ui}` directories.
 
 It prints one line per violation, `path: forbidden import "specifier" (rule)`,
 and exits 1; on success it prints `architecture: ok (<N> files)` and exits 0; a
 bad argument exits 2. `--root <dir>` points the walker at another tree, which is
 how `test/architecture.test.ts` runs it: one case proves the real repository
-passes, and four fixture trees prove a violation fails for
-application -> adapter, domain -> `pg`, web ui -> web adapter, and web lib ->
-backend import.
+passes, and five fixture trees prove a violation fails for application ->
+adapter, domain -> `pg`, web ui -> web adapter, web application -> web adapter,
+and web domain -> backend module (`web/src/domain/bad.ts` importing
+`src/application/ports.ts`).
 
 The `pg` rule is scoped to production code under `src/**`; `test/` is outside
 the walk. The test tree's pg-error assertions import `pgErrorCode` and
@@ -612,9 +625,9 @@ and the event suites keep their raw SQLSTATE assertions.
 
 Composition roots are exempt by construction: `src/composition/**` may import any
 inward layer, and that is the only place allowed to read `process.env` and
-construct a pool. No dual-role backend file remains; the only file still pending
-a split is `web/src/app.tsx`, which is judged as web application code until step
-5.
+construct a pool. No dual-role file remains on either side: every backend file
+sits in exactly one layer, and every file under `web/src/` sits in its layer,
+with `web/src/main.tsx` as the only web composition module.
 
 Two limits worth stating rather than hiding:
 

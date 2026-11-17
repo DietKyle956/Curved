@@ -2,7 +2,7 @@
 
 - **Last updated:** 2026-11-17
 - **Project:** curved
-- **Phase:** HTTP API and auth boundary complete (`LAS-148`), plus a working SPA prototype, the SSE realtime stream (`LAS-150`), the GitHub webhook with its branch helper (`LAS-151`), the SPA foundation ticket (`LAS-152`), the architecture contract (`LAS-168`, documentation only), the pure domain layer (`LAS-169`, no behavior change), and step 3's slices, ports plus the projects resource (`LAS-170`) then the issue lifecycle and read model on ports (`LAS-171`), agents, claims, review, comments, and blocking on ports (`LAS-172`), then labels, relations, and the GitHub use case on ports (`LAS-173`), then the inbound-adapter rewire, composition roots, and the import-direction gate (`LAS-174`), all with no behavior change; steps 1 through 4 and the architecture gate are complete, and step 5 (web layering) is the only remaining refactor step. Toolchain, Postgres 18, migrations, the projects resource, the issues resource (atomic keys, append-only events), comment events with the full timeline read path, the transition graph with its actor matrix, token-authenticated agents with the one-active-issue fence, agent block with human unblock, the MCP server over stdio, the authenticated HTTP API with its SPA fallback, the React/Vite board, queue, detail, and palette, the SSE stream that refreshes them, the HMAC-verified GitHub webhook that moves issues from pull requests, and the routed board with its mobile status bar are live.
+- **Phase:** HTTP API and auth boundary complete (`LAS-148`), plus a working SPA prototype, the SSE realtime stream (`LAS-150`), the GitHub webhook with its branch helper (`LAS-151`), the SPA foundation ticket (`LAS-152`), the architecture contract (`LAS-168`, documentation only), the pure domain layer (`LAS-169`, no behavior change), and step 3's slices, ports plus the projects resource (`LAS-170`) then the issue lifecycle and read model on ports (`LAS-171`), agents, claims, review, comments, and blocking on ports (`LAS-172`), then labels, relations, and the GitHub use case on ports (`LAS-173`), then the inbound-adapter rewire, composition roots, and the import-direction gate (`LAS-174`), then the web layering (`LAS-175`), all with no behavior change; all six refactor steps and the architecture gate are complete. Toolchain, Postgres 18, migrations, the projects resource, the issues resource (atomic keys, append-only events), comment events with the full timeline read path, the transition graph with its actor matrix, token-authenticated agents with the one-active-issue fence, agent block with human unblock, the MCP server over stdio, the authenticated HTTP API with its SPA fallback, the React/Vite board, queue, detail, and palette, the SSE stream that refreshes them, the HMAC-verified GitHub webhook that moves issues from pull requests, and the routed board with its mobile status bar are live.
 
 ## Current verified state
 
@@ -13,16 +13,16 @@
   `--no-install` skips only install; the database step still runs.
 - End-of-session gate: `./scripts/clean-state.sh`
 - Baseline: green. `npm run typecheck` covers server and web configs; `npm test`
-  runs 194 tests on the Node test runner (189 behavior, 5 architecture).
+  runs 195 tests on the Node test runner (189 behavior, 6 architecture).
 - Architecture contract: `ARCH.md` codifies target hexagonal layers (domain,
   application, inbound and outbound adapters, composition roots), rule ownership
   with bounded mirrors, ports and transactions, error translation, web layering,
   testing policy, and enforcement. Steps 1 and 2, plus all four of step 3's
   resource slices (`LAS-170` ports and the projects resource; `LAS-171` the issue
   lifecycle and read model; `LAS-172` agents, claims, review, comments, and
-  blocking; `LAS-173` labels, relations, and the GitHub use case), and so is
-  step 4 with the step-6 import-direction gate (`LAS-174`); step 5 (web
-  layering) remains, so only the web sections still carry target markers.
+  block; `LAS-173` labels, relations, and the GitHub use case), then step 4
+  with the step-6 import-direction gate (`LAS-174`), and step 5's web layering
+  (`LAS-175`); all six steps are done, so no section carries target markers.
 - Templates: `/home/dietkyle/projects/templates/ARCH.md` (111 lines) is the
   project-agnostic version of the same contract, listed as copy-first item 2 in
   that directory's `index.md`; `templates/AGENTS.md` now reads `ARCH.md` in its
@@ -159,6 +159,68 @@
   wiring only. `src/db.ts` still owns the pool, `Db`/`Database`, transactions,
   and the pg error helpers, and every repository still takes a `Db`. Behavior is
   unchanged: 189 tests pass.
+- Web layer map (`LAS-175`): step 5 splits `web/src` into four layers plus a
+  composition root. `web/src/domain/` is pure: `types.ts` holds `Actor`,
+  `Project`, `Issue`, `IssueEvent`, `IssueTimeline`, `ReadyQueue`,
+  `ProjectList`, `NewIssueInput`, `ToastKind`, and `ToastItem` and imports only
+  `ActorType`, `EventKind`, `Priority`, and `Status` from
+  `src/domain/status.ts` (the single backend module web code may import);
+  `presentation.ts` holds the status, priority, and event label and tone maps,
+  `STATUS_ORDER`, `initials`, `matchesQuery`, `sortForColumn`, `countByStatus`,
+  `relativeTime`, `absoluteTime`, and `eventDetail` over `STATUSES` from the
+  same contract; `routes.ts` holds `Route`, `parseRoute`, `boardPath`,
+  `queuePath`, `issuePath`, and `newIssuePath` with no React, `window`, or
+  `history`. `web/src/application/` is React hooks with no JSX: `errors.ts`
+  holds `ApplicationError` (status, code, message), `isApplicationError`,
+  `isUnauthorized`, and `messageOf`, the one application error type;
+  `ports.ts` holds `ApiPort` (me, signIn, signOut, projects, createProject,
+  issues, issue, ready, createIssue, updateIssue, transition, comment,
+  setLabels, addRelation, unblock), `RealtimePort` (`useIssuesChanged`),
+  `NavigationPort` (`route`, `navigate(path, { replace? })`), and
+  `IssuesChangedOptions`; `workspace.ts` holds `AuthState`, `WorkspaceDeps`,
+  `Workspace`, and `useWorkspace` with all orchestration from the deleted
+  `app.tsx` (session check, project load and selection, the replace-redirect for
+  unknown projects, issue and ready load with the focus refresh and per-project
+  cache, the realtime subscription, timeline load, the `Ctrl/Cmd+K` listener,
+  and one `run` helper for actions with the 401 reset and toasts capped at
+  three), importing only `react`, `../domain/*`, `./ports.ts`, and
+  `./errors.ts`, with no JSX, `fetch`, `EventSource`, or history write.
+  `web/src/adapters/` holds `api-client.ts` (`createApiClient(): ApiPort` over
+  `fetch` with the same paths, verbs, and bodies, a network failure becoming
+  `ApplicationError(0, "network", ...)` and a non-ok response
+  `ApplicationError(status, code, message)`), `realtime.ts` (`useIssuesChanged`
+  plus `realtime: RealtimePort`, one `EventSource` on `/api/events`,
+  `issues_changed` frames filtered by project id, reconnect after 1s), and
+  `history.ts` (`useHistoryRouter(): NavigationPort` plus `NAVIGATE_EVENT`,
+  `pushState`/`replaceState` and `popstate`, dispatching a `navigate`
+  `CustomEvent`). `web/src/ui/` is React and styles only: `AppView.tsx` renders
+  the whole shell and every gate from one `workspace` prop, `Boot.tsx` holds the
+  boot screen and boot error card, and no component imports `fetch`,
+  `EventSource`, `history`, or an adapter; `SignIn` takes
+  `onSignIn(token): Promise<void>` and reports `ApplicationError.message`
+  inline, and `ProjectSetup` takes `onCreate(input): Promise<Project>` plus
+  `onCreated` and `onSignOut`. `web/src/main.tsx` is the composition root: it
+  creates the fetch client, calls the history and realtime adapter hooks,
+  injects the API, realtime, and navigation ports into `useWorkspace`, and
+  renders `AppView`; it is the only module importing both `ui` and
+  `application` and the only one constructing adapters. `web/src/app.tsx`,
+  `web/src/lib/`, `web/src/components/`, and the root `web/src/styles.css` are
+  deleted with no shims. Behavior is unchanged: same copy, palette, breakpoints,
+  palette colors, self-hosted fonts, and interactions.
+- Web gates and smoke (`LAS-175`): `npm run typecheck` green; `npm run
+  check:arch` printed `architecture: ok (74 files)`; `npm run build` green;
+  `npm test` 195 pass, 0 fail (189 behavior plus 6 architecture), with
+  `test/architecture.test.ts` proving the real tree passes and five fixture
+  trees fail (application -> adapter, domain -> `pg`, web ui -> adapter, web
+  application -> adapter, web domain -> backend module). Browser smoke in
+  Chromium: 390x844 (five-status bar with 44 px targets, 56 px bottom nav, card
+  list with 120 px bottom scroll padding, per-status counts) and 1440x900
+  (236 px sidebar, five flex columns, `overflow-x: auto`); sign-out; sign-in
+  with a rejected and an accepted token; first-run project setup on a throwaway
+  database (validation message, create, toast, empty board), dropped afterward;
+  board; ready queue; issue detail transition and comment; `Ctrl/Cmd+K` palette;
+  cross-tab SSE where a CLI comment and a CLI-created issue appeared in both
+  open tabs without reload. No console errors.
 - Database: `docker compose up` starts `postgres:18-alpine` on host port 55432
   (user/password/db all `curved`, named volume mounted at `/var/lib/postgresql`).
   `scripts/db.sh` waits for readiness, then runs `node src/migrate.ts`.
@@ -350,7 +412,7 @@
   event-stream responses chunked with backpressure instead of buffering, gives
   each request an `AbortSignal` aborted on client disconnect, and closes the
   app/hub and all connections on shutdown.
-- Web realtime: `web/src/lib/events.ts` opens one `EventSource("/api/events")`,
+- Web realtime: `web/src/adapters/realtime.ts` opens one `EventSource("/api/events")`,
   filters `issues_changed` by the current project id, refreshes the board and open
   issue detail, and reconnects 1s after error or close with a single-timer guard.
   The 20 second poll is removed; the window `focus` refresh and manual refresh
@@ -412,7 +474,7 @@
 - Tests: isolated database from `TEST_DATABASE_URL` (name must start with
   `curved_test`), created and migrated by `test/helpers/db.ts`; its reset truncates
   `projects` and `agents` with cascade. The development database is never touched.
-  `npm test` runs 189 tests, including 22 agent/queue tests in
+  `npm test` runs 195 tests, including 22 agent/queue tests in
   `test/agents.test.ts`, the projects suite in `test/projects.test.ts` (create,
   list ordering, duplicate and validation errors, transaction-scoped commit and
   rollback, repository find-by-key), 13 MCP-over-stdio tests in
@@ -517,7 +579,7 @@
   source of truth; it never re-implements the transition graph client-side.
 - The app shell is fixed to the viewport and the board owns its horizontal scroll.
   The issue detail is a centered modal built on the shared `Modal` shell
-  (`web/src/components/Modal.tsx`): a dimmed blurred backdrop, a 768 px panel
+  (`web/src/ui/Modal.tsx`): a dimmed blurred backdrop, a 768 px panel
   capped at `min(100dvh - 3rem, 50rem)` and rounded on `sm` and up, a full-screen
   sheet below `sm`, Escape and backdrop close, body scroll lock, focus taken on
   open and restored to the trigger on close, and a Tab cycle inside the panel.
@@ -559,12 +621,12 @@
 
 ## Next best step
 
-Step 5 (web layering) is the last refactor step: split `web/src` into
-`domain/`, `application/`, `adapters/`, and `ui/`, delete `web/src/lib/`, and
-move orchestration out of `web/src/app.tsx`. Steps 1 through 4 and step 6's
-import-direction gate all landed (`LAS-168` to `LAS-174`); `LAS-171` was verified
-against the tracker on 2026-11-17 and closed. `LAS-152`, `LAS-153`, and `LAS-154`
-still need their acceptance tests, and `LAS-155` remains the end-to-end gate.
+`LAS-176` (the refactor completion gate and handoff) is next. All six refactor
+steps landed (`LAS-168` to `LAS-175`), ending with the web layering on
+2026-11-17, so what remains is the closing gate: prove the whole rule set,
+delete any leftover target language, and hand the contract off. `LAS-152`,
+`LAS-153`, and `LAS-154` still need their acceptance tests, and `LAS-155`
+remains the end-to-end gate.
 
 ## Tracker
 
@@ -594,8 +656,10 @@ still need their acceptance tests, and `LAS-155` remains the end-to-end gate.
   2026-11-17), `LAS-171` issue lifecycle and read model on ports (done
   2026-11-17), `LAS-172` agents, claims, review, comments, and blocking on ports
   (done 2026-11-17), `LAS-173` labels, relations, and the GitHub use case on
-  ports (done 2026-11-17); step 3's event-hub item is still open, then steps 4
-  to 6.
+  ports (done 2026-11-17), `LAS-174` the inbound-adapter rewire, composition
+  roots, and the import-direction gate (done 2026-11-17), and `LAS-175` the web
+  layering (done 2026-11-17); next is `LAS-176` (the refactor completion gate
+  and handoff).
 
 ## Session log
 
@@ -1535,3 +1599,47 @@ still need their acceptance tests, and `LAS-155` remains the end-to-end gate.
   appear between reads; a non-agent `ActiveClaimConflict` would escape
   untranslated, but `nextClaimedBy` makes that unreachable.
 - Next best step: step 5 (web layering).
+
+### Session 027
+
+- Date: 2026-11-17
+- Goal: execute `LAS-175` (web layering), step 5 of the `LAS-167` refactor.
+  No observable behavior change.
+- Completed: `web/src` is now `domain/`, `application/`, `adapters/`, `ui/`, and
+  `main.tsx`. `domain/` holds `types.ts` (contract types, `NewIssueInput`, and
+  the toast types), `presentation.ts` (label and tone maps plus the formatting
+  helpers), and the React-free `routes.ts`. `application/` holds `errors.ts`
+  (`ApplicationError`, `isApplicationError`, `isUnauthorized`, `messageOf`),
+  `ports.ts` (`ApiPort`, `RealtimePort`, `NavigationPort`,
+  `IssuesChangedOptions`), and `workspace.ts` (`AuthState`, `WorkspaceDeps`,
+  `Workspace`, `useWorkspace`) with all orchestration and no JSX, `fetch`,
+  `EventSource`, or history write. `adapters/` holds `api-client.ts`
+  (`createApiClient`), `realtime.ts` (`useIssuesChanged` plus `realtime`), and
+  `history.ts` (`useHistoryRouter` plus `NAVIGATE_EVENT`). `ui/` holds React and
+  styles only, with `AppView.tsx` rendering every gate from one `workspace`
+  prop and `Boot.tsx` holding the boot screen and error card; `SignIn` moved to
+  `onSignIn(token): Promise<void>` and `ProjectSetup` to
+  `onCreate(input): Promise<Project>` with `onCreated` and `onSignOut`.
+  `main.tsx` is the composition root that builds the fetch client, runs the
+  history and realtime hooks, injects the three ports into `useWorkspace`, and
+  renders `AppView`. Deleted with no shims: `web/src/app.tsx`, `web/src/lib/`,
+  `web/src/components/`, and the root `web/src/styles.css`.
+- Evidence and gates: `npm run typecheck` green; `npm run check:arch` printed
+  `architecture: ok (74 files)`; `npm run build` green; `npm test` 195 pass, 0
+  fail (189 behavior plus 6 architecture), where the architecture suite now
+  proves five fixture trees fail (application -> adapter, domain -> `pg`, web ui
+  -> adapter, web application -> adapter, web domain -> backend module). Browser
+  smoke: 390x844 (five-status bar with 44 px targets, 56 px bottom nav, 120 px
+  bottom scroll padding, per-status counts) and 1440x900 (236 px sidebar, five
+  flex columns, `overflow-x: auto`); sign-out; sign-in with a rejected and an
+  accepted token; first-run project setup on a throwaway database (validation
+  message, create, toast, empty board) that was dropped afterward; board; ready
+  queue; issue detail transition and comment; `Ctrl/Cmd+K` palette; cross-tab
+  SSE where a CLI comment and a CLI-created issue appeared in both open tabs
+  without reload. No console errors.
+- Tracker: `LAS-175` moved to Done. The commit follows this entry.
+- Known risk: the architecture check stays path-based, so a duplicated rule, a
+  browser global inside `ui/`, or a component importing an adapter through a
+  re-export would still need review eyes. `web/src` now imports the backend
+  status contract only through `domain/types.ts` and `domain/presentation.ts`.
+- Next best step: `LAS-176` (the refactor completion gate and handoff).

@@ -10,10 +10,10 @@ import {
 } from "@phosphor-icons/react";
 import type { ReactNode } from "react";
 
-import { STATUS_ORDER } from "../lib/presentation.ts";
-import { boardPath, queuePath } from "../lib/router.ts";
-import type { Route } from "../lib/router.ts";
-import type { Issue, Project } from "../lib/types.ts";
+import { STATUS_ORDER } from "../domain/presentation.ts";
+import { boardPath, queuePath } from "../domain/routes.ts";
+import type { Route } from "../domain/routes.ts";
+import type { Issue, Project } from "../domain/types.ts";
 import { AgentMark, Button, IconButton, Kbd, LogoMark } from "./ui.tsx";
 
 const isMac =

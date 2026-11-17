@@ -2,14 +2,16 @@ import { SignOut } from "@phosphor-icons/react";
 import { useState } from "react";
 import type { FormEvent } from "react";
 
-import { api, ApiError } from "../lib/api.ts";
-import type { Project } from "../lib/types.ts";
+import { isApplicationError } from "../application/errors.ts";
+import type { Project } from "../domain/types.ts";
 import { Button, Field, LogoMark } from "./ui.tsx";
 
 export function ProjectSetup({
+  onCreate,
   onCreated,
   onSignOut,
 }: {
+  onCreate: (input: { key: string; name: string }) => Promise<Project>;
   onCreated: (project: Project) => void;
   onSignOut: () => void;
 }) {
@@ -32,14 +34,14 @@ export function ProjectSetup({
     setSubmitting(true);
     setError(null);
     try {
-      const result = await api.createProject({
+      const created = await onCreate({
         key: normalizedKey,
         name: name.trim(),
       });
-      onCreated(result.project);
+      onCreated(created);
     } catch (caught) {
       setError(
-        caught instanceof ApiError
+        isApplicationError(caught)
           ? caught.message
           : "Could not create the project.",
       );

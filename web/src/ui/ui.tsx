@@ -8,8 +8,8 @@ import {
   STATUS_LABEL,
   STATUS_TONE,
   initials,
-} from "../lib/presentation.ts";
-import type { Priority, Status } from "../lib/types.ts";
+} from "../domain/presentation.ts";
+import type { Priority, Status } from "../domain/types.ts";
 
 export function LogoMark({ className = "size-6" }: { className?: string }) {
   return (

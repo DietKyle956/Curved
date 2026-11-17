@@ -12,9 +12,9 @@ import { AnimatePresence, motion, useReducedMotion } from "motion/react";
 import { useEffect, useRef, useState } from "react";
 import type { ReactNode } from "react";
 
-import { matchesQuery } from "../lib/presentation.ts";
-import { boardPath, queuePath } from "../lib/router.ts";
-import type { Issue, Project } from "../lib/types.ts";
+import { matchesQuery } from "../domain/presentation.ts";
+import { boardPath, queuePath } from "../domain/routes.ts";
+import type { Issue, Project } from "../domain/types.ts";
 import { Kbd, PriorityMark, StatusChip } from "./ui.tsx";
 
 const FOCUSABLE =

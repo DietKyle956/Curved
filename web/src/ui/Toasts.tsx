@@ -6,13 +6,7 @@ import {
 } from "@phosphor-icons/react";
 import { AnimatePresence, motion, useReducedMotion } from "motion/react";
 
-export type ToastKind = "success" | "error" | "info";
-
-export interface ToastItem {
-  id: number;
-  kind: ToastKind;
-  message: string;
-}
+import type { ToastItem, ToastKind } from "../domain/types.ts";
 
 const TONE: Record<ToastKind, string> = {
   success: "text-oasis",

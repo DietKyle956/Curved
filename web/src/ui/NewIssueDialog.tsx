@@ -1,18 +1,15 @@
 import { useEffect, useState } from "react";
 import type { FormEvent } from "react";
 
-import { PRIORITY_LABEL, STATUS_LABEL } from "../lib/presentation.ts";
-import type { Priority, Project, Status } from "../lib/types.ts";
+import { PRIORITY_LABEL, STATUS_LABEL } from "../domain/presentation.ts";
+import type {
+  NewIssueInput,
+  Priority,
+  Project,
+  Status,
+} from "../domain/types.ts";
 import { Dialog } from "./Dialog.tsx";
 import { Button, Field } from "./ui.tsx";
-
-export interface NewIssueInput {
-  title: string;
-  description: string;
-  priority: Priority;
-  status: Status;
-  labels: string[];
-}
 
 export function NewIssueDialog({
   open,

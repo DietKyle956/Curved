@@ -24,14 +24,14 @@ import {
   absoluteTime,
   eventDetail,
   relativeTime,
-} from "../lib/presentation.ts";
+} from "../domain/presentation.ts";
 import type {
   EventKind,
   IssueEvent,
   IssueTimeline,
   Priority,
   Status,
-} from "../lib/types.ts";
+} from "../domain/types.ts";
 import {
   AgentMark,
   Button,

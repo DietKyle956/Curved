@@ -6,8 +6,8 @@ import {
 } from "@phosphor-icons/react";
 import { useState } from "react";
 
-import { relativeTime } from "../lib/presentation.ts";
-import type { Issue, ReadyQueue } from "../lib/types.ts";
+import { relativeTime } from "../domain/presentation.ts";
+import type { Issue, ReadyQueue } from "../domain/types.ts";
 import {
   AgentMark,
   Button,

@@ -1,20 +1,20 @@
+// EventSource adapter for the realtime issue stream.
+
 import { useEffect, useRef } from "react";
+import type {
+  IssuesChangedOptions,
+  RealtimePort,
+} from "../application/ports.ts";
 
 const EVENTS_PATH = "/api/events";
 const ISSUES_CHANGED_EVENT = "issues_changed";
 const RETRY_DELAY_MS = 1_000;
 
-export interface IssueEventsOptions {
-  enabled: boolean;
-  projectId: number | null;
-  onChange: (projectId: number) => void;
-}
-
-export function useIssueEvents({
+export function useIssuesChanged({
   enabled,
   projectId,
   onChange,
-}: IssueEventsOptions): void {
+}: IssuesChangedOptions): void {
   const onChangeRef = useRef(onChange);
 
   useEffect(() => {
@@ -84,3 +84,5 @@ export function useIssueEvents({
     };
   }, [enabled, projectId]);
 }
+
+export const realtime: RealtimePort = { useIssuesChanged };
