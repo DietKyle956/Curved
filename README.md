@@ -149,6 +149,9 @@ issue payload carries `labels` and `relations: { blocks, blockedBy }`, where
 - `./scripts/clean-state.sh` - end-of-session gate.
 - `npm run smoke:container` - container contract gate: local Postgres, image
   build, and runtime assertions. See "Container image" below.
+- `npm run smoke:provision` - local provisioning gate: runs the host bootstrap
+  and verifier against Ubuntu 24.04 stubs in a disposable container. See
+  "Provisioning the Oracle host" below.
 - `npm test` - tests run against the isolated `curved_test` database.
 - `npm run check` - typecheck, the import-direction architecture check, then the
   tests.
@@ -269,6 +272,69 @@ session cookie, project and issue creation, `/api/ready`, issue detail,
 unsigned `POST /webhooks/github`, the loopback-only Postgres bind, and that `app`
 publishes no host port. `npm run smoke:compose -- --keep` keeps the smoke image
 for inspection.
+
+## Provisioning the Oracle host
+
+"Production compose stack" above is what the server runs; this section is the
+host it runs on. `deploy/provisioning.md` is the full console runbook, from the
+VCN to the acceptance evidence. The summary:
+
+One Always Free `VM.Standard.A1.Flex` instance with 2 OCPU and 12 GB of memory
+runs Ubuntu 24.04 aarch64 in the tenancy's home region. It has a 50 GB boot
+volume, a 100 GB block volume, and one reserved public IPv4. The DNS record is
+an `A` record set to DNS only, never proxied, so the origin stays directly
+reachable. Caddy serves this stage from its internal CA, and LAS-186 switches it
+to public ACME certificates.
+
+The network boundary is four ingress rules and nothing else:
+
+| Port | Protocol | Purpose |
+|---|---|---|
+| 22 | TCP | SSH, key-only, `ubuntu` and `deploy` only |
+| 80 | TCP | Caddy HTTP and future ACME |
+| 443 | TCP | HTTPS |
+| 443 | UDP | HTTP/3 |
+
+There is no public 5432 and no public 4747. Postgres is published only on
+`127.0.0.1:55432` on the host, which is what an SSH tunnel targets, and `app`
+publishes no host port. SSH is key-only with password and root login disabled
+through `/etc/ssh/sshd_config.d/00-curved-access.conf`. The `deploy` account is
+in the `docker` group, which is root-equivalent: Docker can mount the host
+filesystem, so treat its key as a root key.
+
+Storage is 50 GB boot plus 100 GB data: 150 of the 200 GB Always Free block
+storage allowance, with 50 GB headroom. The data volume is ext4, mounted at
+`/srv/curved` with a `nofail` fstab entry, and holds the checkout at
+`/srv/curved/checkout` and the environment file at
+`/srv/curved/checkout/deploy/.env` (mode 600, owner `deploy`, generated once,
+never printed). Until LAS-184 moves Docker's data-root, images and the Postgres
+and Caddy volumes still live under `/var/lib/docker` on the boot volume.
+
+Two commands do the work, both as root on the server. Run the first from the
+provisioning clone (`~/curved-provision`):
+
+```sh
+sudo bash deploy/bootstrap-host.sh --key ~/.ssh/id_ed25519.pub \
+  --domain <domain> --data-device /dev/sdb
+sudo bash /srv/curved/checkout/deploy/verify-host.sh --domain <domain>
+```
+
+`deploy/bootstrap-host.sh` is idempotent: it installs Docker, creates the key-only
+`deploy` account and the sshd drop-in, prepares and mounts the data device,
+clones the repository, writes `deploy/.env`, and starts the Compose stack.
+`deploy/verify-host.sh` is read-only and prints `PASS` or `FAIL` for the OS, the
+`deploy` account, sshd policy, the data mount, storage accounting, the environment
+file, the checkout, the TCP and UDP listeners, the stack health, and an
+authenticated HTTPS request to the API. The bootstrap ends with
+`bootstrap-host: ok` and the verifier with `verify-host: ok`; any other ending
+is a failure.
+
+LAS-183 stops at the provisioned host: the OCI console steps and the live host
+checks are operator-executed, public ACME, HSTS, and public webhook delivery are
+LAS-186, the release script and SSH deploy job are LAS-185, and backups are
+LAS-187. `npm run smoke:provision` is the repository-side proof: it runs the
+bootstrap and verifier inside a disposable container against Ubuntu 24.04 stubs,
+so a change to either script is caught without an OCI tenancy.
 
 ## Continuous integration
 

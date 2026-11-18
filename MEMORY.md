@@ -2,8 +2,9 @@
 
 - **Last updated:** 2026-11-18
 - **Project:** curved
-- **Phase:** product and infrastructure complete through `LAS-182`. Next work is
-  `LAS-183` (VM provisioning) or `LAS-185` (release script and SSH deploy).
+- **Phase:** product and infrastructure complete through `LAS-183`. Next work is
+  `LAS-184` (durable data root and host hygiene), then `LAS-185` (release script
+  and SSH deploy).
 
 ## Current verified state
 
@@ -19,8 +20,9 @@ git history and the Linear comments.
   web, `pg`.
 - Gates: `./scripts/init.sh` (install, database, check, build),
   `./scripts/clean-state.sh`, `npm run acceptance`,
-  `npm run smoke:container`, `npm run smoke:compose`, and
-  `.github/workflows/verify.yml` on every push to `main` and manual dispatch.
+  `npm run smoke:container`, `npm run smoke:compose`,
+  `npm run smoke:provision`, and `.github/workflows/verify.yml` on every push to
+  `main` and manual dispatch.
 - Baseline: 196 tests pass (190 behavior, 6 architecture),
   `architecture: ok (74 files)`, web build green.
 - Layout: `src/domain/` pure rules and types; `src/application/` ports plus
@@ -117,6 +119,21 @@ git history and the Linear comments.
   internal CA; a set email switches to ACME. Host ports and the image tag are
   compose variables. Agents reach the deployed Postgres through an SSH tunnel
   (55433 is the future convention).
+- Provisioning (`LAS-183`): `deploy/provisioning.md` is the OCI console runbook
+  for one Always Free `VM.Standard.A1.Flex` (2 OCPU, 12 GB, Ubuntu 24.04
+  aarch64, home region), a 50 GB boot volume plus a 100 GB block volume, a
+  reserved public IPv4, a DNS-only `A` record, and a security list limited to
+  22/tcp, 80/tcp, 443/tcp, and 443/udp. `deploy/bootstrap-host.sh` is idempotent
+  (Docker from Ubuntu packages with the Docker-repo compose fallback, key-only
+  `deploy` user in the `docker` group, `00-curved-access.conf` sshd drop-in,
+  ext4 data volume at `/srv/curved` with a UUID `nofail` fstab entry, checkout at
+  `/srv/curved/checkout`, one generated mode-600 `deploy/.env`, compose up with
+  Caddy's internal CA). `deploy/verify-host.sh` is read-only and checks the OS,
+  deploy account, sshd policy, ext4 mount, 150 of 200 GB block storage, env,
+  checkout, listener allowlist, stack health, and the authenticated HTTPS API.
+  `npm run smoke:provision` runs both scripts in a disposable `ubuntu:24.04`
+  container with PATH stubs. The OCI console steps and live host checks are
+  operator-executed; no Terraform or Resource Manager.
 - CI: `.github/workflows/verify.yml`, one global concurrency group `verify` with
   `cancel-in-progress: false`, a Postgres 18 service on 55432, then `npm ci`,
   `typecheck`, `check:arch`, `test`, and `build:web`. There is no deploy job yet;
@@ -208,6 +225,15 @@ git history and the Linear comments.
   server so one `up` reaches a healthy schema; `LAS-185` still runs migrations
   separately in the release script. Local TLS uses Caddy's internal CA; ACME
   issuance is production-only.
+- Provisioning is console-driven, not Terraform: `deploy/provisioning.md` and
+  the two host scripts are the source of truth. Bootstrap is idempotent, only
+  formats a device that has no filesystem, and refuses the root disk, a whole
+  disk with partition children, `/` as a mount or checkout path, and equal mount
+  and checkout paths. The data-volume fstab entry uses `nofail` until `LAS-184`
+  adds the systemd mount dependency. The `deploy` user is root-equivalent
+  through the docker group and is documented as such. `deploy/.env` is generated
+  once, never overwritten, never printed, and rejected while it still contains
+  `change-me`.
 - The CI gate is one workflow with one concurrency group and no deploy job. A
   pending run is replaced by a newer queued run, but an in-flight run is never
   cancelled.
@@ -242,6 +268,17 @@ git history and the Linear comments.
   legs issue `Secure` cookies.
 - `npm run smoke:container` runs against the local `curved` database and applies
   any pending migrations before the in-image command checks `already up to date`.
+- `LAS-183` live acceptance is operator-executed: this environment has no OCI
+  tenancy, reserved IPv4, or A1 instance, so the console steps, external port
+  scan, key-only SSH proof, and 150 GB layout were exercised through the stub
+  gate, not on a real host. `deploy/provisioning.md` section 10 is the operator
+  evidence record.
+- `npm run smoke:provision` pulls `ubuntu:24.04` when absent and stubs package
+  installation, Docker, sshd, mount, and the network; the real apt and Docker
+  path is live-only.
+- Until `LAS-184` moves Docker's data root and adds the mount dependency, the
+  `nofail` data-volume entry lets Docker start with an empty `/srv/curved` if
+  the block volume is missing.
 
 ## Open questions
 
@@ -251,23 +288,26 @@ git history and the Linear comments.
 
 ## Next best step
 
-`LAS-183` (Oracle VM provisioning and access boundary) or `LAS-185` (release
-script and SSH deploy job), both unblocked. `LAS-185` must declare
-`needs: verify` and must never run `down -v` on the server.
+`LAS-184` (durable data root and host hygiene) is the next unblocked ticket:
+move Docker's data root to `/srv/curved/docker`, add a systemd mount dependency
+so Docker never starts on an empty directory, configure global log rotation and
+build-cache pruning, and prove the stack survives a reboot. `LAS-185` follows
+and must declare `needs: verify` and never run `down -v` on the server. Run
+`npm run smoke:provision` after any change to the host scripts.
 
 ## Tracker
 
 - Linear workspace last-known-good (`LAS`), project Curved (`P-LAS-8`).
 - Spec `LAS-140` with 15 sub-issues `LAS-141` through `LAS-155`, all Done.
 - Refactor `LAS-167` with `LAS-168` through `LAS-176`, all Done.
-- Infra and deploy: `LAS-179`, `LAS-180`, `LAS-181`, `LAS-182` Done; `LAS-177`
-  (template audit), `LAS-183`, and `LAS-185` open.
+- Infra and deploy: `LAS-179`, `LAS-180`, `LAS-181`, `LAS-182`, and `LAS-183`
+  Done; `LAS-177` (template audit), `LAS-184`, and `LAS-185` open.
 
 ## Session log
 
 One line per session: earlier verification evidence and the full acceptance
 matrices live in git history and the Linear comments. Sessions 001 to 013 ran on
-2026-11-10, 014 to 018 on 2026-11-16, 019 to 030 on 2026-11-17, and 031 to 034
+2026-11-10, 014 to 018 on 2026-11-16, 019 to 030 on 2026-11-17, and 031 to 035
 on 2026-11-18.
 
 | Session | Work item | Outcome |
@@ -306,3 +346,4 @@ on 2026-11-18.
 | 032 | `LAS-180` | production image and the container smoke gate. |
 | 033 | `LAS-181` | CI verification gate on push to `main`. |
 | 034 | `LAS-182` | production compose stack with Caddy TLS and its smoke gate. |
+| 035 | `LAS-183` | OCI provisioning runbook, idempotent host bootstrap, access-boundary verifier, and the stub provisioning gate. |

@@ -336,6 +336,32 @@ purpose. The development root `docker-compose.yml` is unchanged, and
 `docker compose -f deploy/docker-compose.yml down -v` deletes the Postgres and
 Caddy volumes, so it must never run on the server.
 
+LAS-183 is live: the Oracle Cloud provisioning boundary. `deploy/provisioning.md`
+is the console runbook: one Always Free `VM.Standard.A1.Flex` (2 OCPU, 12 GB,
+Ubuntu 24.04 aarch64, home region), a 50 GB boot volume plus a 100 GB block
+volume, a reserved public IPv4, a DNS-only `A` record, and a security list with
+only 22/tcp, 80/tcp, 443/tcp, and 443/udp. `deploy/bootstrap-host.sh` is
+idempotent: it installs Docker from the Ubuntu packages (Docker's apt repository
+with `docker-compose-plugin` as the fallback), creates the key-only `deploy` user
+in the `docker` group (root-equivalent, documented), writes
+`/etc/ssh/sshd_config.d/00-curved-access.conf` (public keys only, password and
+keyboard-interactive auth off, root login off, `AllowUsers ubuntu deploy`),
+formats only an unformatted 90-110 GiB data disk as ext4 and mounts it at
+`/srv/curved` with a UUID fstab entry, clones the checkout to
+`/srv/curved/checkout`, generates the mode-600 `deploy/.env` once without
+printing secrets, and starts the compose stack with Caddy's internal CA.
+`deploy/verify-host.sh` is read-only and exits 0 only when the OS, deploy
+account, sshd policy, ext4 data mount, 50 + 100 = 150 of the 200 GB block
+storage, env permissions, checkout, public listener allowlist (22/80/443 TCP
+plus 443/68 UDP, no public 5432 or 4747, `127.0.0.1:55432` present), healthy
+compose services, and the authenticated 200/401 HTTPS API all pass.
+`npm run smoke:provision` runs both scripts in a disposable `ubuntu:24.04`
+container with PATH stubs, and asserts a fresh bootstrap, an idempotent rerun,
+the verifier's happy path, and rejection of a public 5432 listener and password
+authentication. The OCI console steps and live host checks remain
+operator-executed; public ACME/HSTS/webhook is LAS-186, release and the SSH
+deploy job are LAS-185, and backups are LAS-187.
+
 Tests: 196 pass, 0 fail, including `test/http.test.ts`, `test/event-hub.test.ts`,
 `test/sse.test.ts`, the label and relation suites in `test/labels.test.ts` and
 `test/relations.test.ts`, the webhook and branch suite in `test/github.test.ts`,
@@ -382,6 +408,9 @@ carries the same rules as a project-agnostic template.
 | `Dockerfile` | Multi-stage `node:26-slim` production image: build (`npm ci`, `build:web`, prune dev), then a runtime stage as `USER node`. |
 | `.dockerignore` | Build-context exclusions for the image build. |
 | `deploy/` | Production compose stack (`docker-compose.yml`), the Caddy TLS config, and the environment template; app and Caddy are compose-network only, Postgres binds loopback. |
+| `deploy/provisioning.md` | OCI console runbook: topology, security list, reserved IPv4, DNS-only record, bootstrap and verifier commands, acceptance evidence, capacity fallback, access boundary, storage, troubleshooting. |
+| `deploy/bootstrap-host.sh` | Idempotent Ubuntu 24.04 host bootstrap: Docker install, key-only `deploy` user and sshd drop-in, ext4 data volume and UUID fstab entry, checkout, mode-600 env, compose up. |
+| `deploy/verify-host.sh` | Read-only host verifier: OS, deploy account, sshd policy, ext4 mount, 150 GB storage, env, checkout, listener allowlist, stack health, authenticated HTTPS API. |
 | `.github/workflows/verify.yml` | CI verification gate: push to main plus manual dispatch, Postgres 18 service, typecheck, architecture check, tests, web build. |
 | `src/domain/` | Pure rules and types: status and transition contract, actor matrix, claim and move policy, validation, key parsing, domain errors, shared record types. |
 | `src/application/` | Ports (`ports.ts`) and the full SQL-free use-case set: `projects.ts`, `issues.ts` with `issue-read-model.ts`, `agents.ts`, `queue.ts`, `blocking.ts`, `comments.ts`, `labels.ts`, `relations.ts`, and `github.ts`. |
@@ -401,6 +430,7 @@ carries the same rules as a project-agnostic template.
 | `scripts/acceptance-browser.mjs` | Dependency-free Chromium/CDP driver at 390x844 over the built SPA; writes run-scoped screenshots under the system temp dir. `CHROMIUM_BIN` overrides the binary search. |
 | `scripts/container-smoke.sh` | Container contract gate: starts the local DB, builds `curved:container-smoke`, and asserts the SPA shell, `401`/`200` on `/api/projects`, `already up to date` from the in-image migrate, a non-root uid, and the absent paths. `--platform`, `--build-only`, `--keep`. |
 | `scripts/compose-smoke.sh` | Production compose gate: throwaway project and env, HTTPS through Caddy's internal CA, SPA/API/ready/detail/SSE/webhook/binding assertions. |
+| `scripts/provision-smoke.sh` | Provisioning gate: runs the bootstrap and verifier in a disposable Ubuntu 24.04 container with PATH stubs; fresh and idempotent bootstrap, verifier positive, public-5432 and password-auth negatives. |
 | `.codegraph/` | Local index, gitignored. Refresh with `codegraph sync`. |
 
 ## Working rules
