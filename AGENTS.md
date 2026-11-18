@@ -376,8 +376,9 @@ containers with `--force-recreate` so the logging defaults reach Postgres, app,
 and Caddy. The verifier adds `docker-root`, `docker-config`,
 `docker-mount-dependency`, and `docker-prune-timer`; the provisioning gate
 proves the migration, config, mount dependency, timer, container recreation,
-idempotent rerun, and two verifier negatives. The live reboot proof remains
-operator-executed in `deploy/provisioning.md` section 9.4.
+idempotent rerun, and two verifier negatives. The live reboot proof was executed
+on the OCI instance on 2026-11-18: bootstrap, a full `verify-host: ok`, a reboot,
+and `verify-host: ok` again with the stack healthy.
 
 Tests: 196 pass, 0 fail, including `test/http.test.ts`, `test/event-hub.test.ts`,
 `test/sse.test.ts`, the label and relation suites in `test/labels.test.ts` and

@@ -449,6 +449,12 @@ sudo grep -F '/srv/curved' /etc/fstab
 usable) from a `/dev/disk/by-uuid/...` source in `/etc/fstab`, and the fstab line
 contains `nofail`.
 
+Device names are not stable across reboots. On the live host the 100 GB data
+volume enumerated as `/dev/sda` and the 50 GB boot volume as `/dev/sdb` after
+the first reboot, the reverse of the first boot. The fstab UUID and the
+`/srv/curved` mount are authoritative; never key on `/dev/sdX` after bootstrap,
+and re-read `lsblk` before passing `--data-device` on a later run.
+
 ```bash
 cd /srv/curved/checkout
 docker compose --env-file deploy/.env -f deploy/docker-compose.yml ps
@@ -734,6 +740,22 @@ Work outside in, and check the cheap causes first:
 
    A response here proves the stack is serving and the problem is outside the
    host. A connection error points at Caddy or Docker.
+
+### The verifier reports a public listener on 111
+
+A fresh OCI Ubuntu image can run `rpcbind`, which binds `0.0.0.0:111` TCP and
+UDP. The stack does not need it, and `verify-host` correctly rejects it as an
+unexpected public listener. Disable and mask both units:
+
+```bash
+sudo systemctl disable --now rpcbind.socket rpcbind.service
+sudo systemctl mask rpcbind.socket rpcbind.service
+sudo ss -ltnup | grep ':111' || echo "no 111"
+```
+
+The boot and host firewall fixes in this section are one-time host hygiene:
+bootstrap does not rewrite iptables or disable distribution services, and the
+verifier reports them so the operator can apply the fix.
 
 ### The app image fails to build or exits with an exec format error
 

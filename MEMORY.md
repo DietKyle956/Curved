@@ -147,6 +147,14 @@ git history and the Linear comments.
   `docker-mount-dependency`, and `docker-prune-timer`, and
   `provision-smoke` proves the migration, config, mount gate, timer, container
   recreation, rerun idempotency, and two verifier negatives.
+- Live host: OCI instance `curved`, public `158.101.127.247`, us-ashburn-1,
+  AD-1, Ubuntu 24.04.5 aarch64, 2 OCPU / 11 GB, 50 GB boot plus 100 GB data,
+  root compartment, private IP `10.0.0.165/24`. Access is the OCI key
+  `ssh-key-2026-11-18 (3).key` in `~/Downloads` as `ubuntu`; bootstrap installed
+  it for `deploy`. On 2026-11-18 bootstrap, `verify-host: ok`, reboot, and
+  `verify-host: ok` again passed; the stack is healthy and the SPA returns 200
+  over HTTPS with the localhost hostname; unauthenticated `/api/projects` is
+  401; 5432 and 4747 are filtered externally.
 - CI: `.github/workflows/verify.yml`, one global concurrency group `verify` with
   `cancel-in-progress: false`, a Postgres 18 service on 55432, then `npm ci`,
   `typecheck`, `check:arch`, `test`, and `build:web`. There is no deploy job yet;
@@ -288,17 +296,25 @@ git history and the Linear comments.
   legs issue `Secure` cookies.
 - `npm run smoke:container` runs against the local `curved` database and applies
   any pending migrations before the in-image command checks `already up to date`.
-- `LAS-183` live acceptance is operator-executed: this environment has no OCI
-  tenancy, reserved IPv4, or A1 instance, so the console steps, external port
-  scan, key-only SSH proof, and 150 GB layout were exercised through the stub
-  gate, not on a real host. `deploy/provisioning.md` section 10 is the operator
-  evidence record.
+- `LAS-183` and `LAS-184` live acceptance ran on 2026-11-18 on the live host
+  recorded under Current verified state, including the external port scan,
+  key-only SSH, 150 GB layout, reboot, and post-reboot verifier. The
+  missing-volume boot path (`RequiresMountsFor` plus
+  `ConditionPathIsMountPoint`) is config-proven and stub-tested, not
+  live-tested.
 - `npm run smoke:provision` pulls `ubuntu:24.04` when absent and stubs package
   installation, Docker, sshd, mount, and the network; the real apt and Docker
   path is live-only.
-- `LAS-184`'s reboot and missing-mount behavior is proven by the managed
-  configuration and the stub gate, not by a reboot of a real OCI instance; the
-  operator proof is `deploy/provisioning.md` section 9.4.
+- OCI device names are not stable: after the first reboot the 100 GB data
+  volume enumerated as `/dev/sda` and the 50 GB boot volume as `/dev/sdb`. The
+  fstab UUID mount and the mount-based verifier handle it; never reuse the
+  bootstrap `/dev/sdb` path after a reboot.
+- The fresh OCI Ubuntu image ran `rpcbind` on 111/tcp and 111/udp and shipped an
+  iptables INPUT that only allowed 22, so 80/443 timed out even with the
+  security list correct. Both were fixed on the live host: rpcbind disabled and
+  masked, and 80/tcp, 443/tcp, 443/udp ACCEPT rules persisted with
+  `netfilter-persistent`. Bootstrap does not manage either; `deploy/provisioning.md`
+  section 14 documents the checks and commands.
 - The `/var/lib/docker` migration is a `cp -a` copy, so it needs free space for
   a second copy on the data volume and leaves the old tree on the 50 GB boot
   volume until an operator removes it after `verify-host` passes.
@@ -315,8 +331,10 @@ git history and the Linear comments.
 
 `LAS-185` (release script and SSH deploy job) is next. It must declare
 `needs: verify`, never run `down -v` on the server, and account for the Docker
-data root now living at `/srv/curved/docker`. `LAS-186` (public ACME, HSTS,
-webhook delivery) and `LAS-187` (backups) follow. Run
+data root now living at `/srv/curved/docker`. The live host is up at
+`158.101.127.247` with the `deploy` account keyed by the OCI key, so the deploy
+job can target it once the repository secrets exist. `LAS-186` (public ACME,
+HSTS, webhook delivery) and `LAS-187` (backups) follow. Run
 `npm run smoke:provision` after any change to the host scripts.
 
 ## Tracker
@@ -371,4 +389,4 @@ on 2026-11-18.
 | 033 | `LAS-181` | CI verification gate on push to `main`. |
 | 034 | `LAS-182` | production compose stack with Caddy TLS and its smoke gate. |
 | 035 | `LAS-183` | OCI provisioning runbook, idempotent host bootstrap, access-boundary verifier, and the stub provisioning gate. |
-| 036 | `LAS-184` | Docker data root on the data volume with migration, systemd mount gate, log rotation, prune timer, verifier checks, reboot runbook, and the extended provisioning gate. |
+| 036 | `LAS-184` | Docker data root on the data volume with migration, systemd mount gate, log rotation, prune timer, verifier checks, reboot runbook, and the extended provisioning gate; live OCI bootstrap and reboot proof passed. |
