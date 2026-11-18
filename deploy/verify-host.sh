@@ -26,8 +26,17 @@ Options:
   --mount-dir DIR     Data volume mount point (default /srv/curved).
   --domain NAME       Hostname probed over HTTPS. Defaults to CURVED_DOMAIN
                       from <checkout>/deploy/.env, then localhost.
-  --skip-stack        Skip the Docker Compose and HTTPS API checks.
+  --skip-stack        Skip the Docker Compose and HTTPS API checks. Every
+                      host check, including the Docker data-root checks, runs.
   -h, --help          Show this message and exit.
+
+Checks, in order: os, deploy-user, deploy-ssh-dir, deploy-authorized-keys,
+sshd-config, data-mount, storage, docker-root (daemon data root is on the data
+volume), docker-config (daemon.json data root, log rotation, build-cache GC),
+docker-mount-dependency (drop-in and docker.service mount ordering),
+docker-prune-timer (curved-docker-prune units enabled and active), env-file,
+checkout, tcp-listeners, udp-listeners, then stack and https-api unless
+--skip-stack is given.
 
 Requires root: sshd -T needs it, and deploy/.env is mode 600. Secret values
 from the environment file are never printed.
@@ -134,6 +143,7 @@ fi
 
 CHECKOUT_DIR=$(realpath -m -- "$CHECKOUT_DIR")
 MOUNT_DIR=$(realpath -m -- "$MOUNT_DIR")
+DOCKER_ROOT="$MOUNT_DIR/docker"
 ENV_FILE="$CHECKOUT_DIR/deploy/.env"
 
 if [ "$DOMAIN_GIVEN" -eq 0 ]; then
@@ -391,6 +401,129 @@ check_storage() {
     fail_list storage "${reasons[@]}"
   else
     pass "storage: $summary"
+  fi
+}
+
+check_docker_root() {
+  local expected=""
+  local root=""
+  local target=""
+  local reasons=()
+  expected=$(realpath -m -- "$DOCKER_ROOT" 2>/dev/null || true)
+  expected=${expected%/}
+  if [ -z "$expected" ]; then
+    fail_list docker-root "cannot resolve $DOCKER_ROOT"
+    return
+  fi
+  if ! command -v docker >/dev/null 2>&1; then
+    fail_list docker-root "docker is not installed"
+    return
+  fi
+  if ! root=$(docker info --format '{{.DockerRootDir}}' 2>/dev/null); then
+    fail_list docker-root "docker info --format '{{.DockerRootDir}}' failed (docker may not be running)"
+    return
+  fi
+  root=${root%/}
+  if [ "$root" != "$expected" ]; then
+    reasons+=("docker data root is ${root:-empty}, expected $expected")
+  fi
+  if [ ! -d "$expected" ]; then
+    reasons+=("missing directory $expected")
+  fi
+  target=$(findmnt -n -o TARGET --target "$expected" 2>/dev/null || true)
+  if [ "$target" != "$MOUNT_DIR" ]; then
+    reasons+=("$expected is on ${target:-no mount}, expected $MOUNT_DIR")
+  fi
+  if [ "${#reasons[@]}" -gt 0 ]; then
+    fail_list docker-root "${reasons[@]}"
+  else
+    pass "docker-root: $root is on $MOUNT_DIR"
+  fi
+}
+
+check_docker_config() {
+  local path="/etc/docker/daemon.json"
+  local want=""
+  local reasons=()
+  if [ ! -f "$path" ]; then
+    fail_list docker-config "missing $path"
+    return
+  fi
+  while IFS= read -r want; do
+    if ! grep -Fq -- "$want" "$path" 2>/dev/null; then
+      reasons+=("$path lacks $want")
+    fi
+  done <<EOF
+"data-root": "$DOCKER_ROOT"
+"log-driver": "json-file"
+"max-size": "10m"
+"max-file": "3"
+"defaultKeepStorage": "5GB"
+EOF
+  if [ "${#reasons[@]}" -gt 0 ]; then
+    fail_list docker-config "${reasons[@]}"
+  else
+    pass "docker-config: $path sets data-root $DOCKER_ROOT, json-file rotation 10m x 3, and build-cache GC keeping 5GB"
+  fi
+}
+
+check_docker_mount_dependency() {
+  local dropin="/etc/systemd/system/docker.service.d/10-curved-data-root.conf"
+  local mounts=""
+  local state=""
+  local reasons=()
+  if [ ! -f "$dropin" ]; then
+    fail_list docker-mount-dependency "missing $dropin"
+    return
+  fi
+  if ! grep -Fqx -- "RequiresMountsFor=$DOCKER_ROOT" "$dropin" 2>/dev/null; then
+    reasons+=("$dropin lacks RequiresMountsFor=$DOCKER_ROOT")
+  fi
+  if ! grep -Fqx -- "ConditionPathIsMountPoint=$MOUNT_DIR" "$dropin" 2>/dev/null; then
+    reasons+=("$dropin lacks ConditionPathIsMountPoint=$MOUNT_DIR")
+  fi
+  mounts=$(systemctl show docker.service -p RequiresMountsFor --value 2>/dev/null || true)
+  case " $mounts " in
+    *" $DOCKER_ROOT "*) ;;
+    *) reasons+=("docker.service RequiresMountsFor is ${mounts:-empty}, expected $DOCKER_ROOT") ;;
+  esac
+  state=$(systemctl is-enabled docker 2>/dev/null || true)
+  if [ "$state" != enabled ]; then
+    reasons+=("docker is ${state:-not enabled}, expected enabled")
+  fi
+  if [ "${#reasons[@]}" -gt 0 ]; then
+    fail_list docker-mount-dependency "${reasons[@]}"
+  else
+    pass "docker-mount-dependency: $dropin requires the mount for $DOCKER_ROOT and docker is enabled"
+  fi
+}
+
+check_docker_prune_timer() {
+  local unit="/etc/systemd/system/curved-docker-prune.service"
+  local timer="/etc/systemd/system/curved-docker-prune.timer"
+  local state=""
+  local active=""
+  local reasons=()
+  if [ ! -f "$unit" ]; then
+    reasons+=("missing $unit")
+  fi
+  if [ ! -f "$timer" ]; then
+    reasons+=("missing $timer")
+  elif ! grep -q '^OnCalendar=' "$timer" 2>/dev/null; then
+    reasons+=("$timer has no OnCalendar= line")
+  fi
+  state=$(systemctl is-enabled curved-docker-prune.timer 2>/dev/null || true)
+  if [ "$state" != enabled ]; then
+    reasons+=("curved-docker-prune.timer is ${state:-not installed}, expected enabled")
+  fi
+  active=$(systemctl is-active curved-docker-prune.timer 2>/dev/null || true)
+  if [ "$active" != active ]; then
+    reasons+=("curved-docker-prune.timer is ${active:-inactive}, expected active")
+  fi
+  if [ "${#reasons[@]}" -gt 0 ]; then
+    fail_list docker-prune-timer "${reasons[@]}"
+  else
+    pass "docker-prune-timer: curved-docker-prune.timer is enabled and active with a daily OnCalendar schedule"
   fi
 }
 
@@ -671,6 +804,10 @@ check_authorized_keys
 check_sshd
 check_data_mount
 check_storage
+check_docker_root
+check_docker_config
+check_docker_mount_dependency
+check_docker_prune_timer
 check_env_file
 check_checkout
 check_tcp_listeners

@@ -1,4 +1,4 @@
-# Oracle Cloud host provisioning (LAS-183)
+# Oracle Cloud host provisioning (LAS-183, LAS-184)
 
 This runbook creates the production host for Curved on Oracle Cloud Infrastructure
 (OCI) and leaves it running the production Compose stack from `deploy/`. Follow it
@@ -35,7 +35,6 @@ Out of scope, owned by later tickets:
 
 | Ticket | Owns |
 |---|---|
-| LAS-184 | Moving Docker's data-root to `/srv/curved/docker` and proving the mount survives a reboot. |
 | LAS-185 | The release script and the GitHub Actions SSH deploy job. |
 | LAS-186 | Public ACME certificates, HSTS, and public GitHub webhook delivery. |
 | LAS-187 | Backups of Postgres and the Caddy volumes. |
@@ -283,7 +282,39 @@ The bootstrap performs these steps and prints `PASS <step>` for each:
   checkout. Compose auto-loads `deploy/.env` because that is the compose file's
   directory. Caddy uses its internal CA because `ACME_EMAIL` is empty.
 
-The drop-in allows only `ubuntu` and `deploy`, so run this on the Canonical
+Bootstrap also moves Docker onto the data volume, in an order that keeps Docker
+from ever starting without it:
+
+- Mounts the data volume at `/srv/curved` before it configures or starts
+  `docker.service`.
+- Creates `/srv/curved/docker` as `root:root` mode `0710` and sets `data-root`
+  to it in `/etc/docker/daemon.json`, together with the global `json-file` log
+  driver at `max-size` `10m` and `max-file` `3`, and build-cache garbage
+  collection enabled with `defaultKeepStorage` `5GB`.
+- Installs the docker.service drop-in
+  `/etc/systemd/system/docker.service.d/10-curved-data-root.conf` with
+  `RequiresMountsFor=/srv/curved/docker` and
+  `ConditionPathIsMountPoint=/srv/curved`.
+- Installs and enables `curved-docker-prune.timer`, which runs
+  `curved-docker-prune.service` daily at 04:37 with a 15 minute randomized
+  delay: `docker builder prune -af --filter until=168h` drops build cache older
+  than 7 days and `docker image prune -f --filter until=720h` drops unused
+  images older than 30 days.
+- Migrates an existing default root. When the configured root is still
+  `/var/lib/docker`, that directory is non-empty, and `/srv/curved/docker` has
+  no `image` directory, bootstrap stops Docker and copies the tree with
+  `cp -a /var/lib/docker/. /srv/curved/docker/`, keeping the old directory in
+  place. A rerun with unchanged inputs does not copy again.
+- Recreates the Compose containers once when the daemon configuration changes,
+  because Docker's logging defaults apply only to containers created after the
+  change. The LAS-184 upgrade therefore gives the existing Postgres, app, and
+  Caddy containers the 10 MB x 3 rotation. A rerun with unchanged inputs does
+  not recreate them.
+
+The old `/var/lib/docker` can be removed only after `verify-host` passes, to
+reclaim space on the 50 GB boot volume.
+
+The sshd drop-in allows only `ubuntu` and `deploy`, so run this on the Canonical
 Ubuntu image whose default user is `ubuntu`, not on an image with a different
 administrative account.
 
@@ -430,6 +461,53 @@ Expected: `db` and `app` are `running (healthy)`, and `caddy` is `running`. Use
 docker compose --env-file deploy/.env -f deploy/docker-compose.yml logs --tail=100 app caddy
 ```
 
+Confirm Docker runs from the data volume, with the managed configuration, mount
+gate, and prune timer:
+
+```bash
+docker info --format '{{.DockerRootDir}}'
+```
+
+Expected: `/srv/curved/docker`.
+
+```bash
+cat /etc/docker/daemon.json
+```
+
+Expected: the managed document from section 7, with `data-root`
+`/srv/curved/docker`, `log-driver` `json-file`, `max-size` `10m`, `max-file`
+`3`, and `builder.gc.enabled` true with `defaultKeepStorage` `5GB`.
+
+```bash
+systemctl show docker.service -p RequiresMountsFor -p ConditionPathIsMountPoint
+```
+
+Expected: `RequiresMountsFor=/srv/curved/docker` and
+`ConditionPathIsMountPoint=/srv/curved`.
+
+```bash
+systemctl list-timers curved-docker-prune.timer
+journalctl -u curved-docker-prune.service
+```
+
+Expected: the timer line names `curved-docker-prune.timer` and
+`curved-docker-prune.service`, with a next run at 04:37 plus the randomized
+delay. The journal shows the last run of
+`docker builder prune -af --filter until=168h` and
+`docker image prune -f --filter until=720h`; it is empty until the first timer
+fire.
+
+```bash
+cd /srv/curved/checkout
+docker inspect --format '{{json .HostConfig.LogConfig}}' \
+  "$(docker compose --env-file deploy/.env -f deploy/docker-compose.yml ps -q db)"
+```
+
+Expected: `{"Type":"json-file","Config":{"max-file":"3","max-size":"10m"}}`.
+This proves the running Postgres container was recreated after the daemon
+defaults changed; containers created before LAS-184 would still show their old
+logging configuration.
+
 ```bash
 sudo ss -ltnup
 ```
@@ -464,6 +542,37 @@ Expected: `permitrootlogin no`, `passwordauthentication no`,
 from `git status`, proving the checkout is clean and the environment file is
 untracked.
 
+### 9.4 Reboot persistence
+
+Reboot the host and prove the stack returns without manual steps:
+
+```bash
+sudo reboot
+```
+
+Reconnect in a new SSH session and check the boot, the mount, the data root, the
+stack, and the verifier:
+
+```bash
+uptime -p
+findmnt /srv/curved
+docker info --format '{{.DockerRootDir}}'
+cd /srv/curved/checkout
+docker compose --env-file deploy/.env -f deploy/docker-compose.yml ps
+sudo bash /srv/curved/checkout/deploy/verify-host.sh
+```
+
+Expected: `uptime -p` reports minutes, `findmnt` shows the ext4 data volume at
+`/srv/curved`, `docker info` prints `/srv/curved/docker`, `db` and `app` are
+`running (healthy)` with `caddy` `running`, and the verifier ends with
+`verify-host: ok`.
+
+`RequiresMountsFor=/srv/curved/docker` plus
+`ConditionPathIsMountPoint=/srv/curved` is what makes a missing data volume
+loud: Docker refuses to start rather than silently creating an empty
+`/srv/curved` on the boot volume and running the stack against empty named
+volumes.
+
 ## 10. Acceptance evidence
 
 The four acceptance criteria for LAS-183, with the evidence that closes each one:
@@ -475,9 +584,19 @@ The four acceptance criteria for LAS-183, with the evidence that closes each one
 | AC3 | The host uses 150 GB of block storage against the 200 GB Always Free allowance. | OCI shows a 50 GB boot volume plus a 100 GB attached block volume; `verify-host` prints its `PASS storage: ...` line; `df -h / /srv/curved` shows the boot and data filesystems; section 13 records the 50 + 100 = 150 of 200 GB math. |
 | AC4 | The out-of-capacity fallback is documented and does not switch to the micro shape. | Section 11 states the 24-hour rule, the Pay As You Go upgrade and same-shape retry in the home region, and explicitly forbids `VM.Standard.E2.1.Micro`. |
 
-Record the console screenshots, the two command transcripts, and the verifier
-output with the ticket. Do not record the environment file, the UI token, or any
-generated secret.
+The four acceptance criteria for LAS-184, with the evidence that closes each
+one:
+
+| AC | Criterion | Evidence |
+|---|---|---|
+| AC1 | Docker's data-root is `/srv/curved/docker` on the 100 GB data volume; an existing `/var/lib/docker` is migrated without data loss. | `docker info --format '{{.DockerRootDir}}'` prints `/srv/curved/docker`; `cat /etc/docker/daemon.json` shows the managed `data-root`; the bootstrap transcript contains the migration `PASS docker-data (/srv/curved/docker)` line. |
+| AC2 | docker.service cannot start when the data volume is not mounted. | The drop-in `/etc/systemd/system/docker.service.d/10-curved-data-root.conf` sets `RequiresMountsFor=/srv/curved/docker` and `ConditionPathIsMountPoint=/srv/curved`; `systemctl show docker.service -p RequiresMountsFor -p ConditionPathIsMountPoint` reports both; a reboot with the block volume detached or the mount missing shows `docker.service` not running. |
+| AC3 | Global log rotation is json-file 10 MB x 3 and an enabled daily prune timer handles build cache and unused images. | `cat /etc/docker/daemon.json` shows `log-driver` `json-file` with `max-size` `10m` and `max-file` `3`; `docker inspect --format '{{json .HostConfig.LogConfig}}' "$(docker compose ... ps -q db)"` shows the recreated container on `json-file` with `max-size` `10m` and `max-file` `3`; `systemctl list-timers curved-docker-prune.timer` shows the daily 04:37 schedule; `journalctl -u curved-docker-prune.service` shows the `builder prune` and `image prune` runs. |
+| AC4 | The stack returns after a reboot without manual steps. | The section 9.4 transcript: `uptime -p` reports minutes, `findmnt /srv/curved` shows the data volume, `docker info` prints `/srv/curved/docker`, `docker compose ps` shows the stack healthy, and `verify-host` ends with `verify-host: ok`. |
+
+Record the console screenshots, the two command transcripts, the section 9.4
+reboot transcript, and the verifier output with the ticket. Do not record the
+environment file, the UI token, or any generated secret.
 
 ## 11. Capacity fallback
 
@@ -541,18 +660,21 @@ plan against.
 ```text
 /srv/curved/                 100 GB ext4 (about 98 GiB usable), UUID in fstab, nofail
   checkout/                  git checkout owned by deploy, includes deploy/
-  docker/                    future Docker data-root (LAS-184), not created by this ticket
+  docker/                    live Docker data root (images, overlay2, volumes)
   backups/                   future backup target (LAS-187), not created by this ticket
 ```
 
-Until LAS-184 moves Docker's data-root, Docker images, the Postgres volume, and
-the Caddy volumes live under `/var/lib/docker` on the 50 GB boot volume. Watch
-`df -h /` after image builds and do not store application data on the boot disk.
-The Postgres and Caddy data are named Compose volumes:
+`/srv/curved/docker` is Docker's data root: images, the `overlay2` storage
+driver, the build cache, and the Postgres and Caddy named volumes all live on
+the 100 GB data volume. The 50 GB boot volume holds the OS and the Docker
+packages only.
 
-- `curved-prod_curved-pgdata`
-- `curved-prod_curved-caddy-data`
-- `curved-prod_curved-caddy-config`
+The Postgres and Caddy data are named Compose volumes, now under
+`/srv/curved/docker/volumes`:
+
+- `/srv/curved/docker/volumes/curved-prod_curved-pgdata`
+- `/srv/curved/docker/volumes/curved-prod_curved-caddy-data`
+- `/srv/curved/docker/volumes/curved-prod_curved-caddy-config`
 
 **Never run
 `docker compose --env-file deploy/.env -f deploy/docker-compose.yml down -v`
@@ -629,6 +751,43 @@ docker compose --env-file deploy/.env -f deploy/docker-compose.yml up -d
 emulation or fails with `exec format error`, and Node 26 type stripping aborts
 under emulation. The Dockerfile's `node:26-slim` base, `postgres:18-alpine`, and
 `caddy:2.10-alpine` are multi-arch, so a native build needs no other change.
+
+### Docker does not start after a reboot
+
+Docker is gated on the data volume, so a missing mount stops it instead of
+letting it run on an empty root. Check the mount and the two conditions:
+
+```bash
+findmnt /srv/curved
+systemctl show docker.service -p RequiresMountsFor -p ConditionPathIsMountPoint
+```
+
+Expected: `findmnt` prints the ext4 data volume, and the conditions report
+`RequiresMountsFor=/srv/curved/docker` and
+`ConditionPathIsMountPoint=/srv/curved`. If `findmnt` prints nothing, the block
+volume is detached or not attached yet. Confirm it in the OCI console, then
+mount it and start Docker:
+
+```bash
+sudo mount /srv/curved
+sudo systemctl start docker
+```
+
+### `docker info` still shows `/var/lib/docker`
+
+The daemon is running with the old configuration: either it was not restarted
+after the drop-in and `daemon.json` were written, or `daemon.json` was replaced
+by hand. Inspect the running root and the files:
+
+```bash
+docker info --format '{{.DockerRootDir}}'
+cat /etc/docker/daemon.json
+sudo systemctl show docker.service -p RequiresMountsFor
+```
+
+Rerun bootstrap with the same arguments. It rewrites the managed files
+idempotently, restarts Docker only when they changed, and leaves the existing
+data in place.
 
 ### Bootstrap used the wrong volume device
 

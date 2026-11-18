@@ -17,9 +17,11 @@ usage() {
 Usage: sudo bash deploy/bootstrap-host.sh [options]
 
 Prepare an Ubuntu 24.04 host to run the curved production stack: install Docker,
-mount the 100 GiB data volume with an fstab entry, create the key-only deploy
-user, harden sshd, clone the repository, generate deploy/.env once, and start
-the stack. Every step is safe to re-run.
+mount the 100 GiB data volume with an fstab entry, move Docker's data root onto
+that volume, create the key-only deploy user, harden sshd, clone the
+repository, generate deploy/.env once, and start the stack. Docker images,
+containers and build cache live on the data volume (<mount-dir>/docker), so a
+host rebuild does not re-download the stack. Every step is safe to re-run.
 
 Options:
   --key FILE          Authorized public key for the deploy user (repeatable)
@@ -63,6 +65,28 @@ require_command() {
 
 single_quote() {
   printf "%s" "${1//\'/\'\\\'\'}"
+}
+
+# write_if_changed PATH MODE CONTENT
+# Replace PATH only when its content differs, printing "changed" or
+# "unchanged". The file is swapped in atomically, so re-runs leave it alone.
+write_if_changed() {
+  local path=$1 mode=$2 content=$3
+  local dir tmp current=
+  dir=$(dirname "$path")
+  install -d -m 0755 "$dir"
+  if [ -f "$path" ]; then
+    current=$(cat "$path")
+  fi
+  if [ "$current" = "$content" ]; then
+    printf 'unchanged'
+    return 0
+  fi
+  tmp=$(mktemp "$dir/.$(basename "$path").XXXXXX")
+  printf '%s\n' "$content" > "$tmp"
+  chmod "$mode" "$tmp"
+  mv "$tmp" "$path"
+  printf 'changed'
 }
 
 while [ "$#" -gt 0 ]; do
@@ -150,6 +174,7 @@ fi
 if [ "$MOUNT_DIR" = "$CHECKOUT_DIR" ]; then
   usage_error "--mount-dir and --checkout-dir must differ"
 fi
+DOCKER_DATA_DIR=$MOUNT_DIR/docker
 case "$DOMAIN" in
   *[[:space:]]*) usage_error "--domain must not contain whitespace" ;;
 esac
@@ -213,7 +238,6 @@ require_command useradd passwd
 require_command usermod passwd
 require_command sshd openssh-server
 
-systemctl enable --now docker
 pass "packages (docker, compose, base tools)"
 
 size_min=$((90 * 1024 * 1024 * 1024))
@@ -346,6 +370,174 @@ if ! awk -v uuid="UUID=$data_uuid" '$1 == uuid { found = 1 } END { exit found ? 
     "$data_uuid" "$MOUNT_DIR" >> /etc/fstab
 fi
 pass "filesystem ($data_dev at $MOUNT_DIR)"
+
+# Docker keeps images, containers and build cache on the data volume so a host
+# rebuild never re-downloads the stack. This runs after the mount step and
+# before the daemon may start: the drop-in below makes docker.service wait for
+# the mount, and nothing earlier enables or starts docker.
+mkdir -p "$DOCKER_DATA_DIR"
+chown root:root "$DOCKER_DATA_DIR"
+chmod 0710 "$DOCKER_DATA_DIR"
+
+docker_daemon_json=/etc/docker/daemon.json
+docker_daemon_backup=/etc/docker/daemon.json.pre-curved
+docker_old_root=/var/lib/docker
+docker_unit_dir=/etc/systemd/system
+docker_dropin_dir=$docker_unit_dir/docker.service.d
+docker_dropin=$docker_dropin_dir/10-curved-data-root.conf
+docker_prune_service=$docker_unit_dir/curved-docker-prune.service
+docker_prune_timer=$docker_unit_dir/curved-docker-prune.timer
+docker_bin=$(command -v docker)
+
+docker_current_root=
+if [ -f "$docker_daemon_json" ]; then
+  docker_current_root=$(sed -n \
+    's/^[[:space:]]*"data-root"[[:space:]]*:[[:space:]]*"\([^"]*\)".*$/\1/p' \
+    "$docker_daemon_json" | head -n 1) || true
+fi
+if [ -z "$docker_current_root" ]; then
+  docker_current_root=$docker_old_root
+fi
+
+# Migrate the existing rootfs once: only when docker still runs on the old
+# default, that directory holds data, and the target has no image store yet.
+docker_migrated=0
+docker_socket_was_active=0
+if [ "$docker_current_root" = "$docker_old_root" ] &&
+  [ "$(realpath -m "$DOCKER_DATA_DIR")" != "$(realpath -m "$docker_old_root")" ] &&
+  [ -d "$docker_old_root" ] &&
+  [ -n "$(ls -A "$docker_old_root" 2>/dev/null || true)" ] &&
+  [ ! -e "$DOCKER_DATA_DIR/image" ]; then
+  # Stop the socket first so nothing can socket-activate the daemon mid-copy.
+  if systemctl is-active --quiet docker.socket; then
+    docker_socket_was_active=1
+    systemctl stop docker.socket
+  fi
+  if systemctl is-active --quiet docker; then
+    systemctl stop docker
+  fi
+  cp -a /var/lib/docker/. "$DOCKER_DATA_DIR"/
+  # cp -a copies the source directory's mode onto the target; reassert the
+  # managed 0710 root:root after a migration.
+  chown root:root "$DOCKER_DATA_DIR"
+  chmod 0710 "$DOCKER_DATA_DIR"
+  docker_migrated=1
+fi
+
+desired_daemon_json=$(
+  printf '{\n'
+  printf '  "data-root": "%s",\n' "$DOCKER_DATA_DIR"
+  printf '  "log-driver": "json-file",\n'
+  printf '  "log-opts": {\n'
+  printf '    "max-size": "10m",\n'
+  printf '    "max-file": "3"\n'
+  printf '  },\n'
+  printf '  "builder": {\n'
+  printf '    "gc": {\n'
+  printf '      "enabled": true,\n'
+  printf '      "defaultKeepStorage": "5GB"\n'
+  printf '    }\n'
+  printf '  }\n'
+  printf '}\n'
+)
+current_daemon_json=
+if [ -f "$docker_daemon_json" ]; then
+  current_daemon_json=$(cat "$docker_daemon_json")
+fi
+docker_json_changed=0
+if [ "$current_daemon_json" != "$desired_daemon_json" ]; then
+  if [ -e "$docker_daemon_json" ] && [ ! -e "$docker_daemon_backup" ]; then
+    cp -a "$docker_daemon_json" "$docker_daemon_backup"
+  fi
+  write_if_changed "$docker_daemon_json" 0644 "$desired_daemon_json" >/dev/null
+  docker_json_changed=1
+fi
+
+desired_dropin=$(
+  printf '[Unit]\n'
+  printf 'RequiresMountsFor=%s\n' "$DOCKER_DATA_DIR"
+  printf 'ConditionPathIsMountPoint=%s\n' "$MOUNT_DIR"
+)
+docker_dropin_changed=0
+if [ "$(write_if_changed "$docker_dropin" 0644 "$desired_dropin")" = changed ]; then
+  docker_dropin_changed=1
+fi
+
+desired_prune_service=$(
+  printf '[Unit]\n'
+  printf 'Description=Prune unused Curved Docker build cache and images\n'
+  printf 'Requires=docker.service\n'
+  printf 'After=docker.service\n'
+  printf '\n'
+  printf '[Service]\n'
+  printf 'Type=oneshot\n'
+  printf 'ExecStart=%s builder prune -af --filter until=168h\n' "$docker_bin"
+  printf 'ExecStart=%s image prune -f --filter until=720h\n' "$docker_bin"
+)
+write_if_changed "$docker_prune_service" 0644 "$desired_prune_service" >/dev/null
+
+desired_prune_timer=$(
+  printf '[Unit]\n'
+  printf 'Description=Daily prune of unused Curved Docker build cache and images\n'
+  printf '\n'
+  printf '[Timer]\n'
+  printf 'OnCalendar=*-*-* 04:37:00\n'
+  printf 'RandomizedDelaySec=15m\n'
+  printf 'Persistent=true\n'
+  printf '\n'
+  printf '[Install]\n'
+  printf 'WantedBy=timers.target\n'
+)
+write_if_changed "$docker_prune_timer" 0644 "$desired_prune_timer" >/dev/null
+
+systemctl daemon-reload
+systemctl enable docker
+if [ "$docker_json_changed" -eq 1 ] || [ "$docker_dropin_changed" -eq 1 ] ||
+  [ "$docker_migrated" -eq 1 ]; then
+  systemctl restart docker
+elif ! systemctl is-active --quiet docker; then
+  systemctl start docker
+fi
+if [ "$docker_socket_was_active" -eq 1 ] && ! systemctl is-active --quiet docker.socket; then
+  systemctl start docker.socket
+fi
+
+systemctl enable curved-docker-prune.timer
+systemctl start curved-docker-prune.timer
+
+docker_live_root=
+docker_wait=0
+while [ -z "$docker_live_root" ] && [ "$docker_wait" -lt 30 ]; do
+  docker_live_root=$(docker info --format '{{.DockerRootDir}}' 2>/dev/null || true)
+  if [ -z "$docker_live_root" ]; then
+    docker_wait=$((docker_wait + 1))
+    sleep 1
+  fi
+done
+if [ -z "$docker_live_root" ]; then
+  die "docker did not become ready within 30s; check journalctl -u docker"
+fi
+docker_expected_root=$(realpath -m "$DOCKER_DATA_DIR")
+if [ "$(realpath -m "$docker_live_root")" != "$docker_expected_root" ]; then
+  die "docker uses $docker_live_root as its data root, expected $docker_expected_root; check $docker_daemon_json"
+fi
+
+if [ "$docker_migrated" -eq 1 ]; then
+  pass "docker-data ($DOCKER_DATA_DIR)"
+else
+  pass "docker-data (unchanged)"
+fi
+if [ "$docker_json_changed" -eq 1 ]; then
+  pass "docker-config (data-root $DOCKER_DATA_DIR)"
+else
+  pass "docker-config (unchanged)"
+fi
+if [ "$docker_dropin_changed" -eq 1 ]; then
+  pass "docker-mount-dependency (docker.service requires $MOUNT_DIR)"
+else
+  pass "docker-mount-dependency (unchanged)"
+fi
+pass "docker-prune-timer (daily build cache and image prune)"
 
 if ! id -u deploy >/dev/null 2>&1; then
   useradd --create-home --shell /bin/bash deploy
@@ -490,8 +682,14 @@ if [ "$WANT_STACK" -eq 1 ]; then
   fi
   # runuser keeps root's HOME; the docker CLI skips plugin discovery it cannot
   # read, so point it at the deploy home to find the compose plugin.
+  compose_command="docker compose -f deploy/docker-compose.yml up -d --build --wait --wait-timeout 900"
+  if [ "$docker_json_changed" -eq 1 ]; then
+    # Daemon logging defaults only reach new containers, so recreate the stack
+    # once when daemon.json changes (for example the LAS-184 upgrade).
+    compose_command="$compose_command --force-recreate"
+  fi
   runuser -u deploy -- env HOME=/home/deploy bash -c \
-    "cd '$(single_quote "$CHECKOUT_DIR")' && docker compose -f deploy/docker-compose.yml up -d --build --wait --wait-timeout 900"
+    "cd '$(single_quote "$CHECKOUT_DIR")' && $compose_command"
   pass "stack"
 fi
 

@@ -362,6 +362,23 @@ authentication, and a non-public `--key` line. The OCI console steps and live
 host checks remain operator-executed; public ACME/HSTS/webhook is LAS-186,
 release and the SSH deploy job are LAS-185, and backups are LAS-187.
 
+LAS-184 is live: durable data root and host hygiene. Bootstrap mounts the data
+volume before Docker may start, creates `/srv/curved/docker` (root:root 0710),
+writes the managed `/etc/docker/daemon.json` (`data-root` `/srv/curved/docker`,
+`json-file` rotation `10m` x `3`, builder GC `5GB`), installs the
+`/etc/systemd/system/docker.service.d/10-curved-data-root.conf` drop-in
+(`RequiresMountsFor=/srv/curved/docker`, `ConditionPathIsMountPoint=/srv/curved`),
+and installs `curved-docker-prune.service` plus a daily 04:37 timer that prunes
+build cache older than 168h and unused images older than 720h. An existing
+`/var/lib/docker` is copied once with `cp -a` and kept; the migrated root is
+re-chmoded 0710, and the run that changes `daemon.json` recreates the Compose
+containers with `--force-recreate` so the logging defaults reach Postgres, app,
+and Caddy. The verifier adds `docker-root`, `docker-config`,
+`docker-mount-dependency`, and `docker-prune-timer`; the provisioning gate
+proves the migration, config, mount dependency, timer, container recreation,
+idempotent rerun, and two verifier negatives. The live reboot proof remains
+operator-executed in `deploy/provisioning.md` section 9.4.
+
 Tests: 196 pass, 0 fail, including `test/http.test.ts`, `test/event-hub.test.ts`,
 `test/sse.test.ts`, the label and relation suites in `test/labels.test.ts` and
 `test/relations.test.ts`, the webhook and branch suite in `test/github.test.ts`,
@@ -408,9 +425,9 @@ carries the same rules as a project-agnostic template.
 | `Dockerfile` | Multi-stage `node:26-slim` production image: build (`npm ci`, `build:web`, prune dev), then a runtime stage as `USER node`. |
 | `.dockerignore` | Build-context exclusions for the image build. |
 | `deploy/` | Production compose stack (`docker-compose.yml`), the Caddy TLS config, and the environment template; app and Caddy are compose-network only, Postgres binds loopback. |
-| `deploy/provisioning.md` | OCI console runbook: topology, security list, reserved IPv4, DNS-only record, bootstrap and verifier commands, acceptance evidence, capacity fallback, access boundary, storage, troubleshooting. |
-| `deploy/bootstrap-host.sh` | Idempotent Ubuntu 24.04 host bootstrap: Docker install, key-only `deploy` user and sshd drop-in, ext4 data volume and UUID fstab entry, checkout, mode-600 env, compose up. |
-| `deploy/verify-host.sh` | Read-only host verifier: OS, deploy account, sshd policy, ext4 mount, 150 GB storage, env, checkout, listener allowlist, stack health, authenticated HTTPS API. |
+| `deploy/provisioning.md` | OCI console runbook: topology, security list, reserved IPv4, DNS-only record, bootstrap and verifier commands, Docker data root and mount gate, reboot persistence, LAS-183 and LAS-184 acceptance evidence, capacity fallback, access boundary, storage, troubleshooting. |
+| `deploy/bootstrap-host.sh` | Idempotent Ubuntu 24.04 host bootstrap: Docker install, Docker data root on the data volume with the mount dependency, log rotation and prune timer, key-only `deploy` user and sshd drop-in, ext4 data volume and UUID fstab entry, checkout, mode-600 env, compose up. |
+| `deploy/verify-host.sh` | Read-only host verifier: OS, deploy account, sshd policy, ext4 mount, 150 GB storage, Docker data root, daemon config, mount dependency and prune timer, env, checkout, listener allowlist, stack health, authenticated HTTPS API. |
 | `.github/workflows/verify.yml` | CI verification gate: push to main plus manual dispatch, Postgres 18 service, typecheck, architecture check, tests, web build. |
 | `src/domain/` | Pure rules and types: status and transition contract, actor matrix, claim and move policy, validation, key parsing, domain errors, shared record types. |
 | `src/application/` | Ports (`ports.ts`) and the full SQL-free use-case set: `projects.ts`, `issues.ts` with `issue-read-model.ts`, `agents.ts`, `queue.ts`, `blocking.ts`, `comments.ts`, `labels.ts`, `relations.ts`, and `github.ts`. |
@@ -430,7 +447,7 @@ carries the same rules as a project-agnostic template.
 | `scripts/acceptance-browser.mjs` | Dependency-free Chromium/CDP driver at 390x844 over the built SPA; writes run-scoped screenshots under the system temp dir. `CHROMIUM_BIN` overrides the binary search. |
 | `scripts/container-smoke.sh` | Container contract gate: starts the local DB, builds `curved:container-smoke`, and asserts the SPA shell, `401`/`200` on `/api/projects`, `already up to date` from the in-image migrate, a non-root uid, and the absent paths. `--platform`, `--build-only`, `--keep`. |
 | `scripts/compose-smoke.sh` | Production compose gate: throwaway project and env, HTTPS through Caddy's internal CA, SPA/API/ready/detail/SSE/webhook/binding assertions. |
-| `scripts/provision-smoke.sh` | Provisioning gate: runs the bootstrap and verifier in a disposable Ubuntu 24.04 container with PATH stubs; fresh and idempotent bootstrap, verifier positive, public-5432 and password-auth negatives. |
+| `scripts/provision-smoke.sh` | Provisioning gate: runs the bootstrap and verifier in a disposable Ubuntu 24.04 container with PATH stubs; fresh and idempotent bootstrap, Docker data-root migration, daemon config, mount dependency, prune timer, container recreation, verifier positive, wrong-root and disabled-timer negatives, public-5432 and password-auth negatives. |
 | `.codegraph/` | Local index, gitignored. Refresh with `codegraph sync`. |
 
 ## Working rules

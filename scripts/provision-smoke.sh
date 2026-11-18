@@ -1,10 +1,16 @@
 #!/usr/bin/env bash
 # Provisioning gate: run deploy/bootstrap-host.sh and deploy/verify-host.sh in a
 # throwaway ubuntu:24.04 container, with PATH stubs standing in for the host
-# tools they call. Asserts the bootstrap contract, an idempotent re-run, the
-# verifier's happy path, and two security boundaries (public 5432, password
-# authentication). The container and the temp harness are always removed; the
-# harness is kept with `--keep`.
+# tools they call. Asserts the bootstrap contract (including the docker data
+# root on the data volume, migration of a pre-existing /var/lib/docker,
+# daemon.json log rotation and build-cache GC, the docker.service mount
+# dependency, and the enabled prune timer), the first compose up recreating
+# containers so the new log defaults take effect while the idempotent re-run
+# starts them without recreation, the verifier's
+# happy path with all four docker checks passing, two docker verifier negatives
+# (wrong data root, disabled prune timer), and two security boundaries (public
+# 5432, password authentication). The container and the temp harness are always
+# removed; the harness is kept with `--keep`.
 set -euo pipefail
 
 ROOT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -23,11 +29,17 @@ Runs deploy/bootstrap-host.sh and deploy/verify-host.sh inside a throwaway
 ubuntu:24.04 container. The host tools those scripts call (apt, docker, sshd,
 lsblk, findmnt, blkid, blockdev, mount, mkfs.ext4, ss, curl, git, openssl,
 systemctl, df) are replaced by stubs that model a 50 GiB root disk with a
-100 GiB data volume. The checks are: fresh bootstrap, deploy user and key-only
-SSH, sshd policy, one ext4 fstab entry, checkout, generated environment with no
-secret on stdout, one compose up, an idempotent re-run, the verifier's happy
-path, a public 5432 listener rejected, password authentication rejected, and a
---no-stack re-run that starts nothing.
+100 GiB data volume. The checks are: fresh bootstrap, docker data root on the
+data volume, a one-time migration of the existing /var/lib/docker, daemon.json
+log rotation (json-file 10m x 3) and build-cache GC (5GB), the docker.service
+mount dependency, the enabled daily prune timer, deploy user and key-only SSH,
+sshd policy, one ext4 fstab entry, checkout, generated environment with no
+secret on stdout, one compose up that recreates containers so the new log
+defaults apply, an idempotent re-run that rewrites nothing, does not restart
+docker, and does not recreate containers, the verifier's happy path (including
+the four docker PASS lines), a wrong docker data root rejected, a disabled
+prune timer rejected, a public 5432 listener rejected, password authentication
+rejected, and a --no-stack re-run that starts nothing.
 
   --keep     Keep the temp harness directory (stubs plus scenario).
   -h, --help Show this message.
@@ -117,7 +129,134 @@ STUB
 
 cat > "$HARNESS_DIR/bin/systemctl" <<'STUB'
 #!/usr/bin/env bash
+# systemctl stub: unit state lives in /run/smoke/systemctl, so the bootstrap can
+# enable/start/restart units and the verifier can read that state back. A
+# /run/smoke/timer-disabled marker makes the prune timer report disabled.
 set -euo pipefail
+state=/run/smoke/systemctl
+mkdir -p "$state"
+
+cmd=""
+unit=""
+prop=""
+value_only=0
+quiet=0
+now=0
+args=("$@")
+i=0
+while [ "$i" -lt "${#args[@]}" ]; do
+  arg=${args[$i]}
+  case "$arg" in
+    --quiet|-q)
+      quiet=1
+      ;;
+    --value)
+      value_only=1
+      ;;
+    --now)
+      now=1
+      ;;
+    -p|--property)
+      i=$((i + 1))
+      prop=${args[$i]:-}
+      ;;
+    --property=*)
+      prop=${arg#--property=}
+      ;;
+    -*)
+      ;;
+    *)
+      if [ -z "$cmd" ]; then
+        cmd=$arg
+      elif [ -z "$unit" ]; then
+        unit=$arg
+      fi
+      ;;
+  esac
+  i=$((i + 1))
+done
+
+count_restart() {
+  local count=0
+  if [ -f "$state/restart-$1" ]; then
+    count=$(cat "$state/restart-$1")
+  fi
+  printf '%s\n' "$((count + 1))" > "$state/restart-$1"
+}
+
+case "$cmd" in
+  daemon-reload)
+    exit 0
+    ;;
+  enable)
+    [ -n "$unit" ] || exit 1
+    : > "$state/enabled-$unit"
+    if [ "$now" -eq 1 ]; then
+      : > "$state/active-$unit"
+    fi
+    exit 0
+    ;;
+  start)
+    [ -n "$unit" ] || exit 1
+    : > "$state/active-$unit"
+    exit 0
+    ;;
+  stop)
+    rm -f "$state/active-$unit"
+    exit 0
+    ;;
+  restart)
+    [ -n "$unit" ] || exit 1
+    : > "$state/active-$unit"
+    count_restart "$unit"
+    exit 0
+    ;;
+  is-active)
+    if [ -e "$state/active-$unit" ]; then
+      if [ "$quiet" -eq 0 ]; then
+        printf 'active\n'
+      fi
+      exit 0
+    fi
+    if [ "$quiet" -eq 0 ]; then
+      printf 'inactive\n'
+    fi
+    exit 1
+    ;;
+  is-enabled)
+    if [ "$unit" = curved-docker-prune.timer ] && [ -e /run/smoke/timer-disabled ]; then
+      printf 'disabled\n'
+      exit 0
+    fi
+    if [ -e "$state/enabled-$unit" ]; then
+      printf 'enabled\n'
+    else
+      printf 'disabled\n'
+    fi
+    exit 0
+    ;;
+  show)
+    case "$unit" in
+      docker.service)
+        if [ "$prop" = RequiresMountsFor ]; then
+          conf=/etc/systemd/system/docker.service.d/10-curved-data-root.conf
+          mounts=""
+          if [ -f "$conf" ]; then
+            mounts=$(sed -n 's/^RequiresMountsFor=//p' "$conf" | head -n 1) || true
+          fi
+          if [ -n "$mounts" ]; then
+            if [ "$value_only" -eq 1 ]; then
+              printf '%s\n' "$mounts"
+            else
+              printf 'RequiresMountsFor=%s\n' "$mounts"
+            fi
+          fi
+        fi
+        ;;
+    esac
+    exit 0
+    ;;
+esac
 exit 0
 STUB
 
@@ -377,11 +516,13 @@ case "$target" in
     esac
     exit 0
     ;;
-  /srv/curved)
+  /srv/curved|/srv/curved/*)
+    # Both the mount point and paths below it resolve to the data volume.
     if [ ! -e /run/smoke/mounted ]; then
       exit 1
     fi
     case "$cols" in
+      TARGET) printf '/srv/curved\n' ;;
       SOURCE) printf '/dev/vdb\n' ;;
       *) printf '/srv/curved ext4 /dev/vdb\n' ;;
     esac
@@ -405,9 +546,36 @@ STUB
 
 cat > "$HARNESS_DIR/bin/docker" <<'STUB'
 #!/usr/bin/env bash
-# docker stub: compose version, compose up (counted), compose ps (healthy).
+# docker stub: reports the data root from /etc/docker/daemon.json, refuses a
+# compose up unless that root is on the data volume, and models compose
+# version/up (counted)/ps (healthy).
 set -euo pipefail
 state=/run/smoke
+
+daemon_data_root() {
+  local root=/var/lib/docker
+  local parsed=""
+  if [ -f /etc/docker/daemon.json ]; then
+    parsed=$(sed -n \
+      's/^[[:space:]]*"data-root"[[:space:]]*:[[:space:]]*"\([^"]*\)".*$/\1/p' \
+      /etc/docker/daemon.json | head -n 1) || true
+    if [ -n "$parsed" ]; then
+      root=$parsed
+    fi
+  fi
+  printf '%s\n' "$root"
+}
+
+if [ "${1:-}" = info ]; then
+  # The verifier negative flips the reported root to the old default.
+  if [ -e "$state/docker-root-wrong" ]; then
+    printf '/var/lib/docker\n'
+  else
+    daemon_data_root
+  fi
+  exit 0
+fi
+
 if [ "${1:-}" != compose ]; then
   exit 1
 fi
@@ -433,6 +601,14 @@ if [ "$up" -eq 1 ]; then
   fi
   count=$((count + 1))
   printf '%s\n' "$count" > "$state/docker-up-count"
+  printf '%s\n' "$@" > "$state/up-args-$count"
+  root=$(daemon_data_root)
+  if [ ! -f /etc/docker/daemon.json ] || [ "$root" != /srv/curved/docker ]; then
+    : > "$state/up-without-data-root"
+    printf 'docker: refusing compose up: data root is %s, expected /srv/curved/docker\n' \
+      "$root" >&2
+    exit 1
+  fi
   printf 'stack up\n'
   exit 0
 fi
@@ -574,6 +750,18 @@ if ! grep -q '^ssh-ed25519 ' "$KEY"; then
 fi
 pass "stubs, fake block devices, and key installed"
 
+# Model a host already running the LAS-183 stack: the default docker root holds
+# an image store and a Postgres volume, so the bootstrap must migrate it. The
+# directory is seeded 0755 so the migration must restore the managed 0710;
+# `cp -a` would otherwise keep the source mode on the target.
+mkdir -p /var/lib/docker/image/overlay2
+mkdir -p /var/lib/docker/volumes/curved-prod_curved-pgdata/_data
+chown root:root /var/lib/docker
+chmod 0755 /var/lib/docker
+printf '{"curved-api":"sha256:legacy"}\n' > /var/lib/docker/image/overlay2/repositories.json
+printf '16\n' > /var/lib/docker/volumes/curved-prod_curved-pgdata/_data/PG_VERSION
+pass "legacy docker root (/var/lib/docker with image store and volume)"
+
 # 2. Fresh bootstrap with the stack enabled.
 boot_out="$STATE/bootstrap-fresh.out"
 boot_err="$STATE/bootstrap-fresh.err"
@@ -652,10 +840,110 @@ pass "no generated secret on stdout"
   || fail "docker compose up ran $(cat "$STATE/docker-up-count" 2>/dev/null || printf 0) time(s), expected 1"
 pass "stack started once"
 
+[ -f "$STATE/up-args-1" ] || fail "the first compose up recorded no arguments"
+grep -Fxq -- '--force-recreate' "$STATE/up-args-1" \
+  || fail "the first compose up did not recreate containers after writing the log defaults"
+pass "first stack up recreates containers for the new log defaults"
+
+# 2b. The docker data root contract: data on the data volume, legacy root
+# migrated once, daemon.json rotation and GC, the mount dependency, the prune
+# timer, and the daemon actually reporting the new root.
+[ "$(stat -c '%a %U:%G' "$MOUNT/docker")" = '710 root:root' ] \
+  || fail "$MOUNT/docker is $(stat -c '%a %U:%G' "$MOUNT/docker"), expected 710 root:root"
+for rel in image/overlay2/repositories.json \
+  volumes/curved-prod_curved-pgdata/_data/PG_VERSION; do
+  [ -f "$MOUNT/docker/$rel" ] || fail "$MOUNT/docker/$rel was not migrated"
+  [ -f "/var/lib/docker/$rel" ] || fail "the migration removed /var/lib/docker/$rel"
+  cmp -s "/var/lib/docker/$rel" "$MOUNT/docker/$rel" \
+    || fail "$MOUNT/docker/$rel differs from /var/lib/docker/$rel"
+done
+pass "docker data root (0710 root:root, legacy root migrated, old copy kept)"
+
+expected_daemon=$STATE/expected-daemon.json
+{
+  printf '{\n'
+  printf '  "data-root": "%s",\n' "$MOUNT/docker"
+  printf '  "log-driver": "json-file",\n'
+  printf '  "log-opts": {\n'
+  printf '    "max-size": "10m",\n'
+  printf '    "max-file": "3"\n'
+  printf '  },\n'
+  printf '  "builder": {\n'
+  printf '    "gc": {\n'
+  printf '      "enabled": true,\n'
+  printf '      "defaultKeepStorage": "5GB"\n'
+  printf '    }\n'
+  printf '  }\n'
+  printf '}\n'
+} > "$expected_daemon"
+if ! cmp -s "$expected_daemon" /etc/docker/daemon.json; then
+  diff -u "$expected_daemon" /etc/docker/daemon.json >&2 || true
+  fail "/etc/docker/daemon.json does not match the expected content"
+fi
+for line in \
+  '"data-root": "/srv/curved/docker"' \
+  '"log-driver": "json-file"' \
+  '"max-size": "10m"' \
+  '"max-file": "3"' \
+  '"defaultKeepStorage": "5GB"'; do
+  grep -Fq -- "$line" /etc/docker/daemon.json || fail "daemon.json lacks $line"
+done
+pass "docker config (byte-identical daemon.json: data root, json-file 10m x 3, GC 5GB)"
+
+expected_dropin=$STATE/expected-dropin.conf
+{
+  printf '[Unit]\n'
+  printf 'RequiresMountsFor=%s\n' "$MOUNT/docker"
+  printf 'ConditionPathIsMountPoint=%s\n' "$MOUNT"
+} > "$expected_dropin"
+dropin=/etc/systemd/system/docker.service.d/10-curved-data-root.conf
+if ! cmp -s "$expected_dropin" "$dropin"; then
+  diff -u "$expected_dropin" "$dropin" >&2 || true
+  fail "$dropin does not match the expected content"
+fi
+pass "docker mount dependency (drop-in requires $MOUNT/docker and $MOUNT)"
+
+prune_service=/etc/systemd/system/curved-docker-prune.service
+prune_timer=/etc/systemd/system/curved-docker-prune.timer
+docker_bin=$(command -v docker)
+[ -f "$prune_service" ] || fail "missing $prune_service"
+[ -f "$prune_timer" ] || fail "missing $prune_timer"
+grep -Fqx 'OnCalendar=*-*-* 04:37:00' "$prune_timer" \
+  || fail "the prune timer has no daily 04:37 OnCalendar"
+grep -Fxq "ExecStart=$docker_bin builder prune -af --filter until=168h" "$prune_service" \
+  || fail "the prune service does not prune build cache after 168h"
+grep -Fxq "ExecStart=$docker_bin image prune -f --filter until=720h" "$prune_service" \
+  || fail "the prune service does not prune images after 720h"
+[ "$(systemctl is-enabled curved-docker-prune.timer)" = enabled ] \
+  || fail "curved-docker-prune.timer is not enabled"
+[ "$(systemctl is-active curved-docker-prune.timer)" = active ] \
+  || fail "curved-docker-prune.timer is not active"
+pass "docker prune timer (daily 04:37, 168h builder and 720h image prune, enabled and active)"
+
+if [ -e "$STATE/up-without-data-root" ]; then
+  fail "docker compose up ran before the data root was on the data volume"
+fi
+live_root=$(docker info --format '{{.DockerRootDir}}')
+[ "$live_root" = "$MOUNT/docker" ] \
+  || fail "docker info reports $live_root, expected $MOUNT/docker"
+for line in \
+  'PASS docker-data (/srv/curved/docker)' \
+  'PASS docker-config (data-root /srv/curved/docker)' \
+  'PASS docker-mount-dependency (docker.service requires /srv/curved)'; do
+  grep -Fxq "$line" "$boot_out" || fail "fresh bootstrap is missing: $line"
+done
+pass "docker live root (docker info reports $MOUNT/docker, bootstrap PASS lines)"
+
 # 3. Idempotent re-run with the same arguments.
 env_hash=$(sha256sum "$ENV_FILE" | cut -d' ' -f1)
 keys_lines=$(wc -l < /home/deploy/.ssh/authorized_keys)
 fstab_lines=$(wc -l < /etc/fstab)
+daemon_hash=$(sha256sum /etc/docker/daemon.json | cut -d' ' -f1)
+dropin_hash=$(sha256sum /etc/systemd/system/docker.service.d/10-curved-data-root.conf \
+  | cut -d' ' -f1)
+prune_service_hash=$(sha256sum /etc/systemd/system/curved-docker-prune.service | cut -d' ' -f1)
+prune_timer_hash=$(sha256sum /etc/systemd/system/curved-docker-prune.timer | cut -d' ' -f1)
+docker_restarts=$(cat "$STATE/systemctl/restart-docker" 2>/dev/null || printf 0)
 boot_out="$STATE/bootstrap-rerun.out"
 boot_err="$STATE/bootstrap-rerun.err"
 if ! bash "$BOOTSTRAP" --key "$KEY" --data-device /dev/vdb --domain curved.test \
@@ -670,6 +958,29 @@ grep -qx 'bootstrap-host: ok' "$boot_out" || fail "idempotent re-run did not pri
 [ "$(wc -l < /etc/fstab)" = "$fstab_lines" ] || fail "the re-run changed the fstab line count"
 [ "$(getent passwd deploy | wc -l)" -eq 1 ] || fail "the re-run duplicated the deploy user"
 pass "idempotent rerun (env hash, key and fstab counts, single user)"
+
+[ "$(sha256sum /etc/docker/daemon.json | cut -d' ' -f1)" = "$daemon_hash" ] \
+  || fail "the re-run rewrote /etc/docker/daemon.json"
+[ "$(sha256sum /etc/systemd/system/docker.service.d/10-curved-data-root.conf \
+  | cut -d' ' -f1)" = "$dropin_hash" ] \
+  || fail "the re-run rewrote the docker.service drop-in"
+[ "$(sha256sum /etc/systemd/system/curved-docker-prune.service | cut -d' ' -f1)" \
+  = "$prune_service_hash" ] || fail "the re-run rewrote the prune service"
+[ "$(sha256sum /etc/systemd/system/curved-docker-prune.timer | cut -d' ' -f1)" \
+  = "$prune_timer_hash" ] || fail "the re-run rewrote the prune timer"
+[ "$(cat "$STATE/systemctl/restart-docker" 2>/dev/null || printf 0)" = "$docker_restarts" ] \
+  || fail "the re-run restarted docker"
+grep -Fxq 'PASS docker-data (unchanged)' "$boot_out" \
+  || fail "the re-run did not report docker-data (unchanged)"
+grep -Fxq 'PASS docker-config (unchanged)' "$boot_out" \
+  || fail "the re-run did not report docker-config (unchanged)"
+pass "idempotent docker rerun (four hashes, restart count, unchanged passes)"
+
+[ -f "$STATE/up-args-2" ] || fail "the idempotent re-run recorded no compose up arguments"
+if grep -Fq -- '--force-recreate' "$STATE/up-args-2"; then
+  fail "the idempotent re-run recreated containers"
+fi
+pass "idempotent stack up does not recreate containers"
 
 # 4. Verifier happy path.
 verify_out="$STATE/verify-positive.log"
@@ -686,7 +997,55 @@ if grep -q '^FAIL' "$verify_out"; then
 fi
 pass "verify-host positive (exit 0, verify-host: ok, no FAIL)"
 
-# 5. Negative boundary: a public Postgres listener must be rejected.
+for prefix in docker-root docker-config docker-mount-dependency docker-prune-timer; do
+  grep -q "^PASS $prefix:" "$verify_out" \
+    || fail "verify-host printed no PASS $prefix: line on the happy path"
+done
+pass "verify-host docker checks (data root, config, mount dependency, prune timer)"
+
+# 5. Negative: docker must report the data-volume root.
+touch "$STATE/docker-root-wrong"
+verify_out="$STATE/verify-docker-root.log"
+verify_rc=0
+bash "$VERIFIER" >"$verify_out" 2>&1 || verify_rc=$?
+rm -f "$STATE/docker-root-wrong"
+if [ "$verify_rc" -ne 1 ]; then
+  cat "$verify_out" >&2
+  fail "docker root: verify-host exited $verify_rc, expected 1"
+fi
+if ! grep -Eq '^FAIL docker-root: .*/var/lib/docker' "$verify_out"; then
+  cat "$verify_out" >&2
+  fail "docker root: no FAIL docker-root line names /var/lib/docker"
+fi
+pass "negative: wrong docker data root rejected"
+
+# 6. Negative: the prune timer must be enabled.
+touch "$STATE/timer-disabled"
+verify_out="$STATE/verify-prune-timer.log"
+verify_rc=0
+bash "$VERIFIER" >"$verify_out" 2>&1 || verify_rc=$?
+rm -f "$STATE/timer-disabled"
+if [ "$verify_rc" -ne 1 ]; then
+  cat "$verify_out" >&2
+  fail "prune timer: verify-host exited $verify_rc, expected 1"
+fi
+if ! grep -Eq '^FAIL docker-prune-timer: .*disabled' "$verify_out"; then
+  cat "$verify_out" >&2
+  fail "prune timer: no FAIL docker-prune-timer line names the disabled timer"
+fi
+pass "negative: disabled prune timer rejected"
+
+# Neither marker may linger: the same host must verify green again.
+verify_out="$STATE/verify-positive-recheck.log"
+verify_rc=0
+bash "$VERIFIER" >"$verify_out" 2>&1 || verify_rc=$?
+if [ "$verify_rc" -ne 0 ] || grep -q '^FAIL' "$verify_out"; then
+  cat "$verify_out" >&2
+  fail "verify-host is no longer green after the docker negatives (exit $verify_rc)"
+fi
+pass "verify-host positive again (no FAIL after the docker negatives)"
+
+# 7. Negative boundary: a public Postgres listener must be rejected.
 touch "$STATE/public-5432"
 verify_out="$STATE/verify-public-5432.log"
 verify_rc=0
@@ -702,7 +1061,7 @@ if ! grep -Eq '^FAIL .*5432' "$verify_out"; then
 fi
 pass "negative: public 5432 rejected"
 
-# 6. Negative boundary: password authentication must be rejected.
+# 8. Negative boundary: password authentication must be rejected.
 touch "$STATE/password-auth"
 verify_out="$STATE/verify-password-auth.log"
 verify_rc=0
@@ -718,7 +1077,7 @@ if ! grep -Eq '^FAIL .*passwordauthentication is yes' "$verify_out"; then
 fi
 pass "negative: password authentication rejected"
 
-# 7. --no-stack re-run starts nothing.
+# 9. --no-stack re-run starts nothing.
 up_before=$(cat "$STATE/docker-up-count" 2>/dev/null || printf 0)
 boot_out="$STATE/bootstrap-nostack.out"
 boot_err="$STATE/bootstrap-nostack.err"
@@ -732,7 +1091,7 @@ up_after=$(cat "$STATE/docker-up-count" 2>/dev/null || printf 0)
 [ "$up_after" = "$up_before" ] || fail "--no-stack ran docker compose up $((up_after - up_before)) time(s)"
 pass "no-stack rerun (compose up count unchanged)"
 
-# 8. A private-key-looking --key line is rejected without touching authorized_keys.
+# 10. A private-key-looking --key line is rejected without touching authorized_keys.
 keys_hash=$(sha256sum /home/deploy/.ssh/authorized_keys | cut -d' ' -f1)
 bad_key=$STATE/bad-key
 printf '%s\n' '-----BEGIN OPENSSH PRIVATE KEY-----' >"$bad_key"

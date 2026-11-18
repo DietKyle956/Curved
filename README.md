@@ -307,8 +307,13 @@ storage allowance, with 50 GB headroom. The data volume is ext4, mounted at
 `/srv/curved` with a `nofail` fstab entry, and holds the checkout at
 `/srv/curved/checkout` and the environment file at
 `/srv/curved/checkout/deploy/.env` (mode 600, owner `deploy`, generated once,
-never printed). Until LAS-184 moves Docker's data-root, images and the Postgres
-and Caddy volumes still live under `/var/lib/docker` on the boot volume.
+never printed). Docker's data-root is `/srv/curved/docker` on the data volume:
+the `docker.service` drop-in sets `RequiresMountsFor=/srv/curved/docker` and
+`ConditionPathIsMountPoint=/srv/curved`, so Docker refuses to start while the
+mount is missing. Container logs rotate at 10 MB x 3 through `json-file`, and
+`curved-docker-prune.timer` runs daily at 04:37 to prune build cache older than
+7 days and unused images older than 30 days. The 50 GB boot volume holds the OS
+only.
 
 Two commands do the work, both as root on the server. Run the first from the
 provisioning clone (`~/curved-provision`):
@@ -323,18 +328,21 @@ sudo bash /srv/curved/checkout/deploy/verify-host.sh --domain <domain>
 `deploy` account and the sshd drop-in, prepares and mounts the data device,
 clones the repository, writes `deploy/.env`, and starts the Compose stack.
 `deploy/verify-host.sh` is read-only and prints `PASS` or `FAIL` for the OS, the
-`deploy` account, sshd policy, the data mount, storage accounting, the environment
-file, the checkout, the TCP and UDP listeners, the stack health, and an
-authenticated HTTPS request to the API. The bootstrap ends with
+`deploy` account, sshd policy, the data mount, storage accounting,
+`docker-root`, `docker-config`, `docker-mount-dependency`, `docker-prune-timer`,
+the environment file, the checkout, the TCP and UDP listeners, the stack
+health, and an authenticated HTTPS request to the API. The bootstrap ends with
 `bootstrap-host: ok` and the verifier with `verify-host: ok`; any other ending
-is a failure.
+is a failure. A reboot proof is in `deploy/provisioning.md` section 9.4.
 
-LAS-183 stops at the provisioned host: the OCI console steps and the live host
-checks are operator-executed, public ACME, HSTS, and public webhook delivery are
-LAS-186, the release script and SSH deploy job are LAS-185, and backups are
-LAS-187. `npm run smoke:provision` is the repository-side proof: it runs the
-bootstrap and verifier inside a disposable container against Ubuntu 24.04 stubs,
-so a change to either script is caught without an OCI tenancy.
+LAS-183 provisions the host and LAS-184 makes its data durable: the OCI console
+steps and the live host checks are operator-executed, public ACME, HSTS, and
+public webhook delivery are LAS-186, the release script and SSH deploy job are
+LAS-185, and backups are LAS-187. `npm run smoke:provision` is the
+repository-side proof: it runs the bootstrap and verifier inside a disposable
+container against Ubuntu 24.04 stubs and proves the Docker data root, mount
+gate, log rotation, and prune timer, so a change to either script is caught
+without an OCI tenancy.
 
 ## Continuous integration
 
