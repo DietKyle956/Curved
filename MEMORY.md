@@ -3,7 +3,8 @@
 - **Last updated:** 2026-11-18
 - **Project:** curved
 - **Phase:** HTTP API and auth boundary complete (`LAS-148`), plus a working SPA prototype, the SSE realtime stream (`LAS-150`), the GitHub webhook with its branch helper (`LAS-151`), the SPA foundation ticket (`LAS-152`), the architecture contract (`LAS-168`, documentation only), the pure domain layer (`LAS-169`, no behavior change), and step 3's slices, ports plus the projects resource (`LAS-170`) then the issue lifecycle and read model on ports (`LAS-171`), agents, claims, review, comments, and blocking on ports (`LAS-172`), then labels, relations, and the GitHub use case on ports (`LAS-173`), then the inbound-adapter rewire, composition roots, and the import-direction gate (`LAS-174`), then the web layering (`LAS-175`), then the completion gate, boundary audit, and handoff (`LAS-176`), all with no behavior change; all six refactor steps, the architecture gate, and the completion handoff are complete. Toolchain, Postgres 18, migrations, the projects resource, the issues resource (atomic keys, append-only events), comment events with the full timeline read path, the transition graph with its actor matrix, token-authenticated agents with the one-active-issue fence, agent block with human unblock, the MCP server over stdio, the authenticated HTTP API with its SPA fallback, the React/Vite board, queue, detail, and palette, the SSE stream that refreshes them, the HMAC-verified GitHub webhook that moves issues from pull requests, and the routed board with its mobile status bar are live, and `LAS-155` adds the end-to-end acceptance gate (`npm run acceptance`);
-`LAS-179` adds the opt-in secure session cookie (`COOKIE_SECURE`).
+`LAS-179` adds the opt-in secure session cookie (`COOKIE_SECURE`), and `LAS-180`
+adds the production image and its container smoke gate.
 
 ## Current verified state
 
@@ -1857,5 +1858,48 @@ verification until those land.
   gate was run with the default off, as specified.
 - Next best step: `LAS-180` (production image and container smoke gate), or
   `LAS-181` (CI verification gate), both unblocked and independent.
+
+### Session 032
+
+- Date: 2026-11-18
+- Goal: close `LAS-180`, the production image and container smoke gate.
+- Completed: the root `Dockerfile` is a two-stage `node:26-slim` build. The
+  build stage runs `npm ci`, `npm run build:web`, and `npm prune --omit=dev`;
+  the runtime stage copies `package.json`, the production `node_modules`,
+  `src`, `migrations`, and `web/dist`, runs as `USER node`, and starts
+  `node src/composition/server.ts`. `.dockerignore` keeps `.env`, env templates,
+  `test/`, `scripts/`, compose/Caddy/deploy/.github assets, and local build
+  output out of the context. `scripts/container-smoke.sh`
+  (`npm run smoke:container`) starts the local Postgres through
+  `scripts/db.sh`, builds `curved:container-smoke`, runs it with host networking
+  and only `DATABASE_URL`, `PORT`, and `CURVED_UI_TOKEN`, and asserts the SPA
+  shell at `/`, a 401 unauthenticated `GET /api/projects`, a 200 authenticated
+  `GET /api/projects`, the in-image `node src/composition/migrate.ts` reporting
+  `already up to date`, a non-root uid, and the absent `.env`, env template,
+  test, script, compose, Caddy, Dockerfile, `.github`, and deploy paths.
+  `--platform` builds/runs another architecture, `--build-only` stops after a
+  successful cross-architecture build, and `--keep` keeps the image.
+  `README.md` and `AGENTS.md` document the image and the gate.
+- Evidence: `bash scripts/container-smoke.sh` passed all six assertion groups
+  on native x64 (SPA shell, 401, 200 with `projects`, migrate `already up to
+  date`, uid 1000, minimal runtime file set);
+  `bash scripts/container-smoke.sh --platform linux/arm64 --build-only` passed
+  and the image manifest reports `arm64 linux`; `npm run check` green with 196
+  tests, 0 fail, and `architecture: ok (74 files)`; `npm run acceptance` green
+  with 145 checks including the browser leg; `./scripts/init.sh --no-install`
+  green; `./scripts/clean-state.sh` green.
+- Deviations: `--build-only` was added so the arm64 proof is a build proof.
+  Running the emulated arm64 image on this x64 host crashes inside Node 26's
+  TypeScript type stripping with `ERR_INTERNAL_ASSERTION: memory access out of
+  bounds`; that is a QEMU limitation, not an image or Dockerfile issue, and the
+  native arm64 VM remains the runtime proof. QEMU arm64 binfmt was registered on
+  this host for the build check only; it is not a repository dependency.
+- Tracker: `LAS-180` is Done with this evidence in a Linear comment.
+- Known risk: the arm64 runtime path has only been built locally, not executed
+  on native arm64; the VM leg must confirm it. The smoke gate runs against the
+  local `curved` database, so it applies any pending local migrations before the
+  in-image command checks for `already up to date`.
+- Next best step: `LAS-181` (CI verification gate) or `LAS-182` (production
+  compose stack with local TLS), both unblocked.
 
 

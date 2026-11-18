@@ -288,6 +288,18 @@ acceptance browser gate keep the default, so no other cookie, auth, SSE, or
 webhook behavior changes. The app-level test sets `cookieSecure: true` and asserts
 both cookies, and the default-off suite is unchanged.
 
+LAS-180 is live: a root multi-stage `node:26-slim` `Dockerfile` plus
+`.dockerignore`. The build stage runs `npm ci`, `npm run build:web`, and
+`npm prune --omit=dev`; the runtime stage copies `package.json`, the production
+`node_modules`, `src`, `migrations`, and `web/dist`, runs as `USER node`, and
+starts `node src/composition/server.ts`. The image excludes `.env`, tests,
+`scripts`, and deployment assets. `scripts/container-smoke.sh`
+(`npm run smoke:container`) starts the local database, builds
+`curved:container-smoke`, and asserts the SPA shell, `401` and `200` on
+`/api/projects`, `already up to date` from the in-image migrate command, a
+non-root uid, and the absent paths. `--platform` supports arm64, and the
+Dockerfile has no arch-specific steps.
+
 Tests: 196 pass, 0 fail, including `test/http.test.ts`, `test/event-hub.test.ts`,
 `test/sse.test.ts`, the label and relation suites in `test/labels.test.ts` and
 `test/relations.test.ts`, the webhook and branch suite in `test/github.test.ts`,
@@ -331,6 +343,8 @@ carries the same rules as a project-agnostic template.
 | `ARCH.md` | Architecture contract: layer map, one-way dependency rule, rule ownership, ports and transactions, error translation, testing policy, review checklist. |
 | `AGENTS.md` | This file: constraints and startup path. |
 | `MEMORY.md` | Verified state, decisions, session log. Update it every session. |
+| `Dockerfile` | Multi-stage `node:26-slim` production image: build (`npm ci`, `build:web`, prune dev), then a runtime stage as `USER node`. |
+| `.dockerignore` | Build-context exclusions for the image build. |
 | `src/domain/` | Pure rules and types: status and transition contract, actor matrix, claim and move policy, validation, key parsing, domain errors, shared record types. |
 | `src/application/` | Ports (`ports.ts`) and the full SQL-free use-case set: `projects.ts`, `issues.ts` with `issue-read-model.ts`, `agents.ts`, `queue.ts`, `blocking.ts`, `comments.ts`, `labels.ts`, `relations.ts`, and `github.ts`. |
 | `src/adapters/` | Adapters. Inbound: `http/` (router, auth, error mapping, request/response transport, webhook), `mcp/`, `cli/`, `github/` (signature and payload), `sse/`, `static/`. Outbound: `postgres/` (`pool.ts`, `migrate.ts`, `event-hub.ts`, `ports.ts` binding the pool and transactions, plus `repositories/`: projects, issues, issue events, issue meta, agents, labels, relations), `token-codec.ts`, `timing-safe.ts`. |
@@ -347,6 +361,7 @@ carries the same rules as a project-agnostic template.
 | `scripts/acceptance.sh` | Acceptance entry: `bash scripts/db.sh --no-migrate`, `npm run build:web`, then `scripts/acceptance.mjs` with the caller's flags. |
 | `scripts/acceptance.mjs` | End-to-end gate over a throwaway database: CLI, MCP, server, HTTP plus SSE, webhook, palette seed, browser; drops the database and fails if the default `curved` rows changed. `--skip-browser`, `--keep`. |
 | `scripts/acceptance-browser.mjs` | Dependency-free Chromium/CDP driver at 390x844 over the built SPA; writes run-scoped screenshots under the system temp dir. `CHROMIUM_BIN` overrides the binary search. |
+| `scripts/container-smoke.sh` | Container contract gate: starts the local DB, builds `curved:container-smoke`, and asserts the SPA shell, `401`/`200` on `/api/projects`, `already up to date` from the in-image migrate, a non-root uid, and the absent paths. `--platform`, `--build-only`, `--keep`. |
 | `.codegraph/` | Local index, gitignored. Refresh with `codegraph sync`. |
 
 ## Working rules

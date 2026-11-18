@@ -15,6 +15,7 @@
     "build": "npm run typecheck && npm run build:web",
     "db": "bash scripts/db.sh",
     "acceptance": "bash scripts/acceptance.sh",
+    "smoke:container": "bash scripts/container-smoke.sh",
     "migrate": "node src/composition/migrate.ts",
     "start": "node src/composition/server.ts",
     "cli": "node src/composition/cli.ts",

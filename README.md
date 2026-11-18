@@ -147,11 +147,48 @@ issue payload carries `labels` and `relations: { blocks, blockedBy }`, where
   `CURVED_UI_TOKEN`. Run `npm run build` first for the SPA.
 - `./scripts/init.sh` - install, database, check, build.
 - `./scripts/clean-state.sh` - end-of-session gate.
+- `npm run smoke:container` - container contract gate: local Postgres, image
+  build, and runtime assertions. See "Container image" below.
 - `npm test` - tests run against the isolated `curved_test` database.
 - `npm run check` - typecheck, the import-direction architecture check, then the
   tests.
 - Working agreement: `AGENTS.md`
 - Current state and next step: `MEMORY.md`
+
+## Container image
+
+The root `Dockerfile` is a multi-stage `node:26-slim` build. The build stage runs
+`npm ci`, `npm run build:web`, and `npm prune --omit=dev`; the runtime stage
+copies `package.json`, the production `node_modules`, `src`, `migrations`, and
+`web/dist`, and runs as the non-root `node` user. The runtime needs only
+`DATABASE_URL`, `PORT`, and `CURVED_UI_TOKEN`. The image intentionally excludes
+`.env`, tests, `scripts`, and deployment assets. The example below uses host
+networking so `127.0.0.1:55432` reaches the Postgres running on the host.
+
+```sh
+docker build -t curved:latest .
+docker run --rm --network=host \
+  -e DATABASE_URL=postgres://curved:curved@127.0.0.1:55432/curved \
+  -e PORT=4747 \
+  -e CURVED_UI_TOKEN=<your token> \
+  curved:latest
+```
+
+`npm run smoke:container` runs `bash scripts/container-smoke.sh`, the container
+contract gate. It starts the local Postgres with `scripts/db.sh`, builds
+`curved:container-smoke`, runs it with host networking on a temporary port and
+token, and asserts the SPA shell, `401` for an unauthenticated
+`GET /api/projects`, `200` for the authenticated call, the in-image
+`node src/composition/migrate.ts` reporting `already up to date`, a non-root uid,
+and the absent `.env`, test, script, and deployment paths.
+
+`--platform <platform>` builds and runs the image for another architecture, for
+example `--platform linux/arm64`, when the host can execute that platform.
+`--build-only` stops after a successful build, so a cross-architecture build such
+as `--platform linux/arm64 --build-only` proves the Dockerfile is
+architecture-neutral without emulating the runtime. `--keep` keeps the built
+image. The Dockerfile is architecture-neutral: it builds natively on x64 locally
+and on the arm64 VM.
 
 ## Acceptance gate
 
