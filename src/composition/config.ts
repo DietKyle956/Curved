@@ -8,6 +8,7 @@ export interface Config {
   uiToken: string;
   webhookSecret: string;
   agentToken: string;
+  cookieSecure: boolean;
 }
 
 const DEFAULT_DATABASE_URL = "postgres://curved:curved@127.0.0.1:55432/curved";
@@ -24,6 +25,22 @@ function readPort(raw: string | undefined): number {
     throw new Error(`PORT must be an integer between 1 and 65535, got "${raw}"`);
   }
   return port;
+}
+
+function readCookieSecure(raw: string | undefined): boolean {
+  if (raw === undefined || raw === "") {
+    return false;
+  }
+  const normalized = raw.toLowerCase();
+  if (normalized === "1" || normalized === "true") {
+    return true;
+  }
+  if (normalized === "0" || normalized === "false") {
+    return false;
+  }
+  throw new Error(
+    `COOKIE_SECURE must be "1", "true", "0", or "false", got "${raw}"`,
+  );
 }
 
 /**
@@ -44,5 +61,6 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     uiToken: env.CURVED_UI_TOKEN ?? "",
     webhookSecret: env.GITHUB_WEBHOOK_SECRET ?? "",
     agentToken: env.CURVED_AGENT_TOKEN ?? "",
+    cookieSecure: readCookieSecure(env.COOKIE_SECURE),
   };
 }

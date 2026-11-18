@@ -42,6 +42,7 @@ export interface CreateAppOptions {
   webhookSecret?: string;
   webDistDir?: string;
   eventPingIntervalMs?: number;
+  cookieSecure?: boolean;
   logger?: (error: unknown) => void;
 }
 
@@ -199,7 +200,7 @@ export function createApp(options: CreateAppOptions): App {
     throw new Error("CURVED_UI_TOKEN is required to start the HTTP app");
   }
 
-  const { ports, uiToken, events } = options;
+  const { ports, uiToken, events, cookieSecure = false } = options;
   const webDistDir = options.webDistDir ?? resolve(process.cwd(), "web/dist");
   const logger =
     options.logger ??
@@ -255,14 +256,21 @@ export function createApp(options: CreateAppOptions): App {
         return json(
           { actor: { type: "human", name: null } },
           200,
-          { "set-cookie": serializeSessionCookie(sessionCookieValue(uiToken)) },
+          {
+            "set-cookie": serializeSessionCookie(
+              sessionCookieValue(uiToken),
+              cookieSecure,
+            ),
+          },
         );
       }
       if (method === "DELETE") {
         await auth();
         return new Response(null, {
           status: 204,
-          headers: { "set-cookie": serializeClearedSessionCookie() },
+          headers: {
+            "set-cookie": serializeClearedSessionCookie(cookieSecure),
+          },
         });
       }
       return json(NOT_FOUND_BODY, 404);

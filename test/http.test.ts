@@ -189,6 +189,7 @@ test("session login sets the expected cookie and logout clears it", async () => 
   assert.match(setCookie, /SameSite=Lax/i);
   assert.match(setCookie, /Path=\//);
   assert.match(setCookie, /Max-Age=2592000/);
+  assert.doesNotMatch(setCookie, /(?:^|; )Secure(?:;|$)/i);
 
   const me = await request(app, "/api/me", { headers: COOKIE_HEADER });
   assert.equal(me.status, 200);
@@ -206,6 +207,7 @@ test("session login sets the expected cookie and logout clears it", async () => 
   assert.ok(clearCookie);
   assert.match(clearCookie, /curved_session=/);
   assert.match(clearCookie, /Max-Age=0/i);
+  assert.doesNotMatch(clearCookie, /(?:^|; )Secure(?:;|$)/i);
 
   // The cookie is stateless, so "after logout" means the cleared cookie is gone.
   const afterLogout = await request(app, "/api/me");
@@ -214,6 +216,40 @@ test("session login sets the expected cookie and logout clears it", async () => 
     (await readJson<ErrorResponse>(afterLogout)).error.code,
     "not_authenticated",
   );
+});
+
+test("cookieSecure marks login and logout cookies Secure", async () => {
+  const secureApp = createApp({
+    ports: testDb.ports,
+    events: hub,
+    uiToken: UI_TOKEN,
+    logger: () => {},
+    cookieSecure: true,
+  });
+
+  const login = await request(secureApp, "/api/session", {
+    method: "POST",
+    headers: JSON_HEADERS,
+    body: JSON.stringify({ token: UI_TOKEN }),
+  });
+  assert.equal(login.status, 200);
+  const setCookie = login.headers.get("set-cookie");
+  assert.ok(setCookie);
+  assert.match(setCookie, /(?:^|; )Secure(?:;|$)/);
+  assert.match(setCookie, /HttpOnly/i);
+  assert.match(setCookie, /SameSite=Lax/i);
+  assert.match(setCookie, /Path=\//);
+  assert.match(setCookie, /Max-Age=2592000/);
+
+  const logout = await request(secureApp, "/api/session", {
+    method: "DELETE",
+    headers: COOKIE_HEADER,
+  });
+  assert.equal(logout.status, 204);
+  const clearCookie = logout.headers.get("set-cookie");
+  assert.ok(clearCookie);
+  assert.match(clearCookie, /(?:^|; )Secure(?:;|$)/);
+  assert.match(clearCookie, /Max-Age=0/i);
 });
 
 test("bearer tokens resolve humans and agents, and an invalid bearer wins over a cookie", async () => {

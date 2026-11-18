@@ -35,24 +35,32 @@ export function sessionCookieValue(uiToken: string): string {
   return sha256Hex(uiToken);
 }
 
-export function serializeSessionCookie(value: string): string {
-  return [
+export function serializeSessionCookie(value: string, secure = false): string {
+  const attributes = [
     `${SESSION_COOKIE_NAME}=${value}`,
     "HttpOnly",
     "SameSite=Lax",
     "Path=/",
     `Max-Age=${SESSION_MAX_AGE_SECONDS}`,
-  ].join("; ");
+  ];
+  if (secure) {
+    attributes.push("Secure");
+  }
+  return attributes.join("; ");
 }
 
-export function serializeClearedSessionCookie(): string {
-  return [
+export function serializeClearedSessionCookie(secure = false): string {
+  const attributes = [
     `${SESSION_COOKIE_NAME}=`,
     "HttpOnly",
     "SameSite=Lax",
     "Path=/",
     "Max-Age=0",
-  ].join("; ");
+  ];
+  if (secure) {
+    attributes.push("Secure");
+  }
+  return attributes.join("; ");
 }
 
 /** Parses a Cookie header into a name to value map; malformed pairs are skipped. */

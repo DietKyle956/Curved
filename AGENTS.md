@@ -274,7 +274,21 @@ changed. The only recorded deviations are the MCP blank-token hint naming
 paths in `package.json` and `scripts/db.sh`, and the pre-existing fixed
 near-black palette with self-hosted fonts.
 
-Tests: 195 pass, 0 fail, including `test/http.test.ts`, `test/event-hub.test.ts`,
+LAS-179 is live: an opt-in `COOKIE_SECURE` setting. `Config` gains
+`cookieSecure` (default false) parsed from `COOKIE_SECURE`: unset or empty is off,
+`1` or `true` (case-insensitive) is on, `0` or `false` is off, and any other value
+throws an error whose message names `COOKIE_SECURE`.
+`serializeSessionCookie` and `serializeClearedSessionCookie` take an optional
+`secure` flag and append `; Secure` only when it is true, preserving the existing
+`HttpOnly; SameSite=Lax; Path=/; Max-Age=...` attributes and their order.
+`CreateAppOptions.cookieSecure` defaults to false, and
+`src/composition/server.ts` passes `config.cookieSecure`. When on, both the login
+and logout `Set-Cookie` values also carry `Secure`; local HTTP development and the
+acceptance browser gate keep the default, so no other cookie, auth, SSE, or
+webhook behavior changes. The app-level test sets `cookieSecure: true` and asserts
+both cookies, and the default-off suite is unchanged.
+
+Tests: 196 pass, 0 fail, including `test/http.test.ts`, `test/event-hub.test.ts`,
 `test/sse.test.ts`, the label and relation suites in `test/labels.test.ts` and
 `test/relations.test.ts`, the webhook and branch suite in `test/github.test.ts`,
 the issue filter and human-only edit cases in `test/issues.test.ts`,

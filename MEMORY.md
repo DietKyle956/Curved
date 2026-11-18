@@ -1,8 +1,9 @@
 # MEMORY.md
 
-- **Last updated:** 2026-11-17
+- **Last updated:** 2026-11-18
 - **Project:** curved
-- **Phase:** HTTP API and auth boundary complete (`LAS-148`), plus a working SPA prototype, the SSE realtime stream (`LAS-150`), the GitHub webhook with its branch helper (`LAS-151`), the SPA foundation ticket (`LAS-152`), the architecture contract (`LAS-168`, documentation only), the pure domain layer (`LAS-169`, no behavior change), and step 3's slices, ports plus the projects resource (`LAS-170`) then the issue lifecycle and read model on ports (`LAS-171`), agents, claims, review, comments, and blocking on ports (`LAS-172`), then labels, relations, and the GitHub use case on ports (`LAS-173`), then the inbound-adapter rewire, composition roots, and the import-direction gate (`LAS-174`), then the web layering (`LAS-175`), then the completion gate, boundary audit, and handoff (`LAS-176`), all with no behavior change; all six refactor steps, the architecture gate, and the completion handoff are complete. Toolchain, Postgres 18, migrations, the projects resource, the issues resource (atomic keys, append-only events), comment events with the full timeline read path, the transition graph with its actor matrix, token-authenticated agents with the one-active-issue fence, agent block with human unblock, the MCP server over stdio, the authenticated HTTP API with its SPA fallback, the React/Vite board, queue, detail, and palette, the SSE stream that refreshes them, the HMAC-verified GitHub webhook that moves issues from pull requests, and the routed board with its mobile status bar are live, and `LAS-155` adds the end-to-end acceptance gate (`npm run acceptance`).
+- **Phase:** HTTP API and auth boundary complete (`LAS-148`), plus a working SPA prototype, the SSE realtime stream (`LAS-150`), the GitHub webhook with its branch helper (`LAS-151`), the SPA foundation ticket (`LAS-152`), the architecture contract (`LAS-168`, documentation only), the pure domain layer (`LAS-169`, no behavior change), and step 3's slices, ports plus the projects resource (`LAS-170`) then the issue lifecycle and read model on ports (`LAS-171`), agents, claims, review, comments, and blocking on ports (`LAS-172`), then labels, relations, and the GitHub use case on ports (`LAS-173`), then the inbound-adapter rewire, composition roots, and the import-direction gate (`LAS-174`), then the web layering (`LAS-175`), then the completion gate, boundary audit, and handoff (`LAS-176`), all with no behavior change; all six refactor steps, the architecture gate, and the completion handoff are complete. Toolchain, Postgres 18, migrations, the projects resource, the issues resource (atomic keys, append-only events), comment events with the full timeline read path, the transition graph with its actor matrix, token-authenticated agents with the one-active-issue fence, agent block with human unblock, the MCP server over stdio, the authenticated HTTP API with its SPA fallback, the React/Vite board, queue, detail, and palette, the SSE stream that refreshes them, the HMAC-verified GitHub webhook that moves issues from pull requests, and the routed board with its mobile status bar are live, and `LAS-155` adds the end-to-end acceptance gate (`npm run acceptance`);
+`LAS-179` adds the opt-in secure session cookie (`COOKIE_SECURE`).
 
 ## Current verified state
 
@@ -24,8 +25,8 @@
   `--no-migrate` so the acceptance bootstrap never writes the default schema.
 - Baseline: green, and `LAS-176` re-ran and recorded the full gate on
   2026-11-17. `./scripts/init.sh` and `./scripts/clean-state.sh` both pass;
-  `npm run typecheck` covers server and web configs; `npm test` runs 195 tests
-  on the Node test runner (189 behavior, 6 architecture);
+  `npm run typecheck` covers server and web configs; `npm test` runs 196 tests
+  on the Node test runner (190 behavior, 6 architecture);
   `architecture: ok (74 files)`; the vite build and the codegraph sync are
   green. The completion gate also re-exercised the real entry points and found
   no behavior change.
@@ -1822,5 +1823,39 @@ verification until those land.
   recorded not changed.
 - Next best step: none open in this project; the next tracker work is outside
   Curved.
+
+### Session 031
+
+- Date: 2026-11-18
+- Goal: close `LAS-179`, the opt-in secure session cookie.
+- Completed: `Config` gains `cookieSecure`, parsed by `readCookieSecure` from
+  `COOKIE_SECURE` (unset/empty/`0`/`false` off; `1`/`true` case-insensitive on;
+  anything else throws naming `COOKIE_SECURE`).
+  `serializeSessionCookie(value, secure = false)` and
+  `serializeClearedSessionCookie(secure = false)` append `; Secure` only when
+  asked, preserving `HttpOnly; SameSite=Lax; Path=/; Max-Age=...`.
+  `CreateAppOptions.cookieSecure` defaults false and
+  `src/composition/server.ts` passes `config.cookieSecure`. `README.md`,
+  `AGENTS.md`, and `.env.example` document the switch. `test/http.test.ts` pins
+  the default-off cookies and adds one `cookieSecure: true` app-level case for
+  both login and logout.
+- Evidence: `npm run check` green with 196 tests, 0 fail, `architecture: ok (74
+  files)`; the new test fails on a clean `HEAD` worktree carrying only the test
+  change (`AssertionError` on the missing `Secure` token), then passes after the
+  change; the real server entry (`node src/composition/server.ts`) returned
+  `...; Max-Age=2592000; Secure` and `...; Max-Age=0; Secure` with
+  `COOKIE_SECURE=1`, omitted `Secure` with the variable unset, and exited 1 with
+  `COOKIE_SECURE must be "1", "true", "0", or "false", got "bogus"` for an
+  invalid value; `npm run acceptance` green with 145 checks including the
+  browser leg; `./scripts/init.sh --no-install` and
+  `./scripts/clean-state.sh` green.
+- Deviations: none.
+- Tracker: `LAS-179` is Done with this evidence in a Linear comment.
+- Known risk: `scripts/acceptance.mjs` inherits `process.env` and the spawned
+  server also loads `.env`, so an operator with `COOKIE_SECURE=1` exported or in
+  `.env` would make the plain-HTTP acceptance legs use `Secure` cookies. The
+  gate was run with the default off, as specified.
+- Next best step: `LAS-180` (production image and container smoke gate), or
+  `LAS-181` (CI verification gate), both unblocked and independent.
 
 

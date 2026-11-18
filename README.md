@@ -228,8 +228,14 @@ Prerequisites:
 5. For the GitHub webhook: export `GITHUB_WEBHOOK_SECRET`, the same secret you
    give the repository webhook. `POST /webhooks/github` answers
    `503 webhook_not_configured` until it is set.
+6. Over HTTPS only: export `COOKIE_SECURE=1` so the session and logout cookies
+   also carry `Secure`.
 
-`PORT` defaults to 4747.
+`PORT` defaults to 4747. `COOKIE_SECURE` defaults off: the login and logout
+`Set-Cookie` values keep `HttpOnly; SameSite=Lax; Path=/; Max-Age=...` and omit
+`Secure`. Set `COOKIE_SECURE=1` (or `true`) when the app is served over HTTPS and
+both cookies also carry `Secure`; local HTTP development and the acceptance gate
+leave it unset.
 
 Authentication has two lanes. A human session is either
 `Authorization: Bearer <CURVED_UI_TOKEN>` or the `curved_session` cookie minted by

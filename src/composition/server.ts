@@ -22,6 +22,7 @@ async function main(): Promise<void> {
     events: hub,
     uiToken: config.uiToken,
     webhookSecret: config.webhookSecret,
+    cookieSecure: config.cookieSecure,
   });
 
   const server = createNodeServer(app);
