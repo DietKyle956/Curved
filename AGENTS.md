@@ -300,6 +300,15 @@ starts `node src/composition/server.ts`. The image excludes `.env`, tests,
 non-root uid, and the absent paths. `--platform` supports arm64, and the
 Dockerfile has no arch-specific steps.
 
+LAS-181 is live: `.github/workflows/verify.yml` is the GitHub Actions gate for
+`main`. It runs on every push to `main` and on manual dispatch, in one global
+concurrency group `verify` with `cancel-in-progress: false`, so two runs never
+execute at once. The `verify` job runs on `ubuntu-latest` with a
+`postgres:18-alpine` service on host port 55432, then `npm ci`,
+`npm run typecheck`, `npm run check:arch`, `npm test`, and `npm run build:web`.
+There is no deploy job yet; the future deploy job (LAS-185) must declare
+`needs: verify`.
+
 Tests: 196 pass, 0 fail, including `test/http.test.ts`, `test/event-hub.test.ts`,
 `test/sse.test.ts`, the label and relation suites in `test/labels.test.ts` and
 `test/relations.test.ts`, the webhook and branch suite in `test/github.test.ts`,
@@ -345,6 +354,7 @@ carries the same rules as a project-agnostic template.
 | `MEMORY.md` | Verified state, decisions, session log. Update it every session. |
 | `Dockerfile` | Multi-stage `node:26-slim` production image: build (`npm ci`, `build:web`, prune dev), then a runtime stage as `USER node`. |
 | `.dockerignore` | Build-context exclusions for the image build. |
+| `.github/workflows/verify.yml` | CI verification gate: push to main plus manual dispatch, Postgres 18 service, typecheck, architecture check, tests, web build. |
 | `src/domain/` | Pure rules and types: status and transition contract, actor matrix, claim and move policy, validation, key parsing, domain errors, shared record types. |
 | `src/application/` | Ports (`ports.ts`) and the full SQL-free use-case set: `projects.ts`, `issues.ts` with `issue-read-model.ts`, `agents.ts`, `queue.ts`, `blocking.ts`, `comments.ts`, `labels.ts`, `relations.ts`, and `github.ts`. |
 | `src/adapters/` | Adapters. Inbound: `http/` (router, auth, error mapping, request/response transport, webhook), `mcp/`, `cli/`, `github/` (signature and payload), `sse/`, `static/`. Outbound: `postgres/` (`pool.ts`, `migrate.ts`, `event-hub.ts`, `ports.ts` binding the pool and transactions, plus `repositories/`: projects, issues, issue events, issue meta, agents, labels, relations), `token-codec.ts`, `timing-safe.ts`. |

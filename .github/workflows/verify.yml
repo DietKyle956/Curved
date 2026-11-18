@@ -1,0 +1,68 @@
+name: Verify
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+# One run at a time for the whole workflow: a queued run waits rather than
+# cancelling the verification already in flight.
+concurrency:
+  group: verify
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    name: Verify
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    services:
+      postgres:
+        image: postgres:18-alpine
+        env:
+          POSTGRES_USER: curved
+          POSTGRES_PASSWORD: curved
+          POSTGRES_DB: curved
+        ports:
+          - "55432:5432"
+        options: >-
+          --health-cmd "pg_isready -U curved -d curved"
+          --health-interval 2s
+          --health-timeout 3s
+          --health-retries 30
+
+    env:
+      DATABASE_URL: postgres://curved:curved@127.0.0.1:55432/curved
+      TEST_DATABASE_URL: postgres://curved:curved@127.0.0.1:55432/curved_test
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Set up Node
+        uses: actions/setup-node@v7
+        with:
+          node-version: 26
+          cache: npm
+
+      - name: Install
+        run: npm ci
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Architecture gate
+        run: npm run check:arch
+
+      - name: Tests
+        run: npm test
+
+      - name: Web build
+        run: npm run build:web
+
+# This workflow deploys nothing. Any future deploy job must declare
+# `needs: verify` so it only runs after verification passes.

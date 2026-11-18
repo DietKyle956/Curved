@@ -190,6 +190,28 @@ architecture-neutral without emulating the runtime. `--keep` keeps the built
 image. The Dockerfile is architecture-neutral: it builds natively on x64 locally
 and on the arm64 VM.
 
+## Continuous integration
+
+`.github/workflows/verify.yml` runs on every push to `main` and on manual
+dispatch. One global concurrency group, `verify`, with
+`cancel-in-progress: false`, queues runs so two never execute at once: a new run
+waits for the running one instead of interrupting it, so an in-flight
+verification is never interrupted by a newer push.
+
+The `verify` job runs on `ubuntu-latest` with a 20 minute timeout and read-only
+contents permission. It starts a `postgres:18-alpine` service container
+published on host port 55432 with the same `curved` user, password, and database
+as `docker-compose.yml`, gated by `pg_isready`. The job pins Node 26 with the
+npm cache, runs `npm ci`, then `npm run typecheck`, `npm run check:arch`,
+`npm test`, and `npm run build:web`. `DATABASE_URL` and `TEST_DATABASE_URL` are
+set explicitly to the repository defaults,
+`postgres://curved:curved@127.0.0.1:55432/curved` and the `curved_test` database
+on the same server.
+
+There is no deploy job. The future deploy job (LAS-185) must declare
+`needs: verify`, or be gated on this workflow, so a failing typecheck or test
+stops before any deploy.
+
 ## Acceptance gate
 
 `npm run acceptance` is the end-to-end gate for the shipped entry points. It runs
