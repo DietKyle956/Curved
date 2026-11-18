@@ -3,8 +3,9 @@
 - **Last updated:** 2026-11-18
 - **Project:** curved
 - **Phase:** HTTP API and auth boundary complete (`LAS-148`), plus a working SPA prototype, the SSE realtime stream (`LAS-150`), the GitHub webhook with its branch helper (`LAS-151`), the SPA foundation ticket (`LAS-152`), the architecture contract (`LAS-168`, documentation only), the pure domain layer (`LAS-169`, no behavior change), and step 3's slices, ports plus the projects resource (`LAS-170`) then the issue lifecycle and read model on ports (`LAS-171`), agents, claims, review, comments, and blocking on ports (`LAS-172`), then labels, relations, and the GitHub use case on ports (`LAS-173`), then the inbound-adapter rewire, composition roots, and the import-direction gate (`LAS-174`), then the web layering (`LAS-175`), then the completion gate, boundary audit, and handoff (`LAS-176`), all with no behavior change; all six refactor steps, the architecture gate, and the completion handoff are complete. Toolchain, Postgres 18, migrations, the projects resource, the issues resource (atomic keys, append-only events), comment events with the full timeline read path, the transition graph with its actor matrix, token-authenticated agents with the one-active-issue fence, agent block with human unblock, the MCP server over stdio, the authenticated HTTP API with its SPA fallback, the React/Vite board, queue, detail, and palette, the SSE stream that refreshes them, the HMAC-verified GitHub webhook that moves issues from pull requests, and the routed board with its mobile status bar are live, and `LAS-155` adds the end-to-end acceptance gate (`npm run acceptance`);
-`LAS-179` adds the opt-in secure session cookie (`COOKIE_SECURE`), and `LAS-180`
-adds the production image and its container smoke gate.
+`LAS-179` adds the opt-in secure session cookie (`COOKIE_SECURE`), `LAS-180`
+adds the production image and its container smoke gate, and `LAS-181` adds the
+GitHub Actions verification gate for `main`.
 
 ## Current verified state
 
@@ -24,6 +25,13 @@ adds the production image and its container smoke gate.
   database changes. `--skip-browser` and `--keep` are the flags; screenshots are
   written under the system temp dir with run-scoped names. `scripts/db.sh` gained
   `--no-migrate` so the acceptance bootstrap never writes the default schema.
+- CI verification gate: `.github/workflows/verify.yml` runs on every push to
+  `main` and on `workflow_dispatch`, in one global concurrency group `verify`
+  with `cancel-in-progress: false`. The `verify` job starts a
+  `postgres:18-alpine` service on host port 55432, then runs `npm ci`,
+  `npm run typecheck`, `npm run check:arch`, `npm test`, and
+  `npm run build:web`. The workflow has no deploy job; the future deploy job
+  (`LAS-185`) must declare `needs: verify`.
 - Baseline: green, and `LAS-176` re-ran and recorded the full gate on
   2026-11-17. `./scripts/init.sh` and `./scripts/clean-state.sh` both pass;
   `npm run typecheck` covers server and web configs; `npm test` runs 196 tests
@@ -1901,5 +1909,47 @@ verification until those land.
   in-image command checks for `already up to date`.
 - Next best step: `LAS-181` (CI verification gate) or `LAS-182` (production
   compose stack with local TLS), both unblocked.
+
+### Session 033
+
+- Date: 2026-11-18
+- Goal: close `LAS-181`, the CI verification gate on push to `main`.
+- Completed: `.github/workflows/verify.yml` runs on every push to `main` and on
+  `workflow_dispatch`, under one global concurrency group `verify` with
+  `cancel-in-progress: false` and read-only contents permission. The `verify`
+  job runs on `ubuntu-latest` with a 20 minute timeout and a
+  `postgres:18-alpine` service container published on host port 55432 with the
+  `curved` credentials and a `pg_isready` health check. It pins Node 26 with the
+  npm cache, then runs `npm ci`, `npm run typecheck`, `npm run check:arch`,
+  `npm test`, and `npm run build:web`, with `DATABASE_URL` and
+  `TEST_DATABASE_URL` set explicitly. The workflow has no deploy job; the
+  LAS-185 deploy job must declare `needs: verify`. `README.md` gained a
+  "Continuous integration" section, and `AGENTS.md` gained the LAS-181 state
+  paragraph and the directory-page row.
+- Evidence: `actionlint` reports no errors; the same five steps pass locally
+  with the workflow env against a freshly dropped `curved_test` (196 tests, 0
+  fail, `architecture: ok (74 files)`, web build green); `./scripts/init.sh`
+  green; `npm run acceptance` green with 145 checks including the browser leg.
+  Push run `44328995725` succeeded in 1m5s, with the log showing
+  `postgres:18-alpine` created on `-p 55432:5432`, 196 passing tests, the
+  architecture gate, and the web build. Manual dispatch run `44329250695`
+  succeeded with the same steps. A second dispatch was `pending` while the first
+  was `queued`/running, proving the concurrency group, and a third dispatch
+  replaced that pending run per GitHub's one-pending-slot rule; no two runs
+  executed at once. Failure proof: throwaway branch `ci-failure-proof` with one
+  type error, dispatched as run `44329299025`, failed at Typecheck with
+  `Type 'string' is not assignable to type 'number'` and skipped the
+  architecture gate, tests, and web build; the branch was deleted locally and
+  on the remote.
+- Deviations: no deploy job exists in this ticket; the gate is the whole
+  workflow. The single concurrency group keeps one pending slot, so an
+  intermediate queued run is replaced by a newer queued run and the in-flight
+  run is never cancelled.
+- Tracker: `LAS-181` is Done with this evidence in a Linear comment.
+- Known risk: the workflow is not a required status check, and `main` takes
+  direct pushes; deployment enforcement depends on the LAS-185 job declaring
+  `needs: verify` or on branch protection requiring the `Verify` check.
+- Next best step: `LAS-182` (production compose stack with local TLS) or
+  `LAS-185` (release script and SSH deploy job), both unblocked.
 
 
