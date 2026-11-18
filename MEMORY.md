@@ -4,8 +4,9 @@
 - **Project:** curved
 - **Phase:** HTTP API and auth boundary complete (`LAS-148`), plus a working SPA prototype, the SSE realtime stream (`LAS-150`), the GitHub webhook with its branch helper (`LAS-151`), the SPA foundation ticket (`LAS-152`), the architecture contract (`LAS-168`, documentation only), the pure domain layer (`LAS-169`, no behavior change), and step 3's slices, ports plus the projects resource (`LAS-170`) then the issue lifecycle and read model on ports (`LAS-171`), agents, claims, review, comments, and blocking on ports (`LAS-172`), then labels, relations, and the GitHub use case on ports (`LAS-173`), then the inbound-adapter rewire, composition roots, and the import-direction gate (`LAS-174`), then the web layering (`LAS-175`), then the completion gate, boundary audit, and handoff (`LAS-176`), all with no behavior change; all six refactor steps, the architecture gate, and the completion handoff are complete. Toolchain, Postgres 18, migrations, the projects resource, the issues resource (atomic keys, append-only events), comment events with the full timeline read path, the transition graph with its actor matrix, token-authenticated agents with the one-active-issue fence, agent block with human unblock, the MCP server over stdio, the authenticated HTTP API with its SPA fallback, the React/Vite board, queue, detail, and palette, the SSE stream that refreshes them, the HMAC-verified GitHub webhook that moves issues from pull requests, and the routed board with its mobile status bar are live, and `LAS-155` adds the end-to-end acceptance gate (`npm run acceptance`);
 `LAS-179` adds the opt-in secure session cookie (`COOKIE_SECURE`), `LAS-180`
-adds the production image and its container smoke gate, and `LAS-181` adds the
-GitHub Actions verification gate for `main`.
+adds the production image and its container smoke gate, `LAS-181` adds the
+GitHub Actions verification gate for `main`, and `LAS-182` adds the production
+Compose stack with Caddy TLS and its compose smoke gate.
 
 ## Current verified state
 
@@ -1950,6 +1951,66 @@ verification until those land.
   direct pushes; deployment enforcement depends on the LAS-185 job declaring
   `needs: verify` or on branch protection requiring the `Verify` check.
 - Next best step: `LAS-182` (production compose stack with local TLS) or
+  `LAS-185` (release script and SSH deploy job), both unblocked.
+
+### Session 034
+
+- Date: 2026-11-18
+- Goal: close `LAS-182`, the production compose stack with local TLS.
+- Completed: `deploy/docker-compose.yml` (compose project `curved-prod`) runs
+  `db` (`postgres:18-alpine`, published only on
+  `127.0.0.1:${CURVED_DB_PORT:-55432}:5432`, named volume, `pg_isready`), `app`
+  (built from the root `Dockerfile`, tagged `${CURVED_IMAGE:-curved:latest}`, no
+  host ports, `expose: 4747`, migrations then the server, and an authenticated
+  Node `fetch` health check on `/api/projects`), and `caddy`
+  (`caddy:2.10-alpine`, publishing `${CURVED_HTTP_PORT:-80}:80`,
+  `${CURVED_HTTPS_PORT:-443}:443`, and 443/udp), with startup ordered db healthy
+  -> app healthy -> caddy. `deploy/Caddyfile` serves
+  `{$CURVED_DOMAIN:localhost}` with `tls {$ACME_EMAIL:internal}` and
+  `reverse_proxy app:4747`: an empty `ACME_EMAIL` is mapped to `internal` by the
+  compose file because an empty environment value defeats the Caddyfile default,
+  and a set email switches to ACME. `deploy/.env.example` is copied to the
+  gitignored, mode-600 `deploy/.env` and lists `POSTGRES_USER`,
+  `POSTGRES_PASSWORD`, `POSTGRES_DB`, `CURVED_UI_TOKEN`,
+  `GITHUB_WEBHOOK_SECRET`, `CURVED_DOMAIN`, `ACME_EMAIL`, `COOKIE_SECURE=1`, and
+  the optional host-port and image overrides. `scripts/compose-smoke.sh`
+  (`npm run smoke:compose`) builds and starts the stack under a throwaway
+  compose project and generated env file on free high ports, extracts Caddy's
+  internal root CA, and asserts over HTTPS the SPA shell, 401/200 on
+  `/api/projects`, the Secure/Httponly/SameSite=Lax session cookie, project and
+  issue creation, `/api/ready`, issue detail, `/api/issues`, SSE `ready` plus
+  `issues_changed(<project-id>)` after a comment, the unsigned webhook 401, the
+  loopback-only Postgres bind, and that the app has no host port. The
+  development root `docker-compose.yml` is unchanged. `README.md` gained the
+  "Production compose stack" runbook (setup, local CA trust, ACME switch, tunnel,
+  the bold `down -v` data-loss warning, and the smoke gate), and `AGENTS.md`
+  gained the LAS-182 state paragraph and directory rows.
+- Evidence: `bash scripts/compose-smoke.sh` passed all assertions
+  (`curved-compose-smoke-480512`: SPA, 401, Secure cookie, session auth,
+  SMK project, SMK-1 issue, ready queue, timeline, list, SSE pair, webhook 401,
+  `db` at `127.0.0.1:52169` only, no app host port). `docker compose config`
+  with the template showed the exact defaults: db `127.0.0.1:55432`, Caddy 80 and
+  443 TCP+UDP, app with no `published` entry, and both
+  `condition: service_healthy` dependencies. Copying the template to
+  `deploy/.env` proved Compose auto-loads it from the compose directory, and
+  `git check-ignore` confirmed `deploy/.env` is ignored. `git diff --
+  docker-compose.yml` is empty. `./scripts/init.sh` green (196 tests, 0 fail,
+  `architecture: ok (74 files)`, web build); `npm run acceptance` green with 145
+  checks including the browser leg.
+- Deviations: host ports are Compose variables with the specified defaults
+  (55432/80/443) so the smoke gate can run beside the development database on
+  free ports; the shipped defaults match the ticket. The app service runs the
+  idempotent migration command before the server so one `docker compose up`
+  reaches a healthy schema (LAS-185 still runs migrations separately in the
+  release script). Local TLS is Caddy's internal CA; ACME issuance is
+  production-only and not exercised here. No application, schema, or API code
+  changed.
+- Tracker: `LAS-182` is Done with this evidence in a Linear comment.
+- Known risk: the default 80/443 and 55432 binds require those ports to be free,
+  and a browser must trust the extracted Caddy root CA or accept the warning;
+  both are documented. The smoke gate trusts that CA with curl and does not
+  exercise a real browser over Caddy.
+- Next best step: `LAS-183` (Oracle VM provisioning and access boundary) or
   `LAS-185` (release script and SSH deploy job), both unblocked.
 
 

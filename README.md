@@ -190,6 +190,86 @@ architecture-neutral without emulating the runtime. `--keep` keeps the built
 image. The Dockerfile is architecture-neutral: it builds natively on x64 locally
 and on the arm64 VM.
 
+## Production compose stack
+
+"Container image" above covers the artifact; this section covers the stack that
+runs it. `deploy/docker-compose.yml` is the production stack under the Compose
+project `curved-prod`, with three services:
+
+- `db` is `postgres:18-alpine`, published only on
+  `127.0.0.1:${CURVED_DB_PORT:-55432}:5432`.
+- `app` builds the root `Dockerfile`, runs migrations and then the server, and
+  publishes no host port at all.
+- `caddy` is `caddy:2.10-alpine`, publishing `${CURVED_HTTP_PORT:-80}:80`,
+  `${CURVED_HTTPS_PORT:-443}:443`, and 443/udp.
+
+Startup is health-gated in order: `db` healthy, then `app` healthy, then
+`caddy`. Only Caddy faces the network, and Postgres is reachable only from
+loopback on the host. The development `docker-compose.yml` at the repository root
+is unchanged.
+
+Setup:
+
+```sh
+cp deploy/.env.example deploy/.env
+chmod 600 deploy/.env
+$EDITOR deploy/.env
+docker compose -f deploy/docker-compose.yml up -d --build
+```
+
+Because the compose file lives in `deploy/`, Compose reads `deploy/.env`
+automatically: the same file feeds variable interpolation and the containers.
+Fill `POSTGRES_USER`, `POSTGRES_PASSWORD`, `POSTGRES_DB`, `CURVED_UI_TOKEN`,
+`GITHUB_WEBHOOK_SECRET`, `CURVED_DOMAIN`, and `ACME_EMAIL`, and keep
+`COOKIE_SECURE=1` for the HTTPS stack. The file also carries optional host-port
+and image overrides. It is gitignored, so secrets stay out of the repository.
+
+TLS is local by default. With `CURVED_DOMAIN=localhost` and an empty
+`ACME_EMAIL`, Caddy issues its own certificate from its internal CA, so
+`https://localhost` serves immediately and the browser warns once. Trust the
+stack's root CA to silence the warning; the smoke gate extracts the same file:
+
+```sh
+docker compose -f deploy/docker-compose.yml exec caddy \
+  cat /data/caddy/pki/authorities/local/root.crt > /tmp/curved-caddy-root.crt
+```
+
+Import `/tmp/curved-caddy-root.crt` into the browser or system trust store. Set
+`CURVED_DOMAIN` to a public hostname and `ACME_EMAIL` to a real address to switch
+Caddy from its internal CA to ACME, which needs ports 80 and 443 reachable from
+the internet.
+
+Operations:
+
+```sh
+docker compose -f deploy/docker-compose.yml ps
+docker compose -f deploy/docker-compose.yml logs -f app
+docker compose -f deploy/docker-compose.yml down
+```
+
+`ps` reports each service's health. The `app` health check authenticates with
+`CURVED_UI_TOKEN` against `/api/projects`, so `healthy` means the API answers
+real requests, not merely that the port is open. `logs -f app` follows the
+server; swap in `db` or `caddy` for the others. Postgres binds only to
+`127.0.0.1:55432` on the host, which is what an SSH tunnel targets when an agent
+on another machine needs the database; the tunnel's local port uses 55433 as the
+future convention, and the stack does not set one up. `down` without `-v` stops
+and removes the containers while keeping the volumes.
+
+**`docker compose -f deploy/docker-compose.yml down -v` deletes the Postgres and
+Caddy volumes: every project, issue, event, and the database itself, plus the
+internal CA. Never run it on the server.**
+
+`npm run smoke:compose` runs `bash scripts/compose-smoke.sh`, the gate for this
+stack. It builds and starts the stack under a throwaway Compose project and a
+generated env on free high ports, extracts Caddy's internal root CA, and asserts
+over HTTPS: the SPA shell, `401` then `200` on `/api/projects`, the `Secure`
+session cookie, project and issue creation, `/api/ready`, issue detail,
+`/api/issues`, an SSE `ready` frame plus an `issues_changed` frame, `401` for an
+unsigned `POST /webhooks/github`, the loopback-only Postgres bind, and that `app`
+publishes no host port. `npm run smoke:compose -- --keep` keeps the smoke image
+for inspection.
+
 ## Continuous integration
 
 `.github/workflows/verify.yml` runs on every push to `main` and on manual

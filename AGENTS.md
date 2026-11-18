@@ -309,6 +309,33 @@ execute at once. The `verify` job runs on `ubuntu-latest` with a
 There is no deploy job yet; the future deploy job (LAS-185) must declare
 `needs: verify`.
 
+LAS-182 is live: the production Compose stack lives in `deploy/`.
+`deploy/docker-compose.yml` (compose project `curved-prod`) runs `db`
+(`postgres:18-alpine`, published only on
+`127.0.0.1:${CURVED_DB_PORT:-55432}:5432`), `app` (built from the repository root
+`Dockerfile`, no host ports, migrations then the server, and an authenticated
+in-container health check on `/api/projects`), and `caddy` (`caddy:2.10-alpine`,
+publishing `${CURVED_HTTP_PORT:-80}:80`, `${CURVED_HTTPS_PORT:-443}:443`, and
+443/udp), with startup ordered db healthy -> app healthy -> caddy.
+`deploy/Caddyfile` serves `{$CURVED_DOMAIN:localhost}`, sets
+`tls {$ACME_EMAIL:internal}`, and `reverse_proxy app:4747`: an empty
+`ACME_EMAIL` uses Caddy's internal CA for local TLS, and an email switches to
+ACME. `deploy/.env.example`, copied to the gitignored mode-600 `deploy/.env`,
+lists `POSTGRES_USER`, `POSTGRES_PASSWORD`, `POSTGRES_DB`, `CURVED_UI_TOKEN`,
+`GITHUB_WEBHOOK_SECRET`, `CURVED_DOMAIN`, `ACME_EMAIL`, `COOKIE_SECURE=1`, and
+the optional host-port and image overrides. `npm run smoke:compose` runs
+`scripts/compose-smoke.sh`, which builds and starts the stack under a throwaway
+project and env on free high ports, extracts Caddy's internal root CA, and
+asserts over HTTPS the SPA shell, `401`/`200` on `/api/projects`, the `Secure`
+session cookie, project and issue creation, `/api/ready`, issue detail,
+`/api/issues`, SSE `ready` plus `issues_changed`, the unsigned webhook `401`,
+the loopback-only Postgres bind, and that the app publishes no host port.
+Agents reach the deployed Postgres through an SSH tunnel (port 55433 is the
+future tunnel convention); the stack exposes only `127.0.0.1:55432` for that
+purpose. The development root `docker-compose.yml` is unchanged, and
+`docker compose -f deploy/docker-compose.yml down -v` deletes the Postgres and
+Caddy volumes, so it must never run on the server.
+
 Tests: 196 pass, 0 fail, including `test/http.test.ts`, `test/event-hub.test.ts`,
 `test/sse.test.ts`, the label and relation suites in `test/labels.test.ts` and
 `test/relations.test.ts`, the webhook and branch suite in `test/github.test.ts`,
@@ -354,6 +381,7 @@ carries the same rules as a project-agnostic template.
 | `MEMORY.md` | Verified state, decisions, session log. Update it every session. |
 | `Dockerfile` | Multi-stage `node:26-slim` production image: build (`npm ci`, `build:web`, prune dev), then a runtime stage as `USER node`. |
 | `.dockerignore` | Build-context exclusions for the image build. |
+| `deploy/` | Production compose stack (`docker-compose.yml`), the Caddy TLS config, and the environment template; app and Caddy are compose-network only, Postgres binds loopback. |
 | `.github/workflows/verify.yml` | CI verification gate: push to main plus manual dispatch, Postgres 18 service, typecheck, architecture check, tests, web build. |
 | `src/domain/` | Pure rules and types: status and transition contract, actor matrix, claim and move policy, validation, key parsing, domain errors, shared record types. |
 | `src/application/` | Ports (`ports.ts`) and the full SQL-free use-case set: `projects.ts`, `issues.ts` with `issue-read-model.ts`, `agents.ts`, `queue.ts`, `blocking.ts`, `comments.ts`, `labels.ts`, `relations.ts`, and `github.ts`. |
@@ -372,6 +400,7 @@ carries the same rules as a project-agnostic template.
 | `scripts/acceptance.mjs` | End-to-end gate over a throwaway database: CLI, MCP, server, HTTP plus SSE, webhook, palette seed, browser; drops the database and fails if the default `curved` rows changed. `--skip-browser`, `--keep`. |
 | `scripts/acceptance-browser.mjs` | Dependency-free Chromium/CDP driver at 390x844 over the built SPA; writes run-scoped screenshots under the system temp dir. `CHROMIUM_BIN` overrides the binary search. |
 | `scripts/container-smoke.sh` | Container contract gate: starts the local DB, builds `curved:container-smoke`, and asserts the SPA shell, `401`/`200` on `/api/projects`, `already up to date` from the in-image migrate, a non-root uid, and the absent paths. `--platform`, `--build-only`, `--keep`. |
+| `scripts/compose-smoke.sh` | Production compose gate: throwaway project and env, HTTPS through Caddy's internal CA, SPA/API/ready/detail/SSE/webhook/binding assertions. |
 | `.codegraph/` | Local index, gitignored. Refresh with `codegraph sync`. |
 
 ## Working rules

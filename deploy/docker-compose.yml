@@ -1,0 +1,85 @@
+name: curved-prod
+
+# Production stack: Postgres, the app image built from the repository root, and
+# Caddy terminating TLS. The development stack in ../docker-compose.yml is
+# independent; run this one with `--env-file deploy/.env -f deploy/docker-compose.yml`.
+
+services:
+  db:
+    image: postgres:18-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:?POSTGRES_USER is required}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}
+      POSTGRES_DB: ${POSTGRES_DB:?POSTGRES_DB is required}
+    ports:
+      # Loopback-only: the database is reachable for operations, never public.
+      - "127.0.0.1:${CURVED_DB_PORT:-55432}:5432"
+    volumes:
+      - curved-pgdata:/var/lib/postgresql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U \"$$POSTGRES_USER\" -d \"$$POSTGRES_DB\""]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+
+  app:
+    image: ${CURVED_IMAGE:-curved:latest}
+    build:
+      context: ..
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: "postgres://${POSTGRES_USER:?POSTGRES_USER is required}:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}@db:5432/${POSTGRES_DB:?POSTGRES_DB is required}"
+      PORT: "4747"
+      CURVED_UI_TOKEN: ${CURVED_UI_TOKEN:?CURVED_UI_TOKEN is required}
+      GITHUB_WEBHOOK_SECRET: ${GITHUB_WEBHOOK_SECRET:?GITHUB_WEBHOOK_SECRET is required}
+      COOKIE_SECURE: ${COOKIE_SECURE:-1}
+    # Migrations are idempotent and must finish before the server accepts
+    # traffic, otherwise requests can hit an unmigrated schema.
+    command:
+      - sh
+      - -c
+      - "node src/composition/migrate.ts && exec node src/composition/server.ts"
+    expose:
+      - "4747"
+    # Authenticated in-container probe: only an ok response from the token-gated
+    # API proves the server is up, not merely listening.
+    healthcheck:
+      test:
+        - CMD
+        - node
+        - -e
+        - "fetch('http://127.0.0.1:4747/api/projects',{headers:{Authorization:'Bearer '+process.env.CURVED_UI_TOKEN}}).then((res)=>process.exit(res.ok?0:1)).catch(()=>process.exit(1))"
+      interval: 2s
+      timeout: 5s
+      retries: 30
+      start_period: 10s
+
+  caddy:
+    image: caddy:2.10-alpine
+    restart: unless-stopped
+    depends_on:
+      app:
+        condition: service_healthy
+    environment:
+      CURVED_DOMAIN: ${CURVED_DOMAIN:-localhost}
+      # Empty ACME_EMAIL becomes "internal" here: Caddy treats an *empty* env var
+      # as set, so the Caddyfile's {$ACME_EMAIL:internal} fallback would not apply.
+      ACME_EMAIL: ${ACME_EMAIL:-internal}
+    ports:
+      - "${CURVED_HTTP_PORT:-80}:80"
+      - "${CURVED_HTTPS_PORT:-443}:443"
+      - "${CURVED_HTTPS_PORT:-443}:443/udp"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - curved-caddy-data:/data
+      - curved-caddy-config:/config
+
+volumes:
+  curved-pgdata:
+  curved-caddy-data:
+  curved-caddy-config:
