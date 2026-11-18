@@ -457,6 +457,7 @@ done
 if [ "$proto" = udp ]; then
   printf 'UNCONN 0 0 0.0.0.0:443 0.0.0.0:*\n'
   printf 'UNCONN 0 0 0.0.0.0:68 0.0.0.0:*\n'
+  printf 'UNCONN 0 0 0.0.0.0:546 0.0.0.0:*\n'
   exit 0
 fi
 printf 'LISTEN 0 4096 0.0.0.0:22 0.0.0.0:*\n'
@@ -730,6 +731,26 @@ grep -qx 'bootstrap-host: ok' "$boot_out" || fail "--no-stack re-run did not pri
 up_after=$(cat "$STATE/docker-up-count" 2>/dev/null || printf 0)
 [ "$up_after" = "$up_before" ] || fail "--no-stack ran docker compose up $((up_after - up_before)) time(s)"
 pass "no-stack rerun (compose up count unchanged)"
+
+# 8. A private-key-looking --key line is rejected without touching authorized_keys.
+keys_hash=$(sha256sum /home/deploy/.ssh/authorized_keys | cut -d' ' -f1)
+bad_key=$STATE/bad-key
+printf '%s\n' '-----BEGIN OPENSSH PRIVATE KEY-----' >"$bad_key"
+boot_out="$STATE/bootstrap-bad-key.out"
+boot_err="$STATE/bootstrap-bad-key.err"
+verify_rc=0
+bash "$BOOTSTRAP" --key "$bad_key" --data-device /dev/vdb --domain curved.test --no-stack \
+  >"$boot_out" 2>"$boot_err" || verify_rc=$?
+if [ "$verify_rc" -eq 0 ]; then
+  fail "private-key input was accepted"
+fi
+if ! grep -q 'not an OpenSSH public key' "$boot_err"; then
+  cat "$boot_out" "$boot_err" >&2
+  fail "private-key input did not name the key error"
+fi
+[ "$(sha256sum /home/deploy/.ssh/authorized_keys | cut -d' ' -f1)" = "$keys_hash" ] \
+  || fail "a rejected key changed authorized_keys"
+pass "negative: non-public --key rejected"
 SCENARIO
 chmod 0755 "$HARNESS_DIR/scenario.sh"
 

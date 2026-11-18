@@ -371,6 +371,8 @@ for key_file in "${KEY_FILES[@]}"; do
     key_line=${key_line%$'\r'}
     case "$key_line" in
       ''|'#'*) continue ;;
+      ssh-*|ecdsa-*|sk-*) ;;
+      *) die "--key $key_file has a line that is not an OpenSSH public key: ${key_line%% *}" ;;
     esac
     if grep -Fxq -e "$key_line" "$auth_file"; then
       continue

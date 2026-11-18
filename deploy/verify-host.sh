@@ -546,7 +546,7 @@ check_udp_listeners() {
       127.* | \[::1\]:* | ::1:* | \[::ffff:127.*) ;;
       *)
         case "$port" in
-          443 | 68) ;;
+          443 | 68 | 546) ;;
           *) bad+=("$local_addr") ;;
         esac
         ;;
@@ -558,7 +558,7 @@ check_udp_listeners() {
   if [ "${#reasons[@]}" -gt 0 ]; then
     fail_list udp-listeners "${reasons[@]}"
   else
-    pass "udp-listeners: public UDP limited to 443 and 68"
+    pass "udp-listeners: public UDP limited to 443, 68, and 546"
   fi
 }
 

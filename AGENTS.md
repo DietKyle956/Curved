@@ -353,14 +353,14 @@ printing secrets, and starts the compose stack with Caddy's internal CA.
 `deploy/verify-host.sh` is read-only and exits 0 only when the OS, deploy
 account, sshd policy, ext4 data mount, 50 + 100 = 150 of the 200 GB block
 storage, env permissions, checkout, public listener allowlist (22/80/443 TCP
-plus 443/68 UDP, no public 5432 or 4747, `127.0.0.1:55432` present), healthy
+plus 443/68/546 UDP, no public 5432 or 4747, `127.0.0.1:55432` present), healthy
 compose services, and the authenticated 200/401 HTTPS API all pass.
 `npm run smoke:provision` runs both scripts in a disposable `ubuntu:24.04`
 container with PATH stubs, and asserts a fresh bootstrap, an idempotent rerun,
-the verifier's happy path, and rejection of a public 5432 listener and password
-authentication. The OCI console steps and live host checks remain
-operator-executed; public ACME/HSTS/webhook is LAS-186, release and the SSH
-deploy job are LAS-185, and backups are LAS-187.
+the verifier's happy path, and rejection of a public 5432 listener, password
+authentication, and a non-public `--key` line. The OCI console steps and live
+host checks remain operator-executed; public ACME/HSTS/webhook is LAS-186,
+release and the SSH deploy job are LAS-185, and backups are LAS-187.
 
 Tests: 196 pass, 0 fail, including `test/http.test.ts`, `test/event-hub.test.ts`,
 `test/sse.test.ts`, the label and relation suites in `test/labels.test.ts` and

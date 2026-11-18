@@ -250,7 +250,8 @@ Omitting `--data-device` is also supported: bootstrap auto-detects the only
 unmounted 90-110 GiB disk and fails when it finds none or more than one.
 
 The script accepts `--key` more than once, so every administrator key can be
-installed in one run. Other options are `--mount-dir`, `--checkout-dir`,
+installed in one run, and it rejects a file whose lines are not OpenSSH public
+keys. Other options are `--mount-dir`, `--checkout-dir`,
 `--repo-url`, and `--no-stack`; the defaults are `/srv/curved`,
 `/srv/curved/checkout`, `https://github.com/DietKyle956/Curved.git`, domain
 `localhost`, and the stack enabled.
@@ -440,7 +441,8 @@ Only these listeners are allowed:
 | `0.0.0.0:22` and `[::]:22` | `sshd` | SSH |
 | `*:80` | `docker-proxy` or `caddy` | HTTP |
 | `*:443` TCP and UDP | `docker-proxy` or `caddy` | HTTPS and HTTP/3 |
-| `*:68` UDP | `dhclient` or `systemd-networkd` | DHCP client lease renewal |
+| `*:68` UDP | `dhclient` or `systemd-networkd` | DHCPv4 client lease renewal |
+| `*:546` UDP | `systemd-networkd` | DHCPv6 client lease renewal, when IPv6 is enabled |
 | `127.0.0.1:55432` | `docker-proxy` | Postgres, loopback only, for an SSH tunnel |
 
 Loopback may also show `127.0.0.53:53` from `systemd-resolved` and other
