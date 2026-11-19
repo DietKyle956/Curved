@@ -631,8 +631,10 @@ that runs the CLI, MCP server, HTTP server, webhook, and SPA together.
 The repository-side gates all pass: `npm run check` passes 197 tests plus the
 architecture check, `npm run smoke:compose` covers the HTTP to HTTPS redirect, the
 HSTS toggle before and after enabling `CURVED_HSTS_MAX_AGE`, gzip on the JS asset,
-and an `issues_changed` frame within 5s, `npm run smoke:provision` reports 42
-PASS, `npm run smoke:release` 20 PASS, and `npm run smoke:webhook` 9 PASS.
+an `issues_changed` frame within 5s, and a real nightly backup restored into a
+throwaway database plus a Caddy volume restore, `npm run smoke:provision`
+reports 50 PASS, `npm run smoke:release` 22 PASS, `npm run smoke:backup`
+19 PASS, and `npm run smoke:webhook` 9 PASS.
 
 ## HTTP API
 

@@ -159,7 +159,8 @@ git history and the Linear comments.
   `acme-v02.api.letsencrypt.org-directory` over tls-alpn-01. The public edge
   serves the SPA, authenticated API, and SSE (`ready`, then `issues_changed`)
   over verified TLS; the unauthenticated `/api/projects` stays 401.
-  `verify-host` exits 0 with 22 PASS lines, adding `tls-certificate`,
+  `verify-host` exited 0 with 22 PASS lines at LAS-186 (26 after LAS-187),
+  adding `tls-certificate`,
   `http-redirect`, `hsts`, `compression`, and `caddy-issuance`. The release
   probe requires HSTS under ACME and matches `CURVED_HSTS_MAX_AGE`; deploy run
   44551897724 logged `release: public probe ok` and `release: ok c711540`, and
@@ -195,7 +196,13 @@ git history and the Linear comments.
   `backup-timer` (units enabled and active), `backup-freshness` (newest nightly
   set at most 26 hours old with a non-empty dump), and `backup-integrity`
   (`sha256sum -c` over `SHA256SUMS`), taking the live check count from 22 to
-  26.
+  26. Live on 2026-11-19: deploy run 44578798179 passed `verify` and the SSH
+  `deploy` job; the release wrote pre-deploy set `20261119T173637Z`
+  (`tag=curved:ec6666d`, `caddy=archived`), the bootstrap re-run installed the
+  timer, nightly set `20261119T173741Z` published and verified, `verify-host`
+  exits 0 with 26 PASS, and a drill restored 1 project and 3 issues (`LIVE-1`
+  at `done`) into `curved_backup_drill` while the app stayed 200; the drill
+  database was dropped.
 - Provisioning (`LAS-183`): `deploy/provisioning.md` is the OCI console runbook
   for one Always Free `VM.Standard.A1.Flex` (2 OCPU, 12 GB, Ubuntu 24.04
   aarch64, home region), a 50 GB boot volume plus a 100 GB block volume, a
@@ -233,7 +240,7 @@ git history and the Linear comments.
   `verify-host: ok` again passed; 5432 and 4747 are filtered externally. On
   2026-11-19 the host switched to public HTTPS at
   `https://158.101.127.247.sslip.io` (Let's Encrypt, HSTS), and `verify-host`
-  exits 0 with 22 PASS lines including the edge checks; the SPA and
+  exits 0 with 26 PASS lines including the edge and backup checks; the SPA and
   authenticated API answer over the public name and unauthenticated
   `/api/projects` is 401.
 - CI: `.github/workflows/verify.yml`, one global concurrency group `verify` with
@@ -578,4 +585,4 @@ on 2026-11-18, and 037 to 039 on 2026-11-19.
 | 036 | `LAS-184` | Docker data root on the data volume with migration, systemd mount gate, log rotation, prune timer, verifier checks, reboot runbook, and the extended provisioning gate; live OCI bootstrap and reboot proof passed. |
 | 037 | `LAS-185` | `deploy/release.sh` with the fixed release order, first-release probe rule, latest-after-probe tagging, atomic state, and rollback; main-only `deploy` job with pinned SSH and the `DEPLOY_*` secrets; `npm run smoke:release` gate; live push, manual dispatch, and rollback/forward proof; provisioning docs updated. |
 | 038 | `LAS-186` | public Let's Encrypt TLS at `158.101.127.247.sslip.io`, HTTP 308, conditional HSTS, gzip/zstd except unbuffered SSE, edge verifier checks, HSTS-aware release probe, `deploy/webhook.sh` and its gate, live GitHub opened/reopened/merged PR flow plus replay/unknown/non-PR ignores, compose/provision/release/webhook smokes, docs and MEMORY. |
-| 039 | `LAS-187` | `deploy/backup.sh` (atomic Postgres dump plus Caddy archives, manifest, checksums, flock, retention), `deploy/restore.sh` (checksum-gated production and drill Postgres restore, Caddy restore), mandatory pre-deploy backup in `release.sh`, bootstrap backup directory and daily timer with one initial set, four `verify-host` checks, `npm run smoke:backup`, real compose backup and restore legs, release ordering isolation, provisioning/README docs; `./scripts/init.sh`, 197 tests, acceptance 145 checks, compose/provision/backup/release/webhook smokes green. |
+| 039 | `LAS-187` | `deploy/backup.sh` (atomic Postgres dump plus Caddy archives, manifest, checksums, flock, retention), `deploy/restore.sh` (checksum-gated production and drill Postgres restore, Caddy restore), mandatory pre-deploy backup in `release.sh`, bootstrap backup directory and daily timer with one initial set, four `verify-host` checks, `npm run smoke:backup`, real compose backup and restore legs, release ordering isolation, provisioning/README docs; `./scripts/init.sh`, 197 tests, acceptance 145 checks, compose/provision/backup/release/webhook smokes green; live deploy run 44578798179 with the pre-deploy set `tag=curved:ec6666d`, timer installed, first nightly set verified, `verify-host` 26 PASS, and a live Postgres drill restored 1 project/3 issues with `LIVE-1` at `done` while the app stayed 200. |
