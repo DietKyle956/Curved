@@ -1,8 +1,10 @@
 #!/usr/bin/env bash
 # Production compose stack gate: build the app image through deploy/, boot the
 # full stack (Postgres, app, Caddy) as an isolated compose project, and assert
-# the deployment contract end to end over TLS. The stack and its volumes are
-# always removed; the smoke image is removed unless `--keep` is given.
+# the deployment contract end to end over TLS. The gate then takes a nightly
+# backup set through deploy/backup.sh and restores it through deploy/restore.sh
+# (Postgres into a drill database, Caddy in place). The stack and its volumes
+# are always removed; the smoke image is removed unless `--keep` is given.
 set -euo pipefail
 
 ROOT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -32,8 +34,10 @@ as a throwaway compose project with a random UI token, random Postgres and
 webhook secrets, and free host ports, then verifies the stack through Caddy
 over TLS: the HTTP to HTTPS redirect, the SPA shell, compression of the JS
 bundle, the HSTS toggle, the token boundary, the Secure session cookie, the
-issue lifecycle, SSE frames, the GitHub webhook route, and the published
-ports.
+issue lifecycle, SSE frames, the GitHub webhook route, the published ports,
+and the backup and restore path (a nightly set taken with deploy/backup.sh,
+verified, restored into a drill Postgres database, and restored in place for
+Caddy).
 
   --keep     Keep the built smoke image (tag: curved:compose-smoke). The
              stack and its volumes are still removed.
@@ -98,8 +102,17 @@ fi
 if ! command -v python3 >/dev/null 2>&1; then
   fail "python3 is required to pick free ports and generate secrets"
 fi
+if ! command -v tar >/dev/null 2>&1; then
+  fail "tar is required to inspect the backup archives"
+fi
+if ! command -v sha256sum >/dev/null 2>&1; then
+  fail "sha256sum is required to verify the backup set"
+fi
 if [ ! -f "$COMPOSE_FILE" ]; then
   fail "$COMPOSE_FILE is missing"
+fi
+if [ ! -x deploy/backup.sh ] || [ ! -x deploy/restore.sh ]; then
+  fail "deploy/backup.sh and deploy/restore.sh must exist and be executable"
 fi
 
 TMP_DIR="$(mktemp -d)"
@@ -438,6 +451,83 @@ if [ "$hsts_ready" -ne 1 ]; then
   fail "GET / did not send 'Strict-Transport-Security: max-age=31536000' within 20s of enabling CURVED_HSTS_MAX_AGE"
 fi
 printf 'compose-smoke: PASS HSTS max-age=31536000 served after enabling CURVED_HSTS_MAX_AGE\n'
+
+# Backup and restore leg. deploy/backup.sh nightly archives Postgres and the
+# Caddy volumes; the published set must verify on its own. The Postgres restore
+# goes into a drill database so the live one keeps serving, then Caddy is
+# restored in place and must still answer over TLS. Everything lands under
+# TMP_DIR and disappears with the stack in cleanup.
+BACKUP_DIR="$TMP_DIR/backups"
+backup_set="$BACKUP_DIR/nightly/latest"
+backup_log="$TMP_DIR/backup.log"
+restore_db="curved_smoke_restore"
+
+if ! ./deploy/backup.sh nightly --output-dir "$BACKUP_DIR" \
+  --project "$PROJECT_NAME" --env-file "$ENV_FILE" --compose-file "$COMPOSE_FILE" \
+  > "$backup_log" 2>&1; then
+  printf 'compose-smoke: backup log follows\n' >&2
+  cat "$backup_log" >&2 || true
+  fail "deploy/backup.sh nightly failed"
+fi
+if ! grep -q '^backup: ok ' "$backup_log"; then
+  printf 'compose-smoke: backup log follows\n' >&2
+  cat "$backup_log" >&2 || true
+  fail "deploy/backup.sh nightly did not report 'backup: ok'"
+fi
+
+[ -f "$backup_set/manifest.txt" ] || fail "the nightly set has no manifest.txt"
+grep -q '^backup_format=1$' "$backup_set/manifest.txt" \
+  || fail "manifest.txt does not record backup_format=1"
+grep -q '^kind=nightly$' "$backup_set/manifest.txt" \
+  || fail "manifest.txt does not record kind=nightly"
+grep -q "^postgres_db=$POSTGRES_DB\$" "$backup_set/manifest.txt" \
+  || fail "manifest.txt does not record postgres_db=$POSTGRES_DB"
+grep -q '^caddy=archived$' "$backup_set/manifest.txt" \
+  || fail "manifest.txt does not record caddy=archived"
+[ -f "$backup_set/SHA256SUMS" ] || fail "the nightly set has no SHA256SUMS"
+if ! (cd "$backup_set" && sha256sum -c --status SHA256SUMS); then
+  fail "SHA256SUMS does not verify for the nightly set"
+fi
+[ -s "$backup_set/postgres.dump" ] || fail "postgres.dump is missing or empty"
+for archive in caddy-data.tar.gz caddy-config.tar.gz; do
+  [ -s "$backup_set/$archive" ] || fail "$archive is missing or empty"
+  if ! archive_listing="$(tar -tzf "$backup_set/$archive")"; then
+    fail "tar -tzf $archive failed"
+  fi
+  case "$archive_listing" in
+    *caddy/*) ;;
+    *) fail "$archive does not list caddy/" ;;
+  esac
+done
+printf 'compose-smoke: PASS nightly backup set verifies (manifest, SHA256SUMS, dump, caddy archives)\n'
+
+if ! ./deploy/restore.sh postgres "$backup_set" --database "$restore_db" --yes \
+  --env-file "$ENV_FILE" --compose-file "$COMPOSE_FILE" --project "$PROJECT_NAME"; then
+  fail "deploy/restore.sh postgres into $restore_db failed"
+fi
+restored_key="$("${COMPOSE[@]}" exec -T db psql -U "$POSTGRES_USER" -d "$restore_db" \
+  -tAc "SELECT key FROM issues WHERE key = 'SMK-1'" 2>/dev/null | tr -d '[:space:]' || true)"
+[ "$restored_key" = "SMK-1" ] \
+  || fail "the restored $restore_db database does not contain SMK-1 (got '${restored_key:-nothing}')"
+printf 'compose-smoke: PASS Postgres restore drill into %s contains SMK-1\n' "$restore_db"
+
+if ! ./deploy/restore.sh caddy "$backup_set" --yes \
+  --env-file "$ENV_FILE" --compose-file "$COMPOSE_FILE" --project "$PROJECT_NAME"; then
+  fail "deploy/restore.sh caddy failed"
+fi
+https_ready=0
+for _ in $(seq 1 30); do
+  status="$(tls_status "$base_url/" || true)"
+  if [ "$status" = "200" ]; then
+    https_ready=1
+    break
+  fi
+  sleep 1
+done
+if [ "$https_ready" -ne 1 ]; then
+  fail "GET / did not return 200 within 30s of the Caddy restore (got ${status:-nothing})"
+fi
+printf 'compose-smoke: PASS Caddy restore kept HTTPS serving 200\n'
 
 printf 'compose-smoke: all checks passed\n'
 if [ "$keep" -eq 1 ]; then

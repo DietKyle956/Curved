@@ -2,8 +2,8 @@
 
 - **Last updated:** 2026-11-19
 - **Project:** curved
-- **Phase:** product and infrastructure complete through `LAS-186` (public
-  ACME, HSTS, and public webhook delivery). Next work is `LAS-187` (backups).
+- **Phase:** product and infrastructure complete through `LAS-187` (backups
+  and restore). Next work is `LAS-177` (template audit).
 
 ## Current verified state
 
@@ -21,13 +21,15 @@ git history and the Linear comments.
   `./scripts/clean-state.sh`, `npm run acceptance`,
   `npm run smoke:container`, `npm run smoke:compose`,
   `npm run smoke:provision`, `npm run smoke:release`,
-  `npm run smoke:webhook`, and `.github/workflows/verify.yml` on every push to
-  `main` and manual dispatch, where the main-only `deploy` job runs after
-  `verify`.
+  `npm run smoke:backup`, `npm run smoke:webhook`, and
+  `.github/workflows/verify.yml` on every push to `main` and manual dispatch,
+  where the main-only `deploy` job runs after `verify`.
 - Baseline: 197 tests pass (191 behavior, 6 architecture),
   `architecture: ok (74 files)`, web build green; `npm run acceptance` passes
-  (145 checks), `npm run smoke:release` 20 assertions,
-  `npm run smoke:provision` 42, and `npm run smoke:webhook` 9.
+  (145 checks), `npm run smoke:release` 22 assertions,
+  `npm run smoke:backup` 19, `npm run smoke:provision` 50,
+  `npm run smoke:webhook` 9, and `npm run smoke:compose` includes the real
+  backup, Postgres drill, and Caddy restore legs.
 - Layout: `src/domain/` pure rules and types; `src/application/` ports plus
   SQL-free use cases; `src/adapters/` inbound (`http`, `mcp`, `cli`, `github`,
   `sse`, `static`) and outbound (`postgres`, `token-codec`, `timing-safe`);
@@ -169,6 +171,31 @@ git history and the Linear comments.
   `pull request #<n> <action>` bodies; a GitHub redelivery, a replayed signed
   delivery, an unknown key, and non-PR `issues`/`push` deliveries all answered
   `200 {"ok":true,"ignored":true}` with state unchanged.
+- Backups (`LAS-187`): `deploy/backup.sh` writes private sets under
+  `/srv/curved/backups` (mode 0700, files 0600) at
+  `<kind>/<UTC 20261119T031700Z>/` with `postgres.dump` (`pg_dump -Fc -Z 9
+  --no-owner --no-privileges` from the `db` container), `caddy-data.tar.gz`
+  and `caddy-config.tar.gz` (from `tar -C /data|/config -czf -` in the `caddy`
+  container), a fixed-key `manifest.txt`, and `SHA256SUMS`. Staging is
+  published atomically, `latest` is a relative symlink, `flock` on
+  `.backup.lock` blocks overlap, and retention keeps the newest 7 sets per
+  kind (`--keep`, `--no-prune`). `nightly` requires Caddy; `pre-deploy` records
+  `caddy=skipped` when Caddy is absent. `deploy/restore.sh` verifies
+  `SHA256SUMS`, requires `--yes`, stops the app for a restore into
+  `POSTGRES_DB` and leaves it stopped, creates and restores a `--database`
+  drill while the app keeps running, and restores Caddy by stopping it,
+  extracting both archives through one-shot containers, and starting it again.
+  `deploy/release.sh` records a `pre-deploy` set after the database is up and
+  before the build or any migration; a backup failure aborts the release with
+  no build, migration, recreate, tag, or state write. Bootstrap creates the
+  backup directory and installs `curved-backup.service` plus
+  `curved-backup.timer` (daily 03:17, 20 minute jitter,
+  `Persistent=true`, as `deploy` with `CURVED_BACKUP_DIR`), and takes one
+  initial nightly set. `verify-host` adds `backup-dir` (0700 deploy),
+  `backup-timer` (units enabled and active), `backup-freshness` (newest nightly
+  set at most 26 hours old with a non-empty dump), and `backup-integrity`
+  (`sha256sum -c` over `SHA256SUMS`), taking the live check count from 22 to
+  26.
 - Provisioning (`LAS-183`): `deploy/provisioning.md` is the OCI console runbook
   for one Always Free `VM.Standard.A1.Flex` (2 OCPU, 12 GB, Ubuntu 24.04
   aarch64, home region), a 50 GB boot volume plus a 100 GB block volume, a
@@ -361,6 +388,21 @@ git history and the Linear comments.
   for its public name; switching to an owned domain is a `CURVED_DOMAIN` and
   `ACME_EMAIL` edit plus a Caddy recreate. `deploy/webhook.sh` matches hooks by
   `config.url` and always PATCHes so the current secret is reapplied.
+- Backups (`LAS-187`) are logical Postgres dumps plus volume archives, not a
+  copy of the live `pgdata`: `pg_dump` is consistent while the app runs and
+  restores through `pg_restore --clean`, while hot-copying `pgdata` is not
+  crash-safe. The Caddy archives are taken from the running container because
+  cert state, the ACME account, and the internal CA all live in the two
+  volumes. A set is staged, checksummed, and renamed into place, and retention
+  only runs after a successful publish, so a failed run never disturbs the
+  previous set or `latest`. The pre-deploy dump is mandatory before the build
+  and migration, which makes it the pre-migration recovery point; rollback
+  takes no backup because it applies no schema. Restore into `POSTGRES_DB`
+  stops the app and leaves it stopped so no request can write into a
+  half-restored schema; a `--database` drill never stops the app. Backups share
+  the data volume with the database they protect, so they cover logical
+  corruption and operator error but not host or block-volume loss; an off-host
+  copy remains an operator step.
 
 ## Known risks
 
@@ -393,8 +435,26 @@ git history and the Linear comments.
   absent, so a first release proves only that the host-local HTTPS path answers;
   only a later release exercises the required-probe path.
 - Rollback replays an image, not a schema: a non-backward-compatible migration
-  needs a manual database restore, and there is no automated pre-deploy dump
-  until `LAS-187`.
+  needs `deploy/restore.sh postgres /srv/curved/backups/pre-deploy/latest
+  --yes` followed by `deploy/release.sh rollback <tag>`. The pre-deploy dump is
+  taken before every migration, but it shares the data volume with the
+  database, so a host or volume loss still needs an off-host copy that the
+  automation does not make.
+- The Caddy archives are read from the running container, so a file being
+  rewritten during the tar can be captured mid-write; Caddy's state files are
+  small and replaced atomically in normal operation, and the set still carries
+  the last good certificate and account state.
+- A production Postgres restore uses `--clean --if-exists` while the app is
+  stopped; a second client holding locks on an object can still make
+  `pg_restore` fail, in which case the dump and the stopped app remain and the
+  restore is retried after that client disconnects.
+- `backup-freshness` allows 26 hours, so a host booted with `Persistent=true`
+  after a missed 03:17 run is green once the catch-up run finishes; a host
+  whose initial backup failed or whose timer is disabled is red until a
+  manual `./deploy/backup.sh nightly` succeeds.
+- The backup timer and the release script can overlap on the `flock`; a timer
+  run that loses the lock fails that run but retries the next day, so the
+  operator sees it in `journalctl -u curved-backup.service`.
 - The public name depends on sslip.io wildcard DNS, a shared third-party
   service; if it stops resolving or is blocked by a resolver, ACME renewal and
   webhook delivery fail. An owned DNS-only name removes that dependency.
@@ -448,15 +508,19 @@ git history and the Linear comments.
 
 ## Next best step
 
-`LAS-187` (backups) is next. `LAS-186` is live: the host serves
-`https://158.101.127.247.sslip.io` with a Let's Encrypt certificate, HSTS, the
-HTTP redirect, compressed responses, unbuffered SSE, and the configured GitHub
-`pull_request` webhook. A push to `main` runs `verify`, then the main-only
-`deploy` job, which resets `/srv/curved/checkout` and runs
-`./deploy/release.sh`; the public probe now requires HSTS under ACME. The state
-file lives at `/srv/curved/release-state` and the Docker data root stays at
-`/srv/curved/docker`. Run `npm run smoke:provision` after any change to the host
-scripts, `npm run smoke:release` after any change to the release script, and
+`LAS-187` (backups and restore) is complete. `LAS-177` (template audit) is the
+next open item. The host serves `https://158.101.127.247.sslip.io` with a
+Let's Encrypt certificate, HSTS, the HTTP redirect, compressed responses,
+unbuffered SSE, and the configured GitHub `pull_request` webhook. A push to
+`main` runs `verify`, then the main-only `deploy` job, which resets
+`/srv/curved/checkout` and runs `./deploy/release.sh`; the release now takes a
+pre-deploy backup before the build and migration, and the public probe requires
+HSTS under ACME. The state file lives at `/srv/curved/release-state`, the
+Docker data root at `/srv/curved/docker`, and backups at
+`/srv/curved/backups` with the daily `curved-backup.timer`. Run
+`npm run smoke:provision` after any change to the host scripts,
+`npm run smoke:backup` after any change to the backup or restore scripts,
+`npm run smoke:release` after any change to the release script, and
 `npm run smoke:webhook` after any change to the webhook script.
 
 ## Tracker
@@ -464,15 +528,15 @@ scripts, `npm run smoke:release` after any change to the release script, and
 - Linear workspace last-known-good (`LAS`), project Curved (`P-LAS-8`).
 - Spec `LAS-140` with 15 sub-issues `LAS-141` through `LAS-155`, all Done.
 - Refactor `LAS-167` with `LAS-168` through `LAS-176`, all Done.
-- Infra and deploy: `LAS-179` through `LAS-186` Done; `LAS-187` (backups) is
-  next; `LAS-177` (template audit) remains open.
+- Infra and deploy: `LAS-179` through `LAS-187` Done; `LAS-177` (template
+  audit) remains open.
 
 ## Session log
 
 One line per session: earlier verification evidence and the full acceptance
 matrices live in git history and the Linear comments. Sessions 001 to 013 ran on
 2026-11-10, 014 to 018 on 2026-11-16, 019 to 030 on 2026-11-17, 031 to 036
-on 2026-11-18, and 037 and 038 on 2026-11-19.
+on 2026-11-18, and 037 to 039 on 2026-11-19.
 
 | Session | Work item | Outcome |
 |---|---|---|
@@ -514,3 +578,4 @@ on 2026-11-18, and 037 and 038 on 2026-11-19.
 | 036 | `LAS-184` | Docker data root on the data volume with migration, systemd mount gate, log rotation, prune timer, verifier checks, reboot runbook, and the extended provisioning gate; live OCI bootstrap and reboot proof passed. |
 | 037 | `LAS-185` | `deploy/release.sh` with the fixed release order, first-release probe rule, latest-after-probe tagging, atomic state, and rollback; main-only `deploy` job with pinned SSH and the `DEPLOY_*` secrets; `npm run smoke:release` gate; live push, manual dispatch, and rollback/forward proof; provisioning docs updated. |
 | 038 | `LAS-186` | public Let's Encrypt TLS at `158.101.127.247.sslip.io`, HTTP 308, conditional HSTS, gzip/zstd except unbuffered SSE, edge verifier checks, HSTS-aware release probe, `deploy/webhook.sh` and its gate, live GitHub opened/reopened/merged PR flow plus replay/unknown/non-PR ignores, compose/provision/release/webhook smokes, docs and MEMORY. |
+| 039 | `LAS-187` | `deploy/backup.sh` (atomic Postgres dump plus Caddy archives, manifest, checksums, flock, retention), `deploy/restore.sh` (checksum-gated production and drill Postgres restore, Caddy restore), mandatory pre-deploy backup in `release.sh`, bootstrap backup directory and daily timer with one initial set, four `verify-host` checks, `npm run smoke:backup`, real compose backup and restore legs, release ordering isolation, provisioning/README docs; `./scripts/init.sh`, 197 tests, acceptance 145 checks, compose/provision/backup/release/webhook smokes green. |

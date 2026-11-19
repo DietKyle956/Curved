@@ -37,7 +37,11 @@ Checks, in order: os, deploy-user, deploy-ssh-dir, deploy-authorized-keys,
 sshd-config, data-mount, storage, docker-root (daemon data root is on the data
 volume), docker-config (daemon.json data root, log rotation, build-cache GC),
 docker-mount-dependency (drop-in and docker.service mount ordering),
-docker-prune-timer (curved-docker-prune units enabled and active), env-file,
+docker-prune-timer (curved-docker-prune units enabled and active),
+backup-dir (0700 owned by deploy), backup-timer (curved-backup units installed,
+enabled and active), backup-freshness (newest nightly set at most 93600s old
+with a non-empty postgres.dump), backup-integrity (newest set verifies against
+SHA256SUMS), env-file,
 checkout, tcp-listeners, udp-listeners, then stack, tls-certificate,
 http-redirect, hsts, compression, caddy-issuance, and https-api unless
 --skip-stack is given.
@@ -559,6 +563,160 @@ check_docker_prune_timer() {
   fi
 }
 
+# newest_backup_set DIR prints the newest timestamped directory under DIR, or
+# nothing when the directory holds no sets. Dot directories are staging or
+# lock state, never published sets.
+newest_backup_set() {
+  local kind_dir=$1
+  local set=""
+  local newest=""
+  for set in "$kind_dir"/*; do
+    [ -d "$set" ] || continue
+    if [ -L "$set" ]; then
+      continue
+    fi
+    case "${set##*/}" in
+      .*) continue ;;
+    esac
+    newest=$set
+  done
+  printf '%s' "$newest"
+}
+
+check_backup_dir() {
+  local dir="$MOUNT_DIR/backups"
+  local st=""
+  local mode=""
+  local owner=""
+  local reasons=()
+  if [ ! -d "$dir" ]; then
+    fail_list backup-dir "missing directory $dir"
+    return
+  fi
+  if st=$(stat -c '%a %U' -- "$dir" 2>/dev/null); then
+    read -r mode owner <<<"$st"
+  else
+    reasons+=("cannot stat $dir")
+  fi
+  if [ "$mode" != 700 ]; then
+    reasons+=("mode is ${mode:-unknown}, expected 700")
+  fi
+  if [ "$owner" != deploy ]; then
+    reasons+=("owner is ${owner:-unknown}, expected deploy")
+  fi
+  if [ "${#reasons[@]}" -gt 0 ]; then
+    fail_list backup-dir "${reasons[@]}"
+  else
+    pass "backup-dir: $dir is mode 700 owned by deploy"
+  fi
+}
+
+check_backup_timer() {
+  local unit="/etc/systemd/system/curved-backup.service"
+  local timer="/etc/systemd/system/curved-backup.timer"
+  local state=""
+  local active=""
+  local reasons=()
+  if [ ! -f "$unit" ]; then
+    reasons+=("missing $unit")
+  fi
+  if [ ! -f "$timer" ]; then
+    reasons+=("missing $timer")
+  fi
+  if ! systemctl is-enabled --quiet curved-backup.timer 2>/dev/null; then
+    state=$(systemctl is-enabled curved-backup.timer 2>/dev/null || true)
+    reasons+=("curved-backup.timer is ${state:-not installed}, expected enabled")
+  fi
+  if ! systemctl is-active --quiet curved-backup.timer 2>/dev/null; then
+    active=$(systemctl is-active curved-backup.timer 2>/dev/null || true)
+    reasons+=("curved-backup.timer is ${active:-inactive}, expected active")
+  fi
+  if [ "${#reasons[@]}" -gt 0 ]; then
+    fail_list backup-timer "${reasons[@]}"
+  else
+    pass "backup-timer: curved-backup.timer is enabled and active"
+  fi
+}
+
+check_backup_freshness() {
+  local kind_dir="$MOUNT_DIR/backups/nightly"
+  local newest=""
+  local name=""
+  local created=""
+  local epoch=""
+  local now=""
+  local age=""
+  local reasons=()
+  if [ ! -d "$kind_dir" ]; then
+    fail_list backup-freshness "missing directory $kind_dir"
+    return
+  fi
+  newest=$(newest_backup_set "$kind_dir")
+  if [ -z "$newest" ]; then
+    fail_list backup-freshness "no backup set under $kind_dir"
+    return
+  fi
+  name=${newest##*/}
+  created=$(sed -n 's/^created_at=//p' "$newest/manifest.txt" 2>/dev/null | head -n 1 || true)
+  if [ -z "$created" ]; then
+    reasons+=("missing created_at in $newest/manifest.txt")
+  else
+    case "$created" in
+      [0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T[0-9][0-9]:[0-9][0-9]:[0-9][0-9]Z) ;;
+      *) reasons+=("created_at $created is not YYYY-MM-DDTHH:MM:SSZ") ;;
+    esac
+    epoch=$(date -u -d "$created" +%s 2>/dev/null || true)
+    if [ -z "$epoch" ]; then
+      reasons+=("cannot parse created_at $created")
+    else
+      now=$(date -u +%s)
+      age=$((now - epoch))
+      if [ "$age" -gt 93600 ]; then
+        reasons+=("newest nightly set $name is ${age}s old, expected <= 93600s")
+      fi
+    fi
+  fi
+  if [ ! -s "$newest/postgres.dump" ]; then
+    reasons+=("$newest/postgres.dump is missing or empty")
+  fi
+  if [ "${#reasons[@]}" -gt 0 ]; then
+    fail_list backup-freshness "${reasons[@]}"
+  else
+    pass "backup-freshness: newest nightly set $name is ${age}s old with a non-empty postgres.dump"
+  fi
+}
+
+check_backup_integrity() {
+  local kind_dir="$MOUNT_DIR/backups/nightly"
+  local newest=""
+  local reasons=()
+  if [ ! -d "$kind_dir" ]; then
+    fail_list backup-integrity "missing directory $kind_dir"
+    return
+  fi
+  newest=$(newest_backup_set "$kind_dir")
+  if [ -z "$newest" ]; then
+    fail_list backup-integrity "no backup set under $kind_dir"
+    return
+  fi
+  if [ ! -f "$newest/SHA256SUMS" ]; then
+    reasons+=("missing $newest/SHA256SUMS")
+  fi
+  if [ ! -f "$newest/manifest.txt" ]; then
+    reasons+=("missing $newest/manifest.txt")
+  fi
+  if [ "${#reasons[@]}" -eq 0 ]; then
+    if ! (cd "$newest" && sha256sum -c --status SHA256SUMS >/dev/null 2>&1); then
+      reasons+=("sha256sum -c failed for $newest/SHA256SUMS")
+    fi
+  fi
+  if [ "${#reasons[@]}" -gt 0 ]; then
+    fail_list backup-integrity "${reasons[@]}"
+  else
+    pass "backup-integrity: $newest verifies against SHA256SUMS"
+  fi
+}
+
 check_env_file() {
   local st=""
   local mode=""
@@ -1063,6 +1221,10 @@ check_docker_root
 check_docker_config
 check_docker_mount_dependency
 check_docker_prune_timer
+check_backup_dir
+check_backup_timer
+check_backup_freshness
+check_backup_integrity
 check_env_file
 check_checkout
 check_tcp_listeners

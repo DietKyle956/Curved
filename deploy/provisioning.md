@@ -1,4 +1,4 @@
-# Oracle Cloud host provisioning (LAS-183, LAS-184, LAS-185, LAS-186)
+# Oracle Cloud host provisioning (LAS-183, LAS-184, LAS-185, LAS-186, LAS-187)
 
 This runbook creates the production host for Curved on Oracle Cloud Infrastructure
 (OCI) and leaves it running the production Compose stack from `deploy/`. Follow it
@@ -44,17 +44,26 @@ In scope:
   GitHub Actions deploy job that runs it over SSH after verification.
 - Public GitHub webhook delivery on `/webhooks/github` through
   `deploy/webhook.sh`, subscribed to `pull_request` events.
+- Backups and restore: `deploy/backup.sh` writes logical Postgres dumps and
+  Caddy data and config archives into timestamped sets, `deploy/restore.sh`
+  restores them, `curved-backup.timer` runs the nightly set at 03:17, and
+  `deploy/release.sh` takes a pre-deploy set before every migration.
 
-Out of scope, owned by a later ticket:
+The tickets split as follows:
 
 | Ticket | Owns |
 |---|---|
-| LAS-187 | Backups of Postgres and the Caddy volumes. |
+| LAS-183 | The instance, the network boundary, and the production stack behind Caddy. |
+| LAS-184 | The data volume, Docker's data root, log rotation, and the prune timer. |
+| LAS-185 | `deploy/release.sh` and the GitHub Actions deploy job. |
+| LAS-186 | Public TLS, HSTS, server-sent events through the edge, and the public GitHub webhook. |
+| LAS-187 | Backups of Postgres and the Caddy volumes, restore, and the backup timer. |
 
 There is no Terraform and no OCI Resource Manager stack. The OCI console steps in
 this document plus the committed `deploy/bootstrap-host.sh`,
-`deploy/verify-host.sh`, `deploy/release.sh`, `deploy/webhook.sh`,
-`deploy/docker-compose.yml`, and `deploy/Caddyfile` are the source of truth.
+`deploy/verify-host.sh`, `deploy/release.sh`, `deploy/backup.sh`,
+`deploy/restore.sh`, `deploy/webhook.sh`, `deploy/docker-compose.yml`, and
+`deploy/Caddyfile` are the source of truth.
 
 ## 2. Topology and cost
 
@@ -387,6 +396,14 @@ from ever starting without it:
   delay: `docker builder prune -af --filter until=168h` drops build cache older
   than 7 days and `docker image prune -f --filter until=720h` drops unused
   images older than 30 days.
+- Creates `/srv/curved/backups` as `deploy:deploy` mode `0700`, then installs
+  and starts `curved-backup.service` and `curved-backup.timer`. The timer runs
+  the service daily at 03:17 with up to 20 minutes of randomized delay and
+  `Persistent=true`, and the service runs `deploy/backup.sh nightly` as `deploy`
+  with `CURVED_BACKUP_DIR=/srv/curved/backups`.
+- Runs one initial nightly set as `deploy` after the stack is started, so a
+  fresh host ends with a published set, and fails if that set cannot be
+  written.
 - Migrates an existing default root. When the configured root is still
   `/var/lib/docker`, that directory is non-empty, and `/srv/curved/docker` has
   no `image` directory, bootstrap stops Docker and copies the tree with
@@ -575,9 +592,22 @@ failure; fix the reported check and rerun.
 The checks run in this order: `os`, `deploy-user`, `deploy-ssh-dir`,
 `deploy-authorized-keys`, `sshd-config`, `data-mount`, `storage`,
 `docker-root`, `docker-config`, `docker-mount-dependency`,
-`docker-prune-timer`, `env-file`, `checkout`, `tcp-listeners`, `udp-listeners`,
+`docker-prune-timer`, `backup-dir`, `backup-timer`, `backup-freshness`,
+`backup-integrity`, `env-file`, `checkout`, `tcp-listeners`, `udp-listeners`,
 then, unless `--skip-stack` is given, `stack`, `tls-certificate`,
 `http-redirect`, `hsts`, `compression`, `caddy-issuance`, and `https-api`.
+
+The four backup checks are read-only:
+
+- `backup-dir` requires `/srv/curved/backups` to exist, owned by `deploy`, mode
+  `700`.
+- `backup-timer` requires both unit files to exist and
+  `curved-backup.timer` to be both enabled and active.
+- `backup-freshness` takes the newest real directory under
+  `/srv/curved/backups/nightly`, requires a parseable `created_at` in its
+  `manifest.txt` no older than 26 hours, and a non-empty `postgres.dump`.
+- `backup-integrity` requires `manifest.txt` and `SHA256SUMS` in that set and a
+  passing `sha256sum -c --status SHA256SUMS` inside it.
 
 Public mode is detected from the environment file: `ACME_EMAIL` non-empty and
 the domain not `localhost`. In that mode:
@@ -594,8 +624,8 @@ the domain not `localhost`. In that mode:
   for the domain, plus a Let's Encrypt or ACME issuer marker.
 
 With the internal CA, the certificate checks run with `-k` and `hsts` instead
-requires that no `Strict-Transport-Security` header is sent. A live public host
-closes all 22 checks in one run, including the five edge checks above.
+requires that no `Strict-Transport-Security` header is sent. A full run covers
+26 checks, including the five edge checks above and the four backup checks.
 
 ### 9.2 External reachability and boundary
 
@@ -857,9 +887,13 @@ The six acceptance criteria for LAS-186, with the evidence that closes each one:
 | AC5 | Duplicate, unknown, and non-PR deliveries are acknowledged without changing state. | A replayed identical signed delivery for LIVE-2 returned `200 {"ok":true,"ignored":true}` and the issue stayed `in_review`; GitHub's Re-deliver of a processed `pull_request opened` delivery created a `redelivery: true` entry with status `200` and left LIVE-2 in `in_review`; an unknown key `NOPE-999` returned `200 {"ok":true,"ignored":true}`; non-PR `issues` and `push` deliveries also returned `200 {"ok":true,"ignored":true}`. |
 | AC6 | Caddy obtains and renews the certificate automatically, and the release probe requires HSTS under public TLS before promoting a release. | The Caddy log shows `certificate obtained successfully`, `identifier 158.101.127.247.sslip.io`, `issuer acme-v02.api.letsencrypt.org-directory`, account email `admin@sslip.io`, with challenge `tls-alpn-01`; `verify-host` prints `PASS caddy-issuance`; deploy run 44551897724 printed `release: public probe ok` and `release: ok c711540`, and the public probe requires HSTS with a max-age matching `CURVED_HSTS_MAX_AGE` once `ACME_EMAIL` is set. |
 
-On this host `verify-host` exits 0 with 22 `PASS` lines, including
-`tls-certificate`, `http-redirect`, `hsts`, `compression`, `caddy-issuance`, and
-`https-api` (`200` with the token, `401` without it).
+`verify-host` now runs 26 checks. The transcripts recorded for LAS-183, LAS-184,
+and LAS-186 above were produced by the 22-check verifier that predates the
+backup checks, so a rerun on the same host reports four more `PASS` lines:
+`backup-dir`, `backup-timer`, `backup-freshness`, and `backup-integrity`. The
+edge checks are unchanged: `tls-certificate`, `http-redirect`, `hsts`,
+`compression`, `caddy-issuance`, and `https-api` (`200` with the token, `401`
+without it).
 
 Record the console screenshots, the two command transcripts, the section 9.4
 reboot transcript, the verifier output, the GitHub delivery log, and the deploy
@@ -930,7 +964,8 @@ plan against.
   checkout/                  git checkout owned by deploy, includes deploy/
   docker/                    live Docker data root (images, overlay2, volumes)
   release-state              last successful release record, written by deploy/release.sh
-  backups/                   future backup target (LAS-187), not created by this ticket
+  backups/                   mode 0700, owned by deploy: nightly/ and pre-deploy/
+                             set directories, each kind with its own latest symlink
 ```
 
 `/srv/curved/docker` is Docker's data root: images, the `overlay2` storage
@@ -945,12 +980,40 @@ The Postgres and Caddy data are named Compose volumes, now under
 - `/srv/curved/docker/volumes/curved-prod_curved-caddy-data`
 - `/srv/curved/docker/volumes/curved-prod_curved-caddy-config`
 
+`/srv/curved/backups` is created by bootstrap as `deploy:deploy` mode `0700` and
+holds the sets that `deploy/backup.sh` writes (section 17). Each set is a
+timestamped directory under its kind:
+
+```text
+/srv/curved/backups/
+  nightly/<YYYYMMDDTHHMMSSZ>/
+    manifest.txt
+    SHA256SUMS
+    postgres.dump
+    caddy-data.tar.gz
+    caddy-config.tar.gz
+  nightly/latest -> <timestamp>
+  pre-deploy/<YYYYMMDDTHHMMSSZ>/   same files; the Caddy archives are present
+                                   only when Caddy was running
+  pre-deploy/latest -> <timestamp>
+  .backup.lock
+```
+
+The kind is `nightly` or `pre-deploy`, the timestamp is UTC, files are mode
+`0600`, and each kind keeps the newest 7 sets unless `--keep` or `--no-prune`
+says otherwise. Both kinds live on the same 100 GB data volume as the live
+database and the Docker data root. They protect against logical damage, such as
+a bad migration, a dropped table, or an accidental `down -v`, but they do not
+survive loss of the host or of the volume, so copy a set off the host when that
+class of failure matters.
+
 **Never run
 `docker compose --env-file deploy/.env -f deploy/docker-compose.yml down -v`
 on the server.** The `-v` flag deletes the named Postgres and Caddy volumes,
 which destroys the database, sessions, the Caddy certificate state (ACME account
-key, issued certificates) and, on a localhost deployment, the internal CA, with
-no recovery path until LAS-187 exists. Use `down` without `-v` only when
+key, issued certificates) and, on a localhost deployment, the internal CA. The
+only recovery is a backup set taken before the command ran, restored with
+`deploy/restore.sh` (section 17). Use `down` without `-v` only when
 intentionally stopping the stack, and prefer `stop` and `restart`.
 
 ## 14. Releases, deploys, and rollback
@@ -1102,14 +1165,28 @@ The script performs these steps in this order and stops at the first failure:
      -f deploy/docker-compose.yml up -d --wait --wait-timeout 300 db
    ```
 
-3. Build the app image for the current commit:
+3. Take a pre-deploy backup before anything is built, migrated, or replaced:
+
+   ```bash
+   ./deploy/backup.sh pre-deploy --tag "$image"
+   ```
+
+   The set lands under `/srv/curved/backups/pre-deploy/<timestamp>` with a
+   `latest` symlink, and its manifest records the image tag. A `pre-deploy` set
+   skips the Caddy archives with a warning when Caddy is not running, which is
+   the case before the first release. If the backup fails, the script prints
+   `release: error: the pre-deploy backup failed; no migration, container,
+   image tag, or state change happened` and exits 1, so a release never
+   migrates without a restorable dump.
+
+4. Build the app image for the current commit:
 
    ```bash
    CURVED_IMAGE="$image" docker compose -p curved-prod --env-file deploy/.env \
      -f deploy/docker-compose.yml build app
    ```
 
-4. Apply migrations once, as a one-shot container, before the app is replaced:
+5. Apply migrations once, as a one-shot container, before the app is replaced:
 
    ```bash
    CURVED_IMAGE="$image" docker compose -p curved-prod --env-file deploy/.env \
@@ -1122,23 +1199,23 @@ The script performs these steps in this order and stops at the first failure:
    app is still serving. It does not tag `curved:latest`, does not recreate
    `app` or `caddy`, and does not write the state file.
 
-5. Recreate the app on the new image and wait for its authenticated healthcheck:
+6. Recreate the app on the new image and wait for its authenticated healthcheck:
 
    ```bash
    CURVED_IMAGE="$image" docker compose -p curved-prod --env-file deploy/.env \
      -f deploy/docker-compose.yml up -d --no-deps --wait --wait-timeout 600 app
    ```
 
-6. Recreate Caddy so it re-resolves the app container:
+7. Recreate Caddy so it re-resolves the app container:
 
    ```bash
    docker compose -p curved-prod --env-file deploy/.env \
      -f deploy/docker-compose.yml up -d --no-deps caddy
    ```
 
-7. Run the public probe under the policy in section 14.2.
+8. Run the public probe under the policy in section 14.2.
 
-8. Only after a passing probe, or an allowed first-deploy or explicit skip,
+9. Only after a passing probe, or an allowed first-deploy or explicit skip,
    promote the image and record the release:
 
    ```bash
@@ -1147,13 +1224,14 @@ The script performs these steps in this order and stops at the first failure:
 
    The state write follows and is atomic.
 
-9. Print `release: ok <short>`.
+10. Print `release: ok <short>`.
 
-The previous app keeps serving during the build and the one-shot migration, so
-the only outage is the brief app recreate in step 5. A release never stops the
-stack, so `docker compose down` has no place in a deploy, and
-`down -v` must never run on the server: it deletes the Postgres and Caddy
-volumes (section 13).
+The previous app keeps serving during the pre-deploy backup, the build, and the
+one-shot migration, so the only outage is the brief app recreate in step 6. The
+backup in step 3 stops nothing: it reads the live database with `pg_dump` and
+the running Caddy volumes with `tar`. A release never stops the stack, so
+`docker compose down` has no place in a deploy, and `down -v` must never run on
+the server: it deletes the Postgres and Caddy volumes (section 13).
 
 ### 14.4 Rollback
 
@@ -1169,7 +1247,8 @@ succeed for it, so the tag must already exist on the host from an earlier
 release. Rollback runs no migrations. It starts the app from that image with
 `CURVED_IMAGE=curved:<tag> ... up -d --no-deps --wait app`, then recreates
 Caddy, then applies the same probe policy and state update as a normal deploy,
-and prints the usual migration warning.
+and prints the usual migration warning. Rollback runs no migrations and takes
+no backup.
 
 **A rollback does not reverse a migration.** The script always warns that a
 non-backward-compatible migration requires a database restore instead of an
@@ -1181,17 +1260,30 @@ against an incompatible schema. In that case:
 1. Stop the release and do not run an image rollback. Keep the database volume
    intact: do not run `docker compose down` to reset anything, and never
    `down -v`.
-2. Restore Postgres from the pre-deploy dump with application writes stopped.
-   LAS-187 owns the Postgres backup and restore path under `/srv/curved/backups`
-   (section 13); use that path once it exists rather than inventing an ad-hoc
-   `pg_dump` or `pg_restore` command.
+2. Restore the pre-deploy set that the release wrote. `deploy/release.sh` takes
+   that set under `/srv/curved/backups/pre-deploy` before it builds, migrates,
+   or replaces anything, and the manifest records the image tag it was taken
+   for:
+
+   ```bash
+   cd /srv/curved/checkout
+   ls -l /srv/curved/backups/pre-deploy/
+   cat /srv/curved/backups/pre-deploy/latest/manifest.txt
+   ./deploy/restore.sh postgres /srv/curved/backups/pre-deploy/latest --yes
+   ```
+
+   The restore verifies `SHA256SUMS` before it touches anything, stops `app`,
+   runs `pg_restore --clean --if-exists` into `POSTGRES_DB`, and leaves the app
+   stopped. It prints the remaining step. Use `--database` only for a drill:
+   that path restores under another name and leaves the running app alone.
 3. Deploy the old tag with `./deploy/release.sh rollback <tag>` after the
    restore, so the image and the schema agree.
 
-Until LAS-187 lands there is no automated pre-deploy dump, so treat every
-migration as potentially destructive: an image rollback is safe only when the
-migration is backward compatible, and a schema restore is the only recovery
-otherwise.
+An image rollback is safe only when the migration is backward compatible. When
+it is not, the pre-deploy set is the recovery path: restore it, then roll back
+the image. A release that failed before the backup step leaves the database
+untouched, because the script exits before the build. Rollback takes no backup,
+so rolling back does not disturb the set from the failed release.
 
 ### 14.5 Manual deploy and recovery
 
@@ -1214,15 +1306,19 @@ cd /srv/curved/checkout
 ./deploy/release.sh rollback <previous-tag>
 ```
 
-If a release fails at the migration step, the previous app is still serving:
-read the error, fix it with a new forward migration, reset to the new `main`,
-and run the script again. Do not restart `app` to retry the migration and do not
-tear the stack down. If a later release fails only the probe, the new image is
-already serving; fix the cause (Caddy, the certificate, HSTS, DNS, or the UI
-token), rerun the script, or roll back explicitly if the new image is the
-problem. Because `curved:latest` still points at the previous release after a
-failed probe, do not recreate the app by hand: a plain `up` without
-`CURVED_IMAGE` would start the old image. Inspect the stack with:
+If a release fails at the pre-deploy backup step, nothing changed: no image was
+built, nothing was migrated or recreated, and no state was written. Read the
+backup error, fix it (usually the `db` container, the environment file, or a
+full data volume), and run the script again. If a release fails at the migration
+step, the previous app is still serving: read the error, fix it with a new
+forward migration, reset to the new `main`, and run the script again. Do not
+restart `app` to retry the migration and do not tear the stack down. If a later
+release fails only the probe, the new image is already serving; fix the cause
+(Caddy, the certificate, HSTS, DNS, or the UI token), rerun the script, or roll
+back explicitly if the new image is the problem. Because `curved:latest` still
+points at the previous release after a failed probe, do not recreate the app by
+hand: a plain `up` without `CURVED_IMAGE` would start the old image. Inspect the
+stack with:
 
 ```bash
 docker compose -p curved-prod --env-file deploy/.env \
@@ -1476,6 +1572,26 @@ Rerun bootstrap with the same arguments. It rewrites the managed files
 idempotently, restarts Docker only when they changed, and leaves the existing
 data in place.
 
+### A backup fails or the verifier's backup checks fail
+
+`backup: error: ...` names the cause, and the existing sets and `latest` are
+left alone. A nightly run fails when the `caddy` container is not running,
+because a nightly set always carries the Caddy volumes: start Caddy and rerun.
+`another backup is already running` means the `flock` on
+`/srv/curved/backups/.backup.lock` is held, so wait for the timer or manual run
+to finish. A `pg_dump` failure or an empty dump means `db` is not healthy: check
+`docker compose -p curved-prod --env-file deploy/.env -f
+deploy/docker-compose.yml ps` and the container log. A write error means the
+data volume is full (section 13): free space, then rerun.
+
+For the verifier: `backup-freshness` fails when the newest nightly set is older
+than 26 hours, which points at the timer or the service, so read
+`journalctl -u curved-backup.service`. `backup-integrity` fails when a set is
+missing `SHA256SUMS` or a checksum does not match, and that set is damaged: take
+a new one rather than editing the checksum. `backup-timer` fails when the units
+are missing or the timer is not enabled and active; rerun bootstrap, which
+rewrites both units and re-enables the timer.
+
 ### Bootstrap used the wrong volume device
 
 1. Stop and inspect the block devices:
@@ -1653,3 +1769,226 @@ The same history is visible in the repository UI under **Settings** >
 **Webhooks** > the hook > **Recent Deliveries**. If deliveries return `401`,
 rotate the secret with section 16.2; if they return `200` with `ignored: true`
 for a PR event, check that the payload's issue key matches an existing issue.
+
+## 17. Backups and restore
+
+`deploy/backup.sh` writes backup sets of the Postgres database and the Caddy
+volumes, `deploy/restore.sh` restores them, `curved-backup.timer` runs the
+nightly set, and `deploy/release.sh` takes a pre-deploy set before it migrates.
+Both scripts are invoked from the checkout and neither prints a secret value.
+
+### 17.1 What a set contains
+
+Each run publishes one directory under its kind, `nightly` or `pre-deploy`, with
+the layout recorded in section 13:
+
+- `postgres.dump` - `pg_dump` in custom format (`-Fc -Z 9 --no-owner
+  --no-privileges`), read from the live `db` container. A run fails rather than
+  publish an empty dump.
+- `caddy-data.tar.gz` - the Caddy `/data` volume: the ACME account key, the
+  issued certificates, and, on a localhost deployment, the internal CA.
+- `caddy-config.tar.gz` - the Caddy `/config` volume.
+- `manifest.txt` - one `key=value` per line: `backup_format=1`, `kind`,
+  `created_at` in UTC, `git_sha` (short HEAD, or `unknown` when git is
+  unavailable), `hostname`, `postgres_user`, `postgres_db`,
+  `caddy=<archived|skipped>`, `tag`, and `label`.
+- `SHA256SUMS` - `sha256sum` output for every stored artifact, generated inside
+  the set.
+
+Files are mode `0600` in a `0700` tree under `umask 077`, and `<kind>/latest` is
+a relative symlink to the newest set. A run stages into a dot directory under
+the kind and renames it into place only after the dump, the archives, the
+manifest, and the checksums exist, so a failure removes the staging directory
+and leaves the existing sets and `latest` untouched. A `nightly` run requires
+the `caddy` container to be running; a `pre-deploy` run records
+`caddy=skipped` and omits both archives with a warning when Caddy is not
+running, which is the case before the first release.
+
+`<base>/.backup.lock` is a `flock` guard: a second backup that starts while one
+is running fails instead of interleaving with it.
+
+The base directory is `$CURVED_BACKUP_DIR`, default `/srv/curved/backups`.
+`deploy/bootstrap-host.sh` creates it as `deploy:deploy` mode `0700` and sets
+`CURVED_BACKUP_DIR` in the backup unit, so a timer run and a manual run write
+to the same tree.
+
+### 17.2 Schedule and retention
+
+The nightly schedule is the managed pair `curved-backup.service` and
+`curved-backup.timer`. The timer fires daily at 03:17 with up to 20 minutes of
+randomized delay and `Persistent=true`, so a run missed during downtime happens
+at the next boot. The service runs `deploy/backup.sh nightly` as `deploy` with
+`HOME=/home/deploy` and `CURVED_BACKUP_DIR=/srv/curved/backups`, at idle IO
+priority. Bootstrap also takes one initial set once the stack is up, so a fresh
+host has a `nightly/latest` before the first timer fire.
+
+The pre-deploy set is part of the release, not the timer: `deploy/release.sh`
+takes one after Postgres is healthy and before it builds, migrates, or replaces
+anything (section 14.3). A failed pre-deploy backup aborts the release before
+any change to the database, the containers, the image tags, or the state file.
+
+Each kind keeps the newest 7 sets by default. `--keep N` changes that per run,
+and `--no-prune` keeps every set; pruning happens only after a successful
+publish and never removes the set that was just written. Inspect the schedule
+and the sets:
+
+```bash
+systemctl list-timers curved-backup.timer
+journalctl -u curved-backup.service --since -3days
+ls -l /srv/curved/backups/nightly /srv/curved/backups/pre-deploy
+```
+
+The backups share the 100 GB data volume with the live database and Docker
+(section 13), so 7 retained sets of each kind consume the same headroom the
+database and images use. If the volume fills, Docker and Postgres fail first:
+keep the retention modest and copy a set off the host (section 17.7).
+
+### 17.3 Manual backups
+
+```bash
+cd /srv/curved/checkout
+./deploy/backup.sh nightly
+./deploy/backup.sh pre-deploy --tag "$(git rev-parse --short HEAD)"
+./deploy/backup.sh nightly --keep 14 --label "before the schema rewrite"
+./deploy/backup.sh --help
+```
+
+The kind defaults to `nightly`. The other options are `--output-dir DIR`
+(default `$CURVED_BACKUP_DIR` or `/srv/curved/backups`), `--keep N`, `--tag
+TAG`, `--label TEXT`, `--env-file PATH` (default `deploy/.env`),
+`--compose-file PATH` (default `deploy/docker-compose.yml`), `--project NAME`
+(default `curved-prod`), and `--no-prune`. The environment file supplies the
+Compose interpolation and must set `POSTGRES_USER` and `POSTGRES_DB`; the
+scripts require docker and Compose v2. A successful run ends with
+`backup: ok <final-path>`, and the exit code is 2 for a usage error, 1 for a
+failure.
+
+Take a manual set before a risky operation such as a hand-run `psql` change, a
+volume edit, or a Caddy configuration rewrite:
+
+```bash
+./deploy/backup.sh pre-deploy --label "before volume inspection"
+```
+
+### 17.4 Restore Postgres
+
+```bash
+cd /srv/curved/checkout
+./deploy/restore.sh postgres /srv/curved/backups/pre-deploy/latest --yes
+```
+
+The set directory must hold `manifest.txt`, `SHA256SUMS`, and `postgres.dump`;
+`latest` and any other symlink resolve through `realpath`. Both scripts verify
+every artifact with `(cd "$set" && sha256sum -c --status SHA256SUMS)` before any
+destructive step, so a truncated or edited dump fails before the database is
+touched. Without `--yes` the script prints `restore: refusing to restore without
+--yes` and exits 2.
+
+A restore whose target is `POSTGRES_DB` is the production path: it stops `app`
+first and never starts it again. The dump is replayed with `pg_restore --clean
+--if-exists --no-owner --no-privileges`, which replaces the schema and data. The
+script then prints `restore: ok postgres <target> in <n>s` and the remaining
+step: bring the app back with `./deploy/release.sh rollback <tag>` (or `up`)
+using the image that matches the backup. Verify the data before that step, for
+example by querying the restored database through the `db` container.
+`rollback` takes no backup and runs no migrations. `--database NAME` selects a
+different target, and that path is the drill in section 17.5: the app is not
+stopped and a missing target database is created.
+
+Restoring a nightly set into production is the undo for a deletion or a bad
+migration. Restoring the pre-deploy set of a failed release is the path in
+section 14.4. The `pre-deploy/latest` symlink always names the most recent
+pre-deploy set, so read its `manifest.txt` to confirm the `tag` and `created_at`
+before you restore.
+
+### 17.5 Restore drill
+
+Restore into a separate database to prove a set is usable without touching the
+production database. The app keeps running, and a target database that does not
+exist is created first:
+
+```bash
+cd /srv/curved/checkout
+./deploy/restore.sh postgres /srv/curved/backups/nightly/latest \
+  --database curved_drill --yes
+```
+
+`--database` must match `^[A-Za-z_][A-Za-z0-9_]{0,62}$`. The script prints the
+`dropdb` command that removes the drill database again; run it after checking
+the restored rows. A drill is read-only on the production database and on the
+set, so it can run on a live host.
+
+### 17.6 Restore Caddy
+
+```bash
+cd /srv/curved/checkout
+./deploy/restore.sh caddy /srv/curved/backups/nightly/latest --yes
+```
+
+The set must record `caddy=archived` and contain both archives; a pre-deploy set
+taken before the first release does not qualify. The script lists both archives
+with `tar -tzf` first, stops `caddy`, extracts `caddy-data.tar.gz` into `/data`
+and `caddy-config.tar.gz` into `/config`, starts Caddy with `up -d --no-deps
+--wait --wait-timeout 120 caddy`, and prints `restore: ok caddy`.
+
+Use it when the Caddy volume is lost or its state is damaged: the archived
+`/data` volume carries the ACME account key, the issued certificates, and the
+PKI, so Caddy starts with them instead of provisioning from scratch. Postgres is
+untouched by a Caddy restore, and the app keeps running.
+
+### 17.7 Full recovery order
+
+The backup volume is the same data volume as the database it protects, so the
+sets survive a bad migration, a dropped table, or an accidental `down -v`, and
+they do not survive loss of the host or the volume. Keep a copy of the newest
+set outside the host for that case:
+
+```bash
+scp -r deploy@"$IP":/srv/curved/backups/nightly/latest ~/curved-backups/
+```
+
+To rebuild after host or volume loss, with an off-host set in hand:
+
+1. Provision as in sections 3 to 7. Bootstrap recreates `/srv/curved`, the
+   checkout, `deploy/.env`, `/srv/curved/backups` (mode `0700`), Docker, and the
+   stack, and publishes an initial nightly set before you restore anything.
+2. Copy the off-host set into the nightly tree as `deploy`, keeping its
+   timestamp directory name:
+
+   ```bash
+   scp -r ~/curved-backups/<timestamp> \
+     deploy@"$IP":/srv/curved/backups/nightly/
+   ```
+
+   `nightly/latest` still points at the bootstrap set, so name the copied path
+   explicitly in the restore below.
+3. Restore Postgres and wait for `restore: ok postgres curved in <n>s`:
+   `./deploy/restore.sh postgres /srv/curved/backups/nightly/<timestamp> --yes`.
+4. Restore Caddy with the same set when its manifest records
+   `caddy=archived`.
+5. Start the release. The old host's `curved:<tag>` images do not exist on a
+   rebuilt host, so `rollback <tag>` applies only when that tag is present;
+   otherwise run `./deploy/release.sh`, which builds the current checkout, takes
+   a fresh pre-deploy set of the restored database, applies migrations, and
+   starts the app.
+6. Verify with section 9, then sign in with section 8.
+
+### 17.8 Verification
+
+`deploy/verify-host.sh` stays read-only and adds four backup checks to the list
+in section 9.1: `backup-dir` (mode `700`, owner `deploy`), `backup-timer` (both
+units present, timer enabled and active), `backup-freshness` (newest nightly set
+younger than 26 hours with a non-empty `postgres.dump`), and `backup-integrity`
+(`manifest.txt` and `SHA256SUMS` present, `sha256sum -c --status` passes). A
+freshly bootstrapped host passes all four because bootstrap publishes an initial
+nightly set.
+
+`npm run smoke:backup` runs `bash scripts/backup-smoke.sh`, the repository-side
+gate for `deploy/backup.sh` and `deploy/restore.sh`. It drives both scripts
+against stub binaries in a throwaway `PATH` with no Docker daemon, database, or
+real volume, and covers the set layout, the manifest keys, `SHA256SUMS`, the
+`latest` symlink, the modes, retention, a failed dump leaving earlier sets
+untouched, the pre-deploy Caddy skip, the `--yes` refusal, checksum tampering,
+a drill restore, a production restore that leaves the app stopped, and a Caddy
+restore. A manual end-to-end confirmation on the host is a drill restore
+(section 17.5) plus `./deploy/backup.sh nightly` and its `backup: ok` line.

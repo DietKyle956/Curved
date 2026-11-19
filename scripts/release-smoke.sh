@@ -1,13 +1,18 @@
 #!/usr/bin/env bash
 # Release gate: exercise deploy/release.sh end to end against stub binaries in a
 # throwaway PATH, so no Docker daemon, database, image build, or network is
-# touched. Covers deploy ordering, migration failure isolation, first-release
-# probe skip, probe failure on a later release, a later passing release, the
-# explicit probe skip, rollback, token secrecy, and the no-teardown rule. It
-# also covers the public TLS probe: a matching HSTS header passes, while a
-# missing or mismatched Strict-Transport-Security header fails without moving
-# curved:latest or writing state. The internal (local CA) probe still passes
-# when the endpoint sends no HSTS header.
+# touched. Covers deploy ordering, the pre-deploy backup (ordering before the
+# build and migrations, a published and verifiable set, and a failing backup
+# that changes nothing), migration failure isolation, first-release probe skip,
+# probe failure on a later release, a later passing release, the explicit probe
+# skip, rollback, token secrecy, and the no-teardown rule. It also covers the
+# public TLS probe: a matching HSTS header passes, while a missing or mismatched
+# Strict-Transport-Security header fails without moving curved:latest or
+# writing state. The internal (local CA) probe still passes when the endpoint
+# sends no HSTS header.
+#
+# The real deploy/backup.sh runs against CURVED_BACKUP_DIR inside the temp dir,
+# and every docker call it makes is answered by the same stub.
 #
 # Stub knobs, set in the environment of a scenario:
 #   SMOKE_CURL_FAIL=1             curl exits 7 on every probe (connection failure)
@@ -16,6 +21,7 @@
 #   SMOKE_CURL_HSTS=VALUE         value of the Strict-Transport-Security
 #                                 response header; absent when unset
 #   SMOKE_DOCKER_FAIL=SUBSTRING   docker exits 1 when its joined args contain SUBSTRING
+#                                 (for example pg_dump or migrate.ts)
 #   SMOKE_DOCKER_MISSING_IMAGE=TAG
 #                                 docker image inspect TAG fails
 #
@@ -70,8 +76,9 @@ STUB
 cat > "$STUB_DIR/docker" <<'STUB'
 #!/usr/bin/env bash
 # Fake docker: logs every invocation, simulates failures declared by the
-# SMOKE_DOCKER_FAIL and SMOKE_DOCKER_MISSING_IMAGE knobs, and answers the Caddy
-# CA extraction with a placeholder certificate.
+# SMOKE_DOCKER_FAIL and SMOKE_DOCKER_MISSING_IMAGE knobs, and answers the calls
+# deploy/backup.sh makes (compose version, ps -q caddy, pg_dump, caddy tar)
+# plus the Caddy CA extraction with deterministic bytes.
 set -uo pipefail
 line="$*"
 printf 'docker CURVED_IMAGE=%s %s\n' "${CURVED_IMAGE:-}" "$line" >> "$STUB_LOG/docker.log"
@@ -80,6 +87,23 @@ printf 'docker CURVED_IMAGE=%s %s\n' "${CURVED_IMAGE:-}" "$line" >> "$STUB_LOG/o
 if [ -n "${SMOKE_DOCKER_FAIL:-}" ] && [[ "$line" == *"$SMOKE_DOCKER_FAIL"* ]]; then
   printf 'docker: simulated failure (%s)\n' "$SMOKE_DOCKER_FAIL" >&2
   exit 1
+fi
+
+if [ "${1:-}" = "--version" ] || [ "${1:-}" = "version" ]; then
+  printf 'Docker version 27.3.1, build smoke\n'
+  exit 0
+fi
+
+if [ "${1:-}" = "compose" ] && [ "${2:-}" = "version" ]; then
+  case " $line " in
+    *" --short "*)
+      printf '2.29.1\n'
+      ;;
+    *)
+      printf 'Docker Compose version v2.29.1\n'
+      ;;
+  esac
+  exit 0
 fi
 
 if [ "${1:-}" = "image" ] && [ "${2:-}" = "inspect" ]; then
@@ -93,6 +117,15 @@ if [ "${1:-}" = "compose" ]; then
   case " $line " in
     *" exec -T caddy cat "*)
       printf -- '-----BEGIN CERTIFICATE-----\nSMOKE-ROOT-CA\n-----END CERTIFICATE-----\n'
+      ;;
+    *" ps -q caddy "* | *" ps --quiet caddy "*)
+      printf 'smoke-caddy-id\n'
+      ;;
+    *" pg_dump "*)
+      printf 'SMOKE-PG-DUMP-BYTES\n'
+      ;;
+    *" exec -T caddy tar "*)
+      printf 'SMOKE-CADDY-ARCHIVE-BYTES\n'
       ;;
   esac
 fi
@@ -179,6 +212,10 @@ COOKIE_SECURE=1
 EOF
 chmod 600 "$ENV_FILE"
 
+# The release script runs the real deploy/backup.sh; keep every set it publishes
+# inside the throwaway tree so the host filesystem and /srv are untouched.
+export CURVED_BACKUP_DIR="$TMP_DIR/backups"
+
 COMMON=(--env-file "$ENV_FILE" --compose-file "$COMPOSE_FILE")
 
 seed_state() {
@@ -234,6 +271,11 @@ out_contains() {
   grep -qF -- "$pat" "$OUT" || fail "$what: '$pat' is missing from release output"
 }
 
+count_backup_sets() {
+  find "$CURVED_BACKUP_DIR/pre-deploy" -mindepth 1 -maxdepth 1 \
+    -type d -name '20*' 2>/dev/null | wc -l || true
+}
+
 # --- Deploy ordering, image tag, latest tag order, probe, state -------------
 new_logdir happy
 STATE="$TMP_DIR/state/happy"
@@ -257,15 +299,23 @@ require_line "app up" "up -d --no-deps --wait --wait-timeout 600 app" "$D"
 app_up=$LINE
 require_line "caddy up" "up -d --no-deps caddy" "$D"
 caddy_up=$LINE
+require_line "pre-deploy backup dump" "pg_dump" "$D"
+backup_dump=$LINE
+require_line "pre-deploy backup caddy check" "ps -q caddy" "$D"
+backup_caddy=$LINE
 require_line "latest tag" "tag curved:$SHORT curved:latest" "$D"
 latest=$LINE
 
 assert_before "database precedes the build" "$db_up" "$build"
+assert_before "database precedes the pre-deploy backup" "$db_up" "$backup_dump"
+assert_before "the pre-deploy backup precedes the build" "$backup_dump" "$build"
+assert_before "the pre-deploy backup precedes migrations" "$backup_dump" "$migration"
+assert_before "the pre-deploy backup checks caddy before the build" "$backup_caddy" "$build"
 assert_before "build precedes migrations" "$build" "$migration"
 assert_before "migrations precede the app recreation" "$migration" "$app_up"
 assert_before "the app is healthy before curved:latest moves" "$app_up" "$latest"
 assert_before "caddy is reloaded before curved:latest moves" "$caddy_up" "$latest"
-pass "deploy order is db < build < migrate < app up < latest tag"
+pass "deploy order is db < backup < build < migrate < app up < latest tag"
 
 build_line=$(grep -F -- ' build app' "$D" | head -n 1)
 case "$build_line" in
@@ -274,6 +324,27 @@ case "$build_line" in
 esac
 [ "${#SHORT}" -eq 7 ] || fail "the fixture short sha is not seven characters"
 pass "the build targets curved:$SHORT"
+
+backup_link="$CURVED_BACKUP_DIR/pre-deploy/latest"
+[ -L "$backup_link" ] || fail "the happy release published no pre-deploy latest symlink"
+backup_set=$(readlink -f -- "$backup_link") || fail "the pre-deploy latest symlink does not resolve"
+case "$backup_set" in
+  "$CURVED_BACKUP_DIR/pre-deploy"/[0-9]*) ;;
+  *) fail "the pre-deploy latest symlink does not point at a timestamped set: $backup_set" ;;
+esac
+for artifact in manifest.txt SHA256SUMS postgres.dump caddy-data.tar.gz caddy-config.tar.gz; do
+  [ -s "$backup_set/$artifact" ] || fail "the published backup set is missing or has an empty $artifact"
+done
+grep -q '^backup_format=1$' "$backup_set/manifest.txt" || fail "the published backup manifest has no backup_format"
+grep -q '^kind=pre-deploy$' "$backup_set/manifest.txt" || fail "the published backup manifest has the wrong kind"
+grep -q '^tag=curved:'"$SHORT"'$' "$backup_set/manifest.txt" \
+  || fail "the published backup manifest does not record curved:$SHORT"
+grep -q '^caddy=archived$' "$backup_set/manifest.txt" \
+  || fail "the published backup manifest did not archive Caddy"
+if ! (cd "$backup_set" && sha256sum -c --status SHA256SUMS); then
+  fail "the published backup set fails its checksum verification"
+fi
+pass "the happy release publishes a verifiable pre-deploy backup set for curved:$SHORT"
 
 latest_line=$(grep -F -- 'tag curved:' "$D" | head -n 1)
 case "$latest_line" in
@@ -310,6 +381,37 @@ assert_no_line "no app recreation" "up -d --no-deps" "$D"
 assert_no_line "no latest tag" "tag curved:" "$D"
 [ ! -e "$STATE" ] || fail "a failed migration wrote the state file"
 pass "a failed migration exits nonzero before touching app, caddy, latest, or state"
+
+# --- Pre-deploy backup failure is fatal before anything moves --------------
+new_logdir backfail
+STATE="$TMP_DIR/state/backfail"
+seed_state "$STATE"
+cp "$STATE" "$TMP_DIR/state/backfail.before"
+unset SMOKE_CURL_FAIL SMOKE_DOCKER_MISSING_IMAGE || true
+export SMOKE_DOCKER_FAIL="pg_dump"
+sets_before=$(count_backup_sets)
+latest_before=$(readlink -f -- "$CURVED_BACKUP_DIR/pre-deploy/latest" 2>/dev/null || true)
+
+run_release backfail "${COMMON[@]}" --state-file "$STATE"
+unset SMOKE_DOCKER_FAIL
+[ "$RC" -ne 0 ] || fail "a failed pre-deploy backup exited zero"
+out_contains "backup failure" \
+  "the pre-deploy backup failed; no migration, container, image tag, or state change happened"
+D="$LOGDIR/docker.log"
+require_line "backup dump attempted" "pg_dump" "$D"
+assert_no_line "no build after a failed backup" " build app" "$D"
+assert_no_line "no migrations after a failed backup" "migrate.ts" "$D"
+assert_no_line "no container recreation after a failed backup" "up -d --no-deps" "$D"
+assert_no_line "no latest tag after a failed backup" "tag curved:" "$D"
+cmp -s "$TMP_DIR/state/backfail.before" "$STATE" \
+  || fail "a failed pre-deploy backup changed the state file"
+sets_after=$(count_backup_sets)
+[ "$sets_after" -eq "$sets_before" ] || fail "a failed pre-deploy backup published a set"
+latest_after=$(readlink -f -- "$CURVED_BACKUP_DIR/pre-deploy/latest" 2>/dev/null || true)
+[ "$latest_after" = "$latest_before" ] || fail "a failed pre-deploy backup moved latest"
+staging_left=$(find "$CURVED_BACKUP_DIR" -name '.tmp.*' 2>/dev/null || true)
+[ -z "$staging_left" ] || fail "a failed pre-deploy backup left staging dirs behind: $staging_left"
+pass "a failed pre-deploy backup is fatal and leaves build, migrations, containers, latest, and state untouched"
 
 # --- First release: absent state, failing probe, probe skipped --------------
 new_logdir first
@@ -465,12 +567,13 @@ rollback_caddy=$LINE
 assert_before "the image exists before it is deployed" "$inspect_line" "$rollback_app"
 assert_before "the app comes up before caddy is reloaded" "$rollback_app" "$rollback_caddy"
 assert_no_line "rollback runs no migrations" "migrate.ts" "$D"
+assert_no_line "rollback takes no pre-deploy backup" "pg_dump" "$D"
 assert_no_line "rollback does not move latest" "tag curved:" "$D"
 require_line "rollback probe header" "Authorization: Bearer $TOKEN" "$C"
 grep -q '^tag=curved:'"$ROLLBACK_SHA"'$' "$STATE" || fail "rollback state tag is wrong"
 grep -q '^sha='"$ROLLBACK_SHA"'$' "$STATE" || fail "rollback state sha is wrong"
 out_contains "rollback warning" "restore the database"
-pass "rollback deploys the image, skips migrations, probes, and records the state"
+pass "rollback deploys the image, skips migrations and the backup, probes, and records the state"
 
 # --- Rollback of a missing image ------------------------------------------
 new_logdir rollback-missing

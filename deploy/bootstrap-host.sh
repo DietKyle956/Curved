@@ -23,7 +23,8 @@ Usage: sudo bash deploy/bootstrap-host.sh [options]
 Prepare an Ubuntu 24.04 host to run the curved production stack: install Docker,
 mount the 100 GiB data volume with an fstab entry, move Docker's data root onto
 that volume, create the key-only deploy user, harden sshd, clone the
-repository, generate deploy/.env once, and start the stack. Docker images,
+repository, generate deploy/.env once, install the daily backup timer, and
+start the stack, taking one initial nightly backup. Docker images,
 containers and build cache live on the data volume (<mount-dir>/docker), so a
 host rebuild does not re-download the stack. Every step is safe to re-run.
 
@@ -608,6 +609,49 @@ if ! awk 'NF && $1 !~ /^#/ { found = 1 } END { exit found ? 0 : 1 }' "$auth_file
 fi
 pass "deploy-user (docker group, key-only SSH)"
 
+BACKUP_DIR=$MOUNT_DIR/backups
+install -d -m 0700 -o deploy -g deploy "$BACKUP_DIR"
+pass "backup-dir ($BACKUP_DIR)"
+
+backup_service=$docker_unit_dir/curved-backup.service
+backup_timer=$docker_unit_dir/curved-backup.timer
+desired_backup_service=$(
+  printf '[Unit]\n'
+  printf 'Description=Back up the Curved Postgres database and Caddy volumes\n'
+  printf 'Requires=docker.service\n'
+  printf 'After=docker.service\n'
+  printf '\n'
+  printf '[Service]\n'
+  printf 'Type=oneshot\n'
+  printf 'User=deploy\n'
+  printf 'Group=deploy\n'
+  printf 'WorkingDirectory=%s\n' "$CHECKOUT_DIR"
+  printf 'Environment=HOME=/home/deploy\n'
+  printf 'Environment=CURVED_BACKUP_DIR=%s\n' "$BACKUP_DIR"
+  printf 'ExecStart=%s/deploy/backup.sh nightly\n' "$CHECKOUT_DIR"
+  printf 'Nice=10\n'
+  printf 'IOSchedulingClass=idle\n'
+)
+write_if_changed "$backup_service" 0644 "$desired_backup_service" >/dev/null
+
+desired_backup_timer=$(
+  printf '[Unit]\n'
+  printf 'Description=Daily Curved backup of Postgres and the Caddy volumes\n'
+  printf '\n'
+  printf '[Timer]\n'
+  printf 'OnCalendar=*-*-* 03:17:00\n'
+  printf 'RandomizedDelaySec=20m\n'
+  printf 'Persistent=true\n'
+  printf '\n'
+  printf '[Install]\n'
+  printf 'WantedBy=timers.target\n'
+)
+write_if_changed "$backup_timer" 0644 "$desired_backup_timer" >/dev/null
+
+systemctl daemon-reload
+systemctl enable --now curved-backup.timer
+pass "backup-timer (daily at 03:17)"
+
 sshd_conf_dir=/etc/ssh/sshd_config.d
 sshd_conf=$sshd_conf_dir/00-curved-access.conf
 mkdir -p "$sshd_conf_dir"
@@ -725,6 +769,12 @@ if [ "$WANT_STACK" -eq 1 ]; then
   runuser -u deploy -- env HOME=/home/deploy bash -c \
     "cd '$(single_quote "$CHECKOUT_DIR")' && $compose_command"
   pass "stack"
+  # The timer only fires at 03:17, so take one set as soon as the stack is up;
+  # a broken backup script must fail the bootstrap rather than surface a day
+  # later.
+  runuser -u deploy -- env HOME=/home/deploy bash -c \
+    "cd '$(single_quote "$CHECKOUT_DIR")' && CURVED_BACKUP_DIR='$(single_quote "$BACKUP_DIR")' ./deploy/backup.sh nightly"
+  pass "backup (initial nightly set)"
 fi
 
 printf 'bootstrap-host: ok\n'

@@ -1,11 +1,12 @@
 #!/usr/bin/env bash
 # One-command release for the production Curved stack on its host.
 #
-# The flow is: bring the database up, build the image for the current HEAD,
-# apply migrations through a one-shot container, recreate only the app, reload
-# Caddy, then prove the public HTTPS API answers with the configured UI token.
-# Only a release that passes (or one whose probe was explicitly or first-time
-# skipped) moves curved:latest and records the release state.
+# The flow is: bring the database up, take a pre-deploy backup of Postgres and
+# (when Caddy runs) its volumes, build the image for the current HEAD, apply
+# migrations through a one-shot container, recreate only the app, reload Caddy,
+# then prove the public HTTPS API answers with the configured UI token. Only a
+# release that passes (or one whose probe was explicitly or first-time skipped)
+# moves curved:latest and records the release state.
 #
 # Usage:
 #   deploy/release.sh [--skip-public-probe] [--require-public-probe]
@@ -19,6 +20,9 @@
 # app, and Caddy containers. Volumes and data are left untouched.
 #
 # Environment:
+#   CURVED_BACKUP_DIR       Backup root directory. Inherited by the pre-deploy
+#                           backup; when unset it uses its own default,
+#                           /srv/curved/backups.
 #   CURVED_RELEASE_STATE    Release state file (default /srv/curved/release-state).
 #   RELEASE_PROBE_ATTEMPTS  Public probe attempts (default 30).
 #   RELEASE_PROBE_INTERVAL  Seconds between attempts (default 2).
@@ -30,6 +34,8 @@
 # The environment file supplies Compose interpolation and the container
 # environment. Secret values are never printed.
 set -euo pipefail
+
+SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 
 PROJECT_NAME="curved-prod"
 MODE="deploy"
@@ -70,11 +76,13 @@ Rollback options:
   --env-file PATH         Compose environment file.
   --compose-file PATH     Compose file.
 
-Deploy runs, in order: database up and healthy, build curved:<short>, one-shot
-migrations, app recreation and health, Caddy reload, public probe, then the
-curved:latest tag and the state file. A failed migration stops immediately and
-leaves the previous app serving. Rollback never runs migrations and warns that
-a non-backward-compatible migration needs a database restore instead.
+Deploy runs, in order: database up and healthy, a pre-deploy backup of Postgres
+and (when Caddy runs) its volumes, build curved:<short>, one-shot migrations,
+app recreation and health, Caddy reload, public probe, then the curved:latest
+tag and the state file. A failed backup stops before the build; a failed
+migration stops immediately and leaves the previous app serving. Rollback takes
+no backup, never runs migrations, and warns that a non-backward-compatible
+migration needs a database restore instead.
 
 With a public certificate (ACME_EMAIL set) a passing probe must also see a
 Strict-Transport-Security header, and CURVED_HSTS_MAX_AGE, when set, must match
@@ -358,6 +366,12 @@ deploy() {
   info "starting the database"
   "${COMPOSE[@]}" up -d --wait --wait-timeout 300 db \
     || fail "the database did not become healthy"
+
+  info "backing up Postgres and the Caddy volumes before the release"
+  "$SCRIPT_DIR/backup.sh" pre-deploy --tag "$image" \
+    --env-file "$ENV_FILE" --compose-file "$COMPOSE_FILE" \
+    --project "$PROJECT_NAME" \
+    || fail "the pre-deploy backup failed; no migration, container, image tag, or state change happened"
 
   info "building $image"
   CURVED_IMAGE="$image" "${COMPOSE[@]}" build app \

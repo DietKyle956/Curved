@@ -481,6 +481,34 @@ enabling, gzip on the JS asset, SSE `issues_changed` within 5s),
 `npm run smoke:provision` 42 PASS, `npm run smoke:release` 20 PASS, and
 `npm run smoke:webhook` 9 PASS.
 
+LAS-187 adds backups and restore. `deploy/backup.sh` writes one private set per
+run under `$CURVED_BACKUP_DIR` (default `/srv/curved/backups`, mode 0700):
+`<kind>/<UTC timestamp>/` with a `postgres.dump` custom-format dump from the
+running `db` container, `caddy-data.tar.gz` and `caddy-config.tar.gz` from the
+running `caddy` container (skipped with `caddy=skipped` for `pre-deploy` when
+Caddy is absent), a fixed-key `manifest.txt`, and `SHA256SUMS`; staging is
+published atomically, `latest` is a relative symlink, an `flock` prevents
+overlap, and retention keeps the newest 7 sets per kind. `deploy/restore.sh`
+verifies `SHA256SUMS` and requires `--yes`, stops the app before a production
+Postgres restore and leaves it stopped, restores a `--database` drill without
+stopping the app, and restores the Caddy volumes by stopping Caddy, extracting
+both archives through a one-shot container, and starting it again.
+`deploy/release.sh` takes a `pre-deploy` backup after the database is up and
+before the build or any migration, and aborts the release if it fails.
+Bootstrap creates the backup directory and installs `curved-backup.service`
+plus `curved-backup.timer` (daily 03:17, 20 minute jitter, `Persistent=true`,
+as `deploy`), takes one initial nightly set, and `verify-host` adds
+`backup-dir`, `backup-timer`, `backup-freshness` (26 hour limit), and
+`backup-integrity`. `npm run smoke:backup` is the stub gate; `smoke:compose`
+now takes a real nightly set, restores it into a throwaway database containing
+`SMK-1`, and restores Caddy; `smoke:release` asserts the backup ordering and
+failure isolation; `smoke:provision` covers the units, initial set, verifier
+checks, and four negatives. Repository gates after LAS-187: 197 tests,
+`architecture: ok (74 files)`, acceptance 145 checks, `smoke:provision`
+50 PASS, `smoke:release` 22 PASS, `smoke:backup` 19 PASS, `smoke:compose`
+(including the backup and restore legs) green, and `smoke:webhook` 9 PASS
+unchanged.
+
 Tests: 197 pass, 0 fail, including `test/http.test.ts`, `test/event-hub.test.ts`,
 `test/sse.test.ts`, the label and relation suites in `test/labels.test.ts` and
 `test/relations.test.ts`, the webhook and branch suite in `test/github.test.ts`,
@@ -528,10 +556,12 @@ carries the same rules as a project-agnostic template.
 | `MEMORY.md` | Verified state, decisions, session log. Update it every session. |
 | `Dockerfile` | Multi-stage `node:26-slim` production image: build (`npm ci`, `build:web`, prune dev), then a runtime stage as `USER node`. |
 | `.dockerignore` | Build-context exclusions for the image build. |
-| `deploy/` | Production compose stack (`docker-compose.yml`), the Caddy TLS config (internal CA locally, ACME with optional HSTS, gzip/zstd except SSE, `/api/events` flushed), the environment template, and `release.sh` (build, migrate, recreate app then caddy, authenticated probe with the HSTS rule under ACME, latest tag, atomic state, rollback); app and Caddy are compose-network only, Postgres binds loopback. |
-| `deploy/provisioning.md` | OCI console runbook: topology, security list, reserved IPv4, DNS-only record, bootstrap and verifier commands, Docker data root and mount gate, reboot persistence, LAS-183 and LAS-184 acceptance evidence, the public ACME/HSTS edge and webhook evidence, capacity fallback, access boundary, storage, releases and rollback, troubleshooting. |
-| `deploy/bootstrap-host.sh` | Idempotent Ubuntu 24.04 host bootstrap: Docker install, Docker data root on the data volume with the mount dependency, log rotation and prune timer, key-only `deploy` user and sshd drop-in, ext4 data volume and UUID fstab entry, checkout, mode-600 env, compose up. |
-| `deploy/verify-host.sh` | Read-only host verifier: OS, deploy account, sshd policy, ext4 mount, 150 GB storage, Docker data root, daemon config, mount dependency and prune timer, env, checkout, listener allowlist, stack health, `tls-certificate`, `http-redirect`, `hsts`, `compression`, `caddy-issuance`, and the 200/401 HTTPS API. |
+| `deploy/` | Production compose stack (`docker-compose.yml`), the Caddy TLS config (internal CA locally, ACME with optional HSTS, gzip/zstd except SSE, `/api/events` flushed), the environment template, and `release.sh` (pre-deploy backup, build, migrate, recreate app then caddy, authenticated probe with the HSTS rule under ACME, latest tag, atomic state, rollback); app and Caddy are compose-network only, Postgres binds loopback. |
+| `deploy/backup.sh` | Backup writer: atomically publishes a private `<kind>/<timestamp>` set with a `pg_dump` custom dump, the Caddy data and config archives, `manifest.txt`, and `SHA256SUMS`; `flock`, relative `latest` symlink, retention per kind, `nightly` and `pre-deploy` kinds. |
+| `deploy/restore.sh` | Restore path: checksum-verified Postgres restore into the production database (stops the app, leaves it stopped) or a `--database` drill, plus Caddy volume restore; requires `--yes`. |
+| `deploy/provisioning.md` | OCI console runbook: topology, security list, reserved IPv4, DNS-only record, bootstrap and verifier commands, Docker data root and mount gate, reboot persistence, LAS-183 and LAS-184 acceptance evidence, the public ACME/HSTS edge and webhook evidence, capacity fallback, access boundary, storage, releases and rollback, backups and restore, troubleshooting. |
+| `deploy/bootstrap-host.sh` | Idempotent Ubuntu 24.04 host bootstrap: Docker install, Docker data root on the data volume with the mount dependency, log rotation and prune timer, 0700 backup directory with the daily backup timer and one initial nightly set, key-only `deploy` user and sshd drop-in, ext4 data volume and UUID fstab entry, checkout, mode-600 env, compose up. |
+| `deploy/verify-host.sh` | Read-only host verifier: OS, deploy account, sshd policy, ext4 mount, 150 GB storage, Docker data root, daemon config, mount dependency and prune timer, backup directory, timer, freshness and integrity, env, checkout, listener allowlist, stack health, `tls-certificate`, `http-redirect`, `hsts`, `compression`, `caddy-issuance`, and the 200/401 HTTPS API. |
 | `deploy/webhook.sh` | Creates or updates the GitHub `pull_request` webhook for the deployed host (default `https://$CURVED_DOMAIN/webhooks/github`), always PATCHing an existing same-URL hook so the secret is reapplied; `--repo`, `--url`, `--env-file`, `--dry-run`. |
 | `.github/workflows/verify.yml` | CI gate: push to main plus manual dispatch, Postgres 18 service, typecheck, architecture check, tests, web build; the main-only `deploy` job (`needs: verify`) SSHes with the `DEPLOY_*` secrets and runs `deploy/release.sh`. |
 | `src/domain/` | Pure rules and types: status and transition contract, actor matrix, claim and move policy, validation, key parsing, domain errors, shared record types. |
@@ -551,9 +581,10 @@ carries the same rules as a project-agnostic template.
 | `scripts/acceptance.mjs` | End-to-end gate over a throwaway database: CLI, MCP, server, HTTP plus SSE, webhook, palette seed, browser; drops the database and fails if the default `curved` rows changed. `--skip-browser`, `--keep`. |
 | `scripts/acceptance-browser.mjs` | Dependency-free Chromium/CDP driver at 390x844 over the built SPA; writes run-scoped screenshots under the system temp dir. `CHROMIUM_BIN` overrides the binary search. |
 | `scripts/container-smoke.sh` | Container contract gate: starts the local DB, builds `curved:container-smoke`, and asserts the SPA shell, `401`/`200` on `/api/projects`, `already up to date` from the in-image migrate, a non-root uid, and the absent paths. `--platform`, `--build-only`, `--keep`. |
-| `scripts/compose-smoke.sh` | Production compose gate: throwaway project and env, HTTPS through Caddy's internal CA, the HTTP 308 redirect, the HSTS toggle (absent by default, `max-age=31536000` after enabling), gzip on the JS asset, SPA/API/ready/detail assertions, SSE `ready` and `issues_changed` within 5s, unsigned webhook 401, and the bind/port checks. |
-| `scripts/provision-smoke.sh` | Provisioning gate: runs the bootstrap and verifier in a disposable Ubuntu 24.04 container with PATH stubs; fresh and idempotent bootstrap, Docker data-root migration, daemon config, mount dependency, prune timer, container recreation, verifier positive, the `--acme-email` public mode (certificate, redirect, HSTS, compression, ACME issuance), the public negatives (unverified certificate, missing HSTS, HTTP 200 instead of a redirect, missing ACME marker, internal HSTS), wrong-root and disabled-timer negatives, public-5432 and password-auth negatives. |
-| `scripts/release-smoke.sh` | Release gate (`npm run smoke:release`): asserts `deploy/release.sh` release order, the first-release probe rule, the probe skip and require flags, the migration-failure exit before any recreate or tag, the public probe's HSTS requirement (matching max-age passes; a missing header or mismatched max-age is fatal and leaves latest and state untouched), and rollback. |
+| `scripts/compose-smoke.sh` | Production compose gate: throwaway project and env, HTTPS through Caddy's internal CA, the HTTP 308 redirect, the HSTS toggle (absent by default, `max-age=31536000` after enabling), gzip on the JS asset, SPA/API/ready/detail assertions, SSE `ready` and `issues_changed` within 5s, unsigned webhook 401, the bind/port checks, and a real nightly backup restored into a throwaway database plus a Caddy volume restore. |
+| `scripts/backup-smoke.sh` | Backup and restore gate (`npm run smoke:backup`): stub Docker over the real scripts; set layout, manifest keys, checksums, retention, failure isolation, pre-deploy Caddy skip, `--yes` refusal, checksum tamper, drill versus production restore, and Caddy restore ordering. |
+| `scripts/provision-smoke.sh` | Provisioning gate: runs the bootstrap and verifier in a disposable Ubuntu 24.04 container with PATH stubs; fresh and idempotent bootstrap, Docker data-root migration, daemon config, mount dependency, prune timer, backup directory and units, one initial nightly set, container recreation, verifier positive, the `--acme-email` public mode (certificate, redirect, HSTS, compression, ACME issuance), the public negatives (unverified certificate, missing HSTS, HTTP 200 instead of a redirect, missing ACME marker, internal HSTS), wrong-root, disabled-timer, missing/stale/corrupt backup, and inactive backup-timer negatives, and public-5432 and password-auth negatives. |
+| `scripts/release-smoke.sh` | Release gate (`npm run smoke:release`): asserts `deploy/release.sh` release order including the pre-deploy backup before build and migration, the pre-deploy backup failure isolation, the first-release probe rule, the probe skip and require flags, the migration-failure exit before any recreate or tag, the public probe's HSTS requirement (matching max-age passes; a missing header or mismatched max-age is fatal and leaves latest and state untouched), and rollback without a backup. |
 | `scripts/webhook-smoke.sh` | Webhook gate (`npm run smoke:webhook`): exercises `deploy/webhook.sh` against a stub `gh`; create and update paths (including a hook response without `config.secret`), the dry run, missing secret, localhost guard, and secret secrecy in output and argv. |
 | `.codegraph/` | Local index, gitignored. Refresh with `codegraph sync`. |
 
