@@ -152,6 +152,9 @@ issue payload carries `labels` and `relations: { blocks, blockedBy }`, where
 - `npm run smoke:provision` - local provisioning gate: runs the host bootstrap
   and verifier against Ubuntu 24.04 stubs in a disposable container. See
   "Provisioning the Oracle host" below.
+- `npm run smoke:release` - release gate: drives `deploy/release.sh` and its
+  rollback against stub binaries, with no Docker, database, or network. See
+  "Releasing" below.
 - `npm test` - tests run against the isolated `curved_test` database.
 - `npm run check` - typecheck, the import-direction architecture check, then the
   tests.
@@ -335,14 +338,107 @@ health, and an authenticated HTTPS request to the API. The bootstrap ends with
 `bootstrap-host: ok` and the verifier with `verify-host: ok`; any other ending
 is a failure. A reboot proof is in `deploy/provisioning.md` section 9.4.
 
-LAS-183 provisions the host and LAS-184 makes its data durable: the OCI console
-steps and the live host checks are operator-executed, public ACME, HSTS, and
-public webhook delivery are LAS-186, the release script and SSH deploy job are
-LAS-185, and backups are LAS-187. `npm run smoke:provision` is the
-repository-side proof: it runs the bootstrap and verifier inside a disposable
-container against Ubuntu 24.04 stubs and proves the Docker data root, mount
-gate, log rotation, and prune timer, so a change to either script is caught
-without an OCI tenancy.
+LAS-183 provisions the host, LAS-184 makes its data durable, and LAS-185 adds
+the release script and SSH deploy job described under "Releasing". The OCI
+console steps and the live host checks are operator-executed; public ACME, HSTS,
+and public webhook delivery are LAS-186, and backups are LAS-187.
+`npm run smoke:provision` is the repository-side proof: it runs the bootstrap
+and verifier inside a disposable container against Ubuntu 24.04 stubs and proves
+the Docker data root, mount gate, log rotation, and prune timer, so a change to
+either script is caught without an OCI tenancy.
+
+## Releasing
+
+A push to `main` deploys. `.github/workflows/verify.yml` still runs `verify`,
+and a second job, `deploy`, declares `needs: verify` and
+`if: github.ref == 'refs/heads/main'`, so it cannot start before verification
+passes or from any branch. The runner has no checkout and no write permission:
+it validates three repository secrets, writes two of them under `$RUNNER_TEMP`
+with mode 600, and runs one SSH command as `deploy@<host>`.
+
+- `DEPLOY_SSH_KEY` - the private key for the `deploy` account.
+- `DEPLOY_KNOWN_HOSTS` - the pinned `known_hosts` line for the server, so host
+  verification fails closed instead of trusting a first-seen key.
+- `DEPLOY_HOST` - the server's hostname or address.
+
+The remote command is `cd /srv/curved/checkout && git fetch --prune origin main
+&& git reset --hard origin/main && ./deploy/release.sh`, because the server's
+own checkout is the only code that ships. A manual dispatch
+(`workflow_dispatch`) exposes a `skip_public_probe` boolean that appends
+`--skip-public-probe`. SSH runs with `BatchMode=yes`, `IdentitiesOnly=yes`,
+`StrictHostKeyChecking=yes`, and that pinned known_hosts file, so an unknown or
+changed host key fails the job. The `deploy` account is in the `docker` group,
+which is root-equivalent, so treat `DEPLOY_SSH_KEY` as a root key.
+
+`deploy/release.sh` is the release itself, run on the server from the checkout.
+It resolves the repository root through git, requires the env file, refuses to
+run when both probe flags are given, tags the image `curved:<short>` for the
+seven-character HEAD commit, and follows a fixed order:
+
+1. `docker compose -p curved-prod --env-file deploy/.env -f
+   deploy/docker-compose.yml up -d --wait --wait-timeout 300 db`.
+2. Build `app` with `CURVED_IMAGE=curved:<short>`.
+3. Run `node src/composition/migrate.ts` once in a throwaway container with
+   `run --rm --no-deps -T app`. A failing migration exits the script immediately
+   and prints that the previous app is still serving; the app and Caddy are not
+   recreated, nothing is retagged, and no release state is written.
+4. Recreate `app` alone with the new image, `--no-deps --wait
+   --wait-timeout 600`.
+5. Recreate `caddy` alone.
+6. Probe `https://$CURVED_DOMAIN/api/projects` with the UI bearer token, a
+   ten-second request timeout, and 30 attempts two seconds apart. With an empty
+   `ACME_EMAIL` the probe extracts Caddy's internal root CA from
+   `/data/caddy/pki/authorities/local/root.crt` and passes it as `--cacert`.
+   The token never reaches the output.
+7. After a successful probe, tag `curved:<short>` as `curved:latest`, write the
+   release state atomically, and print `release: ok <short>`.
+
+The probe is what makes a release fail after the containers are up. Its rules
+depend on `--state-file`, which defaults to
+`${CURVED_RELEASE_STATE:-/srv/curved/release-state}` and sits outside the
+checkout, so `git reset --hard` cannot touch it:
+
+- No state file means a first deploy: the probe is skipped with a loud message
+  unless `--require-public-probe` is passed. The skip still counts as a
+  successful release, so `curved:latest` moves and the state file is written.
+- With a state file, a failed probe exits nonzero and leaves both the state file
+  and `curved:latest` untouched, so a release that cannot be reached publicly is
+  never recorded.
+- `--skip-public-probe` skips the probe on any deploy with a warning.
+
+The state file records the tag (`curved:<short>`), the short SHA, and the UTC
+timestamp. `--env-file` and `--compose-file` override the `deploy/.env` and
+`deploy/docker-compose.yml` defaults, and `--help` prints the usage. The script
+never runs `docker compose down` or `down -v`.
+
+To release by hand on the server, or to retry a failed probe:
+
+```sh
+cd /srv/curved/checkout
+./deploy/release.sh
+./deploy/release.sh --skip-public-probe
+./deploy/release.sh --require-public-probe
+```
+
+To roll back, name the tag to restore:
+
+```sh
+./deploy/release.sh rollback <tag>
+```
+
+`rollback` normalizes `curved:<tag>`, requires the image to exist locally
+(`docker image inspect`), and runs no migrations. It recreates `app` and then
+`caddy` with `CURVED_IMAGE=curved:<tag>`, applies the same public-probe rules,
+and updates the state file on success. It also prints that a migration which is
+not backward compatible needs a database restore instead of an image rollback:
+the newer schema stays in place when the older image returns.
+
+`npm run smoke:release` runs `bash scripts/release-smoke.sh`, the gate for this
+path. It drives the script against stubbed `git`, `docker`, `curl`, and `sleep`
+binaries in a temporary `PATH`, with no Docker, database, or network, and
+asserts the ordering, the migration failure path, the first-deploy skip, the
+second-deploy probe failure, rollback, and that the bearer token never appears
+in the output.
 
 ## Continuous integration
 
@@ -362,9 +458,10 @@ set explicitly to the repository defaults,
 `postgres://curved:curved@127.0.0.1:55432/curved` and the `curved_test` database
 on the same server.
 
-There is no deploy job. The future deploy job (LAS-185) must declare
-`needs: verify`, or be gated on this workflow, so a failing typecheck or test
-stops before any deploy.
+A second job, `deploy`, declares `needs: verify` and
+`if: github.ref == 'refs/heads/main'`, so it cannot run before verification
+passes or from any branch. It deploys to the host over SSH as described under
+"Releasing": the workflow gives it no checkout and no write token.
 
 ## Acceptance gate
 

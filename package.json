@@ -18,6 +18,7 @@
     "smoke:container": "bash scripts/container-smoke.sh",
     "smoke:compose": "bash scripts/compose-smoke.sh",
     "smoke:provision": "bash scripts/provision-smoke.sh",
+    "smoke:release": "bash scripts/release-smoke.sh",
     "migrate": "node src/composition/migrate.ts",
     "start": "node src/composition/server.ts",
     "cli": "node src/composition/cli.ts",

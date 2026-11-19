@@ -4,6 +4,13 @@ on:
   push:
     branches: [main]
   workflow_dispatch:
+    inputs:
+      skip_public_probe:
+        description: >-
+          Skip the post-deploy public probe. Use only for a first deploy or a
+          known local-CA / DNS problem; later deploys fail when the probe fails.
+        type: boolean
+        default: false
 
 # One run at a time for the whole workflow: a queued run waits rather than
 # cancelling the verification already in flight.
@@ -64,5 +71,62 @@ jobs:
       - name: Web build
         run: npm run build:web
 
-# This workflow deploys nothing. Any future deploy job must declare
-# `needs: verify` so it only runs after verification passes.
+  # Runs only on main and only after `verify` passes, so a red typecheck, test,
+  # or build stops before anything reaches the host. There is no checkout: the
+  # runner holds no repository code and only drives the server over SSH.
+  deploy:
+    name: Deploy
+    needs: verify
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+
+    steps:
+      - name: Validate deploy secrets
+        env:
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_KNOWN_HOSTS: ${{ secrets.DEPLOY_KNOWN_HOSTS }}
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+        run: |
+          set -euo pipefail
+          missing=0
+          for name in DEPLOY_SSH_KEY DEPLOY_KNOWN_HOSTS DEPLOY_HOST; do
+            if [ -z "${!name:-}" ]; then
+              echo "::error::Repository secret $name is empty or unset."
+              missing=1
+            fi
+          done
+          exit "$missing"
+
+      - name: Write SSH credentials
+        env:
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_KNOWN_HOSTS: ${{ secrets.DEPLOY_KNOWN_HOSTS }}
+        run: |
+          set -euo pipefail
+          umask 077
+          printf '%s\n' "$DEPLOY_SSH_KEY" > "$RUNNER_TEMP/deploy_key"
+          printf '%s\n' "$DEPLOY_KNOWN_HOSTS" > "$RUNNER_TEMP/known_hosts"
+          chmod 600 "$RUNNER_TEMP/deploy_key" "$RUNNER_TEMP/known_hosts"
+
+      - name: Release
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          SKIP_PUBLIC_PROBE: ${{ github.event_name == 'workflow_dispatch' && inputs.skip_public_probe && 'true' || 'false' }}
+        run: |
+          set -euo pipefail
+          remote="cd /srv/curved/checkout && git fetch --prune origin main && git reset --hard origin/main && ./deploy/release.sh"
+          if [ "$SKIP_PUBLIC_PROBE" = "true" ]; then
+            remote="$remote --skip-public-probe"
+          fi
+          ssh -i "$RUNNER_TEMP/deploy_key" \
+            -o BatchMode=yes \
+            -o IdentitiesOnly=yes \
+            -o StrictHostKeyChecking=yes \
+            -o UserKnownHostsFile="$RUNNER_TEMP/known_hosts" \
+            "deploy@$DEPLOY_HOST" "$remote"
+
+      - name: Remove SSH credentials
+        if: always()
+        run: rm -f "$RUNNER_TEMP/deploy_key" "$RUNNER_TEMP/known_hosts"
+

@@ -1,4 +1,4 @@
-# Oracle Cloud host provisioning (LAS-183, LAS-184)
+# Oracle Cloud host provisioning (LAS-183, LAS-184, LAS-185)
 
 This runbook creates the production host for Curved on Oracle Cloud Infrastructure
 (OCI) and leaves it running the production Compose stack from `deploy/`. Follow it
@@ -30,12 +30,15 @@ In scope:
   `/srv/curved`, the repository checkout, the mode-600 environment file, and the
   production Compose stack behind Caddy's internal CA.
 - A repeatable verifier that proves the host and the access boundary.
+- Release automation on that host: `deploy/release.sh` (build, one-shot
+  migration, app and Caddy recreate, authenticated public probe, image tagging,
+  release state, and rollback) plus the GitHub Actions deploy job that runs it
+  over SSH after verification.
 
 Out of scope, owned by later tickets:
 
 | Ticket | Owns |
 |---|---|
-| LAS-185 | The release script and the GitHub Actions SSH deploy job. |
 | LAS-186 | Public ACME certificates, HSTS, and public GitHub webhook delivery. |
 | LAS-187 | Backups of Postgres and the Caddy volumes. |
 
@@ -319,7 +322,7 @@ Ubuntu image whose default user is `ubuntu`, not on an image with a different
 administrative account.
 
 It finishes with `bootstrap-host: ok` and never prints a secret. If it exits
-non-zero, stop at the first failing step and see section 14 before rerunning.
+non-zero, stop at the first failing step and see section 15 before rerunning.
 
 ## 8. Sign in to the running stack
 
@@ -635,7 +638,7 @@ environment file, and starts the stack without reformatting.
 
 | Port | Protocol | Source | Purpose | Why it is exposed |
 |---|---|---|---|---|
-| 22 | TCP | `0.0.0.0/0` | SSH | Administration and the future GitHub Actions deploy job |
+| 22 | TCP | `0.0.0.0/0` | SSH | Administration and the GitHub Actions deploy job |
 | 80 | TCP | `0.0.0.0/0` | HTTP | Caddy redirect and future ACME HTTP-01 |
 | 443 | TCP | `0.0.0.0/0` | HTTPS | The UI and API |
 | 443 | UDP | `0.0.0.0/0` | HTTP/3 | Caddy's QUIC listener |
@@ -667,6 +670,7 @@ plan against.
 /srv/curved/                 100 GB ext4 (about 98 GiB usable), UUID in fstab, nofail
   checkout/                  git checkout owned by deploy, includes deploy/
   docker/                    live Docker data root (images, overlay2, volumes)
+  release-state              last successful release record, written by deploy/release.sh
   backups/                   future backup target (LAS-187), not created by this ticket
 ```
 
@@ -689,7 +693,277 @@ which destroys the database, sessions, and the internal CA with no recovery path
 until LAS-187 exists. Use `down` without `-v` only when intentionally stopping
 the stack, and prefer `stop` and `restart`.
 
-## 14. Troubleshooting
+## 14. Releases, deploys, and rollback
+
+Every production release runs the same script, `./deploy/release.sh`, from
+`/srv/curved/checkout`. The GitHub Actions deploy job is a thin SSH wrapper
+around it, and an operator uses the same command manually. The script runs on
+the aarch64 host, uses `set -euo pipefail`, loads the environment file with
+`set -a; . "$ENV_FILE"; set +a`, and never calls `docker compose down` or
+`down -v`. Do not hand-roll a release with `up --build`, `restart`, or a manual
+`docker tag`.
+
+The complete interface is:
+
+```bash
+deploy/release.sh [--skip-public-probe] [--require-public-probe] \
+  [--state-file PATH] [--env-file PATH] [--compose-file PATH] [--help]
+deploy/release.sh rollback <tag> [--skip-public-probe] \
+  [--state-file PATH] [--env-file PATH] [--compose-file PATH]
+```
+
+Defaults are `deploy/.env`, `deploy/docker-compose.yml`, and the state file
+`/srv/curved/release-state` (override with `CURVED_RELEASE_STATE` or
+`--state-file`). The state file lives outside the checkout on the data volume so
+a `git reset --hard` never erases it. `RELEASE_PROBE_ATTEMPTS` (default `30`)
+and `RELEASE_PROBE_INTERVAL` (default `2`, seconds) are test seams for the public
+probe; leave them unset in production.
+
+Every Compose call uses one base command, which pins the project name to the one
+the bootstrap created and therefore to the named volumes in section 13:
+
+```bash
+docker compose -p curved-prod --env-file deploy/.env -f deploy/docker-compose.yml
+```
+
+### 14.1 The GitHub Actions deploy job
+
+The `deploy` job lives in `.github/workflows/verify.yml` beside `verify` and
+declares `needs: verify`, so it starts only after the verification job passes
+and never on a red build. Its condition is `github.ref == 'refs/heads/main'`, so
+it runs on pushes to `main` and on a manual `workflow_dispatch` run of `main`;
+the dispatch form takes an optional `skip_public_probe` boolean. The workflow
+keeps its single `verify` concurrency group with `cancel-in-progress: false`, so
+a queued release waits for an in-flight run instead of cancelling it.
+
+The job builds nothing on the runner. It writes `DEPLOY_SSH_KEY` and
+`DEPLOY_KNOWN_HOSTS` to temporary files with mode `600`, connects to
+`deploy@"$DEPLOY_HOST"`, resets the checkout, and runs the release script on the
+host. All building and container work happens on the arm64 host, so the runner
+needs no Docker.
+
+| Repository secret | Content |
+|---|---|
+| `DEPLOY_SSH_KEY` | Private half of a dedicated Ed25519 deploy key; the public half is in `/home/deploy/.ssh/authorized_keys`. Never the administrator key. |
+| `DEPLOY_KNOWN_HOSTS` | One pinned known-hosts line for the reserved IPv4 address, so host key verification is strict. |
+| `DEPLOY_HOST` | The bare host or IP (for example `158.101.127.247`). The SSH user is always `deploy`, so the destination is `deploy@$DEPLOY_HOST`. |
+
+Known-hosts handling is strict: the job writes `DEPLOY_KNOWN_HOSTS` to a
+temporary file and connects with `-o BatchMode=yes -o IdentitiesOnly=yes
+-o StrictHostKeyChecking=yes -o UserKnownHostsFile=<temp file>`. Never weaken
+that to `StrictHostKeyChecking=no` or `accept-new` in automation. Update the
+secret only from `ssh-keyscan` output whose fingerprint matches the instance
+console out of band. The deploy key is root-equivalent through the docker group
+(section 12): keep it dedicated to deploys, store it only as a repository
+secret, and rotate it if it leaks.
+
+The remote steps are:
+
+```bash
+cd /srv/curved/checkout
+git fetch --prune origin main
+git reset --hard origin/main
+./deploy/release.sh
+```
+
+The reset is what makes a release the exact commit that passed verification. It
+is safe for host-local state: `deploy/.env` is untracked and gitignored, and the
+release state lives outside the checkout. A clean `git status --porcelain`
+(section 9.3) means the reset discards nothing an operator meant to keep. The
+job and the script never print the UI token, the database password, or any other
+secret; the token stays in `deploy/.env`, is read by the script, and is passed
+only in the probe's `Authorization` header.
+
+### 14.2 Release state and the public probe
+
+The state file is the script's memory of the last successful release. It records
+`tag=curved:<short-sha>`, `sha=<short-sha>`, and `at=<UTC ISO-8601>`, and the
+script replaces it atomically (temporary file plus rename) only after success.
+Do not edit it by hand, and do not delete it to force a release through: a
+missing state file is treated as a first deploy and changes the probe policy.
+
+| Situation | Probe behavior |
+|---|---|
+| State file present (later deploy) | The probe must pass. A failure exits nonzero before the latest tag or the state write, so the last successful release record survives. |
+| State file absent (first deploy) | The probe is skipped automatically with a loud message, because there is no previous successful release to compare against. `--require-public-probe` forces the probe instead. |
+| `--skip-public-probe` | Skips the probe on any deploy with a warning. Use it only for a deliberate maintenance release. |
+| Both probe flags | Refused as contradictory; the script exits nonzero without touching the stack. |
+
+The bootstrap in section 7 starts the stack but writes no release state, so the
+first release after provisioning is treated as a first deploy and skips the
+probe unless `--require-public-probe` is passed.
+
+The probe is `GET https://$CURVED_DOMAIN/api/projects` with
+`Authorization: Bearer $CURVED_UI_TOKEN`, `curl --max-time 10`, and only HTTP
+`200` counts as success. The script retries up to `RELEASE_PROBE_ATTEMPTS`
+times, `RELEASE_PROBE_INTERVAL` seconds apart, to cover Caddy reload and
+certificate issuance. When `ACME_EMAIL` is empty or unset, Caddy serves its
+internal CA, so the script extracts the root certificate from the running
+container into a temporary file and passes it as `--cacert`:
+
+```bash
+docker compose -p curved-prod --env-file deploy/.env \
+  -f deploy/docker-compose.yml exec -T caddy \
+  cat /data/caddy/pki/authorities/local/root.crt
+```
+
+The file is deleted on exit. When `ACME_EMAIL` is set (after LAS-186), the
+certificate is publicly trusted and no `--cacert` is used. The live host has
+`CURVED_DOMAIN=localhost` and an empty `ACME_EMAIL`, so its probe relies on the
+extracted root CA; `curl -k` is not used by the script.
+
+### 14.3 Deploy order
+
+The script performs these steps in this order and stops at the first failure:
+
+1. Resolve the repository root from git, require the environment file, and
+   refuse contradictory probe flags. Compute the release identity:
+
+   ```bash
+   short=$(git rev-parse --short HEAD)
+   image="curved:$short"
+   ```
+
+   The short SHA is seven characters; the image is local to the host and is
+   never pushed to a registry.
+
+2. Wait for Postgres to be healthy, creating it on a bare host:
+
+   ```bash
+   docker compose -p curved-prod --env-file deploy/.env \
+     -f deploy/docker-compose.yml up -d --wait --wait-timeout 300 db
+   ```
+
+3. Build the app image for the current commit:
+
+   ```bash
+   CURVED_IMAGE="$image" docker compose -p curved-prod --env-file deploy/.env \
+     -f deploy/docker-compose.yml build app
+   ```
+
+4. Apply migrations once, as a one-shot container, before the app is replaced:
+
+   ```bash
+   CURVED_IMAGE="$image" docker compose -p curved-prod --env-file deploy/.env \
+     -f deploy/docker-compose.yml run --rm --no-deps -T app \
+     node src/composition/migrate.ts
+   ```
+
+   The migration runner is idempotent and uses the same image as the release.
+   If it fails, the script exits nonzero immediately and prints that the previous
+   app is still serving. It does not tag `curved:latest`, does not recreate
+   `app` or `caddy`, and does not write the state file.
+
+5. Recreate the app on the new image and wait for its authenticated healthcheck:
+
+   ```bash
+   CURVED_IMAGE="$image" docker compose -p curved-prod --env-file deploy/.env \
+     -f deploy/docker-compose.yml up -d --no-deps --wait --wait-timeout 600 app
+   ```
+
+6. Recreate Caddy so it re-resolves the app container:
+
+   ```bash
+   docker compose -p curved-prod --env-file deploy/.env \
+     -f deploy/docker-compose.yml up -d --no-deps caddy
+   ```
+
+7. Run the public probe under the policy in section 14.2.
+
+8. Only after a passing probe, or an allowed first-deploy or explicit skip,
+   promote the image and record the release:
+
+   ```bash
+   docker tag "curved:$short" curved:latest
+   ```
+
+   The state write follows and is atomic.
+
+9. Print `release: ok <short>`.
+
+The previous app keeps serving during the build and the one-shot migration, so
+the only outage is the brief app recreate in step 5. A release never stops the
+stack, so `docker compose down` has no place in a deploy, and
+`down -v` must never run on the server: it deletes the Postgres and Caddy
+volumes (section 13).
+
+### 14.4 Rollback
+
+Roll back an image, not a schema:
+
+```bash
+cd /srv/curved/checkout
+./deploy/release.sh rollback <tag>
+```
+
+The argument is normalized to `curved:<tag>`, and `docker image inspect` must
+succeed for it, so the tag must already exist on the host from an earlier
+release. Rollback runs no migrations. It starts the app from that image with
+`CURVED_IMAGE=curved:<tag> ... up -d --no-deps --wait app`, then recreates
+Caddy, then applies the same probe policy and state update as a normal deploy,
+and prints the usual migration warning.
+
+**A rollback does not reverse a migration.** The script always warns that a
+non-backward-compatible migration requires a database restore instead of an
+image rollback. If the release being rolled back applied a migration that
+dropped or renamed a column, tightened a constraint, or otherwise changed the
+schema in a way the old image cannot read, the old image either fails or writes
+against an incompatible schema. In that case:
+
+1. Stop the release and do not run an image rollback. Keep the database volume
+   intact: do not run `docker compose down` to reset anything, and never
+   `down -v`.
+2. Restore Postgres from the pre-deploy dump with application writes stopped.
+   LAS-187 owns the Postgres backup and restore path under `/srv/curved/backups`
+   (section 13); use that path once it exists rather than inventing an ad-hoc
+   `pg_dump` or `pg_restore` command.
+3. Deploy the old tag with `./deploy/release.sh rollback <tag>` after the
+   restore, so the image and the schema agree.
+
+Until LAS-187 lands there is no automated pre-deploy dump, so treat every
+migration as potentially destructive: an image rollback is safe only when the
+migration is backward compatible, and a schema restore is the only recovery
+otherwise.
+
+### 14.5 Manual deploy and recovery
+
+An operator deploys exactly what CI would deploy:
+
+```bash
+ssh deploy@"$IP"
+cd /srv/curved/checkout
+git fetch --prune origin main
+git reset --hard origin/main
+./deploy/release.sh
+```
+
+Use `--require-public-probe` once the internal CA is trusted and DNS points at
+the host, so a first release still proves the external path. To roll back
+manually:
+
+```bash
+cd /srv/curved/checkout
+./deploy/release.sh rollback <previous-tag>
+```
+
+If a release fails at the migration step, the previous app is still serving:
+read the error, fix it with a new forward migration, reset to the new `main`,
+and run the script again. Do not restart `app` to retry the migration and do not
+tear the stack down. If a later release fails only the probe, the new image is
+already serving; fix the cause (Caddy, the CA, DNS, or the UI token), rerun the
+script, or roll back explicitly if the new image is the problem. Because
+`curved:latest` still points at the previous release after a failed probe, do
+not recreate the app by hand: a plain `up` without `CURVED_IMAGE` would start
+the old image. Inspect the stack with:
+
+```bash
+docker compose -p curved-prod --env-file deploy/.env \
+  -f deploy/docker-compose.yml ps
+docker compose -p curved-prod --env-file deploy/.env \
+  -f deploy/docker-compose.yml logs --tail=100 app caddy
+```
+
+## 15. Troubleshooting
 
 ### Out of host capacity
 
