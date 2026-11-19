@@ -2,8 +2,8 @@
 
 - **Last updated:** 2026-11-19
 - **Project:** curved
-- **Phase:** product and infrastructure complete through `LAS-185`. Next work is
-  `LAS-186` (public ACME, HSTS, and public webhook delivery).
+- **Phase:** product and infrastructure complete through `LAS-186` (public
+  ACME, HSTS, and public webhook delivery). Next work is `LAS-187` (backups).
 
 ## Current verified state
 
@@ -20,12 +20,14 @@ git history and the Linear comments.
 - Gates: `./scripts/init.sh` (install, database, check, build),
   `./scripts/clean-state.sh`, `npm run acceptance`,
   `npm run smoke:container`, `npm run smoke:compose`,
-  `npm run smoke:provision`, `npm run smoke:release`, and
-  `.github/workflows/verify.yml` on every push to `main` and manual dispatch,
-  where the main-only `deploy` job runs after `verify`.
-- Baseline: 196 tests pass (190 behavior, 6 architecture),
+  `npm run smoke:provision`, `npm run smoke:release`,
+  `npm run smoke:webhook`, and `.github/workflows/verify.yml` on every push to
+  `main` and manual dispatch, where the main-only `deploy` job runs after
+  `verify`.
+- Baseline: 197 tests pass (191 behavior, 6 architecture),
   `architecture: ok (74 files)`, web build green; `npm run acceptance` passes
-  (145 checks) and `npm run smoke:release` passes (16 assertions).
+  (145 checks), `npm run smoke:release` 20 assertions,
+  `npm run smoke:provision` 42, and `npm run smoke:webhook` 9.
 - Layout: `src/domain/` pure rules and types; `src/application/` ports plus
   SQL-free use cases; `src/adapters/` inbound (`http`, `mcp`, `cli`, `github`,
   `sse`, `static`) and outbound (`postgres`, `token-codec`, `timing-safe`);
@@ -101,7 +103,9 @@ git history and the Linear comments.
   palette, toasts. Fixed warm near-black palette, Instrument Sans + JetBrains
   Mono, self-hosted fonts, no light mode, `lg` breakpoint overridden to 900 px.
 - Config: `DATABASE_URL`, `TEST_DATABASE_URL`, `CURVED_UI_TOKEN`,
-  `GITHUB_WEBHOOK_SECRET`, `PORT` (4747), and `COOKIE_SECURE` (opt-in `Secure`
+  `GITHUB_WEBHOOK_SECRET`, `PORT` (4747), `CURVED_HSTS_MAX_AGE` (Caddy sends
+  `Strict-Transport-Security: max-age=<value>` only when non-empty; localhost
+  leaves it empty so HSTS is never pinned), and `COOKIE_SECURE` (opt-in `Secure`
   on the session cookie; unset, empty, `0`, or `false` is off, `1` or `true` is
   on, anything else throws naming the variable).
 - Tests: isolated database from `TEST_DATABASE_URL` (name must start with
@@ -126,7 +130,9 @@ git history and the Linear comments.
   then an authenticated probe of `GET https://$CURVED_DOMAIN/api/projects`
   with the UI bearer (Caddy's internal root CA extracted through
   `compose exec -T caddy cat /data/caddy/pki/authorities/local/root.crt` when
-  `ACME_EMAIL` is empty), and only then `docker tag curved:<short-sha>
+  `ACME_EMAIL` is empty; with a public email it requires a
+  `Strict-Transport-Security` header whose max-age matches
+  `CURVED_HSTS_MAX_AGE`), and only then `docker tag curved:<short-sha>
   curved:latest`, an atomic write to `/srv/curved/release-state`, and
   `release: ok <short>`. A failed migration exits before any app or caddy
   recreate, latest tag, or state write and states the previous app is still
@@ -139,6 +145,28 @@ git history and the Linear comments.
   the same probe policy, updates state, and warns that a non-backward-compatible
   migration requires a database restore instead of an image rollback. The
   release path never runs `down` or `down -v`.
+- Public edge (`LAS-186`): the live host serves
+  `https://158.101.127.247.sslip.io` from sslip.io wildcard DNS with a Let's
+  Encrypt certificate (issuer `YE2`, subject the same name, valid to
+  2027-02-17), `CURVED_DOMAIN=158.101.127.247.sslip.io`,
+  `ACME_EMAIL=admin@sslip.io`, `CURVED_HSTS_MAX_AGE=31536000`, and
+  `COOKIE_SECURE=1`. Caddy redirects port 80 with `308`, sends
+  `Strict-Transport-Security: max-age=31536000`, compresses with zstd/gzip
+  except `/api/events`, and proxies `/api/events` with `flush_interval -1`; the
+  log records `certificate obtained successfully` from
+  `acme-v02.api.letsencrypt.org-directory` over tls-alpn-01. The public edge
+  serves the SPA, authenticated API, and SSE (`ready`, then `issues_changed`)
+  over verified TLS; the unauthenticated `/api/projects` stays 401.
+  `verify-host` exits 0 with 22 PASS lines, adding `tls-certificate`,
+  `http-redirect`, `hsts`, `compression`, and `caddy-issuance`. The release
+  probe requires HSTS under ACME and matches `CURVED_HSTS_MAX_AGE`; deploy run
+  44551897724 logged `release: public probe ok` and `release: ok c711540`.
+  `deploy/webhook.sh` created hook `714067501` (`pull_request`, JSON) at the
+  public URL; live PRs #1 and #2 moved `LIVE-1`/`LIVE-3` to In Review on open
+  and reopen and Done on merge, all as `actorType git` with
+  `pull request #<n> <action>` bodies; a GitHub redelivery, a replayed signed
+  delivery, an unknown key, and non-PR `issues`/`push` deliveries all answered
+  `200 {"ok":true,"ignored":true}` with state unchanged.
 - Provisioning (`LAS-183`): `deploy/provisioning.md` is the OCI console runbook
   for one Always Free `VM.Standard.A1.Flex` (2 OCPU, 12 GB, Ubuntu 24.04
   aarch64, home region), a 50 GB boot volume plus a 100 GB block volume, a
@@ -173,9 +201,12 @@ git history and the Linear comments.
   root compartment, private IP `10.0.0.165/24`. Access is the OCI key
   `ssh-key-2026-11-18 (3).key` in `~/Downloads` as `ubuntu`; bootstrap installed
   it for `deploy`. On 2026-11-18 bootstrap, `verify-host: ok`, reboot, and
-  `verify-host: ok` again passed; the stack is healthy and the SPA returns 200
-  over HTTPS with the localhost hostname; unauthenticated `/api/projects` is
-  401; 5432 and 4747 are filtered externally.
+  `verify-host: ok` again passed; 5432 and 4747 are filtered externally. On
+  2026-11-19 the host switched to public HTTPS at
+  `https://158.101.127.247.sslip.io` (Let's Encrypt, HSTS), and `verify-host`
+  exits 0 with 22 PASS lines including the edge checks; the SPA and
+  authenticated API answer over the public name and unauthenticated
+  `/api/projects` is 401.
 - CI: `.github/workflows/verify.yml`, one global concurrency group `verify` with
   `cancel-in-progress: false`, a Postgres 18 service on 55432, then `npm ci`,
   `typecheck`, `check:arch`, `test`, and `build:web`. The `deploy` job declares
@@ -312,15 +343,22 @@ git history and the Linear comments.
   probe unless `--require-public-probe`; later releases require it, a probe
   failure is red, and `--skip-public-probe` with `--require-public-probe` is a
   usage error. The probe uses the UI bearer and, with an empty `ACME_EMAIL`,
-  Caddy's internal root CA, because the live host is still
-  `CURVED_DOMAIN=localhost`. `curved:latest` is tagged only after a passing
-  probe, and the state write is atomic, so a red release leaves the previous
-  image and state intact. Rollback retags an existing image, runs no migrations,
-  recreates app then caddy, applies the same probe policy, and updates state; it
+  Caddy's internal root CA; with a public email it verifies the public chain and
+  requires HSTS whose max-age matches `CURVED_HSTS_MAX_AGE`. `curved:latest` is
+  tagged only after a passing probe, and the state write is atomic, so a red
+  release leaves the previous image and state intact. Rollback retags an
+  existing image, runs no migrations, recreates app then caddy, applies the same
+  probe policy, and updates state; it
   cannot reverse a schema, so a non-backward-compatible migration needs a
   database restore. The release path never runs `down` or `down -v`. The
   workflow stays one concurrency group: a pending run is replaced by a newer
   queued run, but an in-flight run is never cancelled.
+- Public edge (`LAS-186`) makes HSTS conditional on `CURVED_HSTS_MAX_AGE`, so a
+  localhost stack never pins it; `/api/events` is excluded from compression and
+  proxied with `flush_interval -1`. The IP-only host uses sslip.io wildcard DNS
+  for its public name; switching to an owned domain is a `CURVED_DOMAIN` and
+  `ACME_EMAIL` edit plus a Caddy recreate. `deploy/webhook.sh` matches hooks by
+  `config.url` and always PATCHes so the current secret is reapplied.
 
 ## Known risks
 
@@ -355,9 +393,17 @@ git history and the Linear comments.
 - Rollback replays an image, not a schema: a non-backward-compatible migration
   needs a manual database restore, and there is no automated pre-deploy dump
   until `LAS-187`.
-- The release probe is host-local (`CURVED_DOMAIN=localhost`, Caddy's internal
-  CA) until `LAS-186`, so a public DNS, ACME, or TLS failure is not caught by
-  the release gate yet.
+- The public name depends on sslip.io wildcard DNS, a shared third-party
+  service; if it stops resolving or is blocked by a resolver, ACME renewal and
+  webhook delivery fail. An owned DNS-only name removes that dependency.
+- Let's Encrypt rate limits apply per registered domain, so repeated failed
+  issuances can pause new certificates. HSTS is a one-year pin: after a TLS
+  break a browser refuses the site until the edge serves `max-age=0` over a
+  valid certificate or the browser HSTS state is cleared.
+- Caddy renews the certificate automatically near expiry; only the initial
+  issuance has been observed live, not a renewal.
+- The webhook test PRs merged empty commits into `main`; the deploy job reset
+  the host checkout to the newer `main` and released `c711540` during the run.
 - The compose stack's default 80/443 and 55432 binds must be free, and a local
   browser must trust Caddy's extracted root CA. `docker compose -f
   deploy/docker-compose.yml down -v` deletes the Postgres and Caddy volumes and
@@ -400,30 +446,31 @@ git history and the Linear comments.
 
 ## Next best step
 
-`LAS-186` (public ACME, HSTS, and public webhook delivery) is next, then
-`LAS-187` (backups). The release path is live: a push to `main` runs `verify`,
-then the main-only `deploy` job, which resets `/srv/curved/checkout` and runs
-`./deploy/release.sh`; the state file lives at `/srv/curved/release-state` and
-the Docker data root stays at `/srv/curved/docker`. `LAS-186` must keep the
-release probe honest once the host leaves `CURVED_DOMAIN=localhost`. Run
-`npm run smoke:provision` after any change to the host scripts and
-`npm run smoke:release` after any change to the release script.
+`LAS-187` (backups) is next. `LAS-186` is live: the host serves
+`https://158.101.127.247.sslip.io` with a Let's Encrypt certificate, HSTS, the
+HTTP redirect, compressed responses, unbuffered SSE, and the configured GitHub
+`pull_request` webhook. A push to `main` runs `verify`, then the main-only
+`deploy` job, which resets `/srv/curved/checkout` and runs
+`./deploy/release.sh`; the public probe now requires HSTS under ACME. The state
+file lives at `/srv/curved/release-state` and the Docker data root stays at
+`/srv/curved/docker`. Run `npm run smoke:provision` after any change to the host
+scripts, `npm run smoke:release` after any change to the release script, and
+`npm run smoke:webhook` after any change to the webhook script.
 
 ## Tracker
 
 - Linear workspace last-known-good (`LAS`), project Curved (`P-LAS-8`).
 - Spec `LAS-140` with 15 sub-issues `LAS-141` through `LAS-155`, all Done.
 - Refactor `LAS-167` with `LAS-168` through `LAS-176`, all Done.
-- Infra and deploy: `LAS-179` through `LAS-185` Done; `LAS-186` next
-  (public ACME, HSTS, public webhook); `LAS-187` (backups) after it; `LAS-177`
-  (template audit) remains open.
+- Infra and deploy: `LAS-179` through `LAS-186` Done; `LAS-187` (backups) is
+  next; `LAS-177` (template audit) remains open.
 
 ## Session log
 
 One line per session: earlier verification evidence and the full acceptance
 matrices live in git history and the Linear comments. Sessions 001 to 013 ran on
 2026-11-10, 014 to 018 on 2026-11-16, 019 to 030 on 2026-11-17, 031 to 036
-on 2026-11-18, and 037 on 2026-11-19.
+on 2026-11-18, and 037 and 038 on 2026-11-19.
 
 | Session | Work item | Outcome |
 |---|---|---|
@@ -464,3 +511,4 @@ on 2026-11-18, and 037 on 2026-11-19.
 | 035 | `LAS-183` | OCI provisioning runbook, idempotent host bootstrap, access-boundary verifier, and the stub provisioning gate. |
 | 036 | `LAS-184` | Docker data root on the data volume with migration, systemd mount gate, log rotation, prune timer, verifier checks, reboot runbook, and the extended provisioning gate; live OCI bootstrap and reboot proof passed. |
 | 037 | `LAS-185` | `deploy/release.sh` with the fixed release order, first-release probe rule, latest-after-probe tagging, atomic state, and rollback; main-only `deploy` job with pinned SSH and the `DEPLOY_*` secrets; `npm run smoke:release` gate; live push, manual dispatch, and rollback/forward proof; provisioning docs updated. |
+| 038 | `LAS-186` | public Let's Encrypt TLS at `158.101.127.247.sslip.io`, HTTP 308, conditional HSTS, gzip/zstd except unbuffered SSE, edge verifier checks, HSTS-aware release probe, `deploy/webhook.sh` and its gate, live GitHub opened/reopened/merged PR flow plus replay/unknown/non-PR ignores, compose/provision/release/webhook smokes, docs and MEMORY. |

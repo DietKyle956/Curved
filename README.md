@@ -155,6 +155,9 @@ issue payload carries `labels` and `relations: { blocks, blockedBy }`, where
 - `npm run smoke:release` - release gate: drives `deploy/release.sh` and its
   rollback against stub binaries, with no Docker, database, or network. See
   "Releasing" below.
+- `npm run smoke:webhook` - webhook gate: exercises `deploy/webhook.sh` against
+  a stub `gh`, covering the create and update paths without a GitHub account or
+  network. See "GitHub webhook" below.
 - `npm test` - tests run against the isolated `curved_test` database.
 - `npm run check` - typecheck, the import-direction architecture check, then the
   tests.
@@ -226,9 +229,10 @@ docker compose -f deploy/docker-compose.yml up -d --build
 Because the compose file lives in `deploy/`, Compose reads `deploy/.env`
 automatically: the same file feeds variable interpolation and the containers.
 Fill `POSTGRES_USER`, `POSTGRES_PASSWORD`, `POSTGRES_DB`, `CURVED_UI_TOKEN`,
-`GITHUB_WEBHOOK_SECRET`, `CURVED_DOMAIN`, and `ACME_EMAIL`, and keep
-`COOKIE_SECURE=1` for the HTTPS stack. The file also carries optional host-port
-and image overrides. It is gitignored, so secrets stay out of the repository.
+`GITHUB_WEBHOOK_SECRET`, `CURVED_DOMAIN`, `ACME_EMAIL`, and
+`CURVED_HSTS_MAX_AGE`, and keep `COOKIE_SECURE=1` for the HTTPS stack. The file
+also carries optional host-port and image overrides. It is gitignored, so
+secrets stay out of the repository.
 
 TLS is local by default. With `CURVED_DOMAIN=localhost` and an empty
 `ACME_EMAIL`, Caddy issues its own certificate from its internal CA, so
@@ -240,10 +244,27 @@ docker compose -f deploy/docker-compose.yml exec caddy \
   cat /data/caddy/pki/authorities/local/root.crt > /tmp/curved-caddy-root.crt
 ```
 
-Import `/tmp/curved-caddy-root.crt` into the browser or system trust store. Set
-`CURVED_DOMAIN` to a public hostname and `ACME_EMAIL` to a real address to switch
-Caddy from its internal CA to ACME, which needs ports 80 and 443 reachable from
-the internet.
+Import `/tmp/curved-caddy-root.crt` into the browser or system trust store.
+
+A public deployment sets `CURVED_DOMAIN` to the DNS-only hostname that points at
+the server, `ACME_EMAIL` to a real address, and `CURVED_HSTS_MAX_AGE` to
+`31536000`. Caddy then obtains a Let's Encrypt certificate over the ACME
+challenge, redirects `http://` to `https://` (a 308), and sends
+`Strict-Transport-Security: max-age=31536000`. HSTS is sent only while
+`CURVED_HSTS_MAX_AGE` is set, so a localhost stack never pins HSTS in a browser;
+the release probe and the compose gate both check that toggle. Caddy compresses
+responses with zstd or gzip except on `/api/events`, which is proxied with
+`flush_interval -1` so SSE frames reach the browser immediately.
+
+The live host runs this way at `https://158.101.127.247.sslip.io`. The name comes
+from sslip.io wildcard DNS, which resolves `158.101.127.247.sslip.io` to the
+reserved IPv4 `158.101.127.247`; the record is DNS only, so the ACME HTTP and
+TLS-ALPN challenges reach Caddy directly. Its certificate is issued by Let's
+Encrypt for `158.101.127.247.sslip.io` (issuer `YE2`, valid to Feb 17 2027), and
+the container sees `ACME_EMAIL=admin@sslip.io`, `CURVED_DOMAIN` set to that
+hostname, and `CURVED_HSTS_MAX_AGE=31536000`. Through the public edge the SPA and
+JS assets, the authenticated API, and the SSE stream answer over verified TLS,
+and the API's unauthenticated `GET /api/projects` stays a 401.
 
 Operations:
 
@@ -263,16 +284,20 @@ future convention, and the stack does not set one up. `down` without `-v` stops
 and removes the containers while keeping the volumes.
 
 **`docker compose -f deploy/docker-compose.yml down -v` deletes the Postgres and
-Caddy volumes: every project, issue, event, and the database itself, plus the
-internal CA. Never run it on the server.**
+Caddy volumes: every project, issue, event, and the database itself, plus Caddy's
+data volume with the internal CA and every ACME account and certificate. Never
+run it on the server.**
 
 `npm run smoke:compose` runs `bash scripts/compose-smoke.sh`, the gate for this
 stack. It builds and starts the stack under a throwaway Compose project and a
 generated env on free high ports, extracts Caddy's internal root CA, and asserts
-over HTTPS: the SPA shell, `401` then `200` on `/api/projects`, the `Secure`
-session cookie, project and issue creation, `/api/ready`, issue detail,
-`/api/issues`, an SSE `ready` frame plus an `issues_changed` frame, `401` for an
-unsigned `POST /webhooks/github`, the loopback-only Postgres bind, and that `app`
+over HTTPS: the SPA shell, the `308` redirect from HTTP to HTTPS, no HSTS while
+`CURVED_HSTS_MAX_AGE` is empty and `Strict-Transport-Security: max-age=31536000`
+after enabling it, a gzip-compressed JS asset, `401` then `200` on
+`/api/projects`, the `Secure` session cookie, project and issue creation,
+`/api/ready`, issue detail, `/api/issues`, an SSE `ready` frame plus an
+`issues_changed` frame for the project within 5s, `401` for an unsigned
+`POST /webhooks/github`, the loopback-only Postgres bind, and that `app`
 publishes no host port. `npm run smoke:compose -- --keep` keeps the smoke image
 for inspection.
 
@@ -284,17 +309,21 @@ VCN to the acceptance evidence. The summary:
 
 One Always Free `VM.Standard.A1.Flex` instance with 2 OCPU and 12 GB of memory
 runs Ubuntu 24.04 aarch64 in the tenancy's home region. It has a 50 GB boot
-volume, a 100 GB block volume, and one reserved public IPv4. The DNS record is
-an `A` record set to DNS only, never proxied, so the origin stays directly
-reachable. Caddy serves this stage from its internal CA, and LAS-186 switches it
-to public ACME certificates.
+volume, a 100 GB block volume, and one reserved public IPv4. The live name comes
+from sslip.io wildcard DNS; with your own domain, use a DNS-only (never proxied)
+`A` record so the origin stays directly reachable. The host serves the public
+HTTPS stack: Caddy obtains a Let's Encrypt
+certificate for `158.101.127.247.sslip.io` through ACME, redirects HTTP to HTTPS,
+sends HSTS for a year, compresses responses outside the SSE route, and flushes
+`/api/events` without buffering. The sslip.io wildcard name resolves straight to
+the reserved IPv4, so the ACME challenge reaches port 80 on the host.
 
 The network boundary is four ingress rules and nothing else:
 
 | Port | Protocol | Purpose |
 |---|---|---|
 | 22 | TCP | SSH, key-only, `ubuntu` and `deploy` only |
-| 80 | TCP | Caddy HTTP and future ACME |
+| 80 | TCP | Caddy HTTP, the HTTPS redirect, and the ACME challenge |
 | 443 | TCP | HTTPS |
 | 443 | UDP | HTTP/3 |
 
@@ -334,17 +363,25 @@ clones the repository, writes `deploy/.env`, and starts the Compose stack.
 `deploy` account, sshd policy, the data mount, storage accounting,
 `docker-root`, `docker-config`, `docker-mount-dependency`, `docker-prune-timer`,
 the environment file, the checkout, the TCP and UDP listeners, the stack
-health, and an authenticated HTTPS request to the API. The bootstrap ends with
+health, `tls-certificate` (a verified HTTPS response to the API), `http-redirect`
+(HTTP to HTTPS), `hsts` (the configured max-age), `compression` (a compressed
+asset), `caddy-issuance` (an ACME certificate obtained for the domain in the
+Caddy log), and `https-api` (200 authenticated, 401 unauthenticated). On the live
+host it exits 0 with 22 PASS lines. The bootstrap ends with
 `bootstrap-host: ok` and the verifier with `verify-host: ok`; any other ending
 is a failure. A reboot proof is in `deploy/provisioning.md` section 9.4.
 
-LAS-183 provisions the host, LAS-184 makes its data durable, and LAS-185 adds
-the release script and SSH deploy job described under "Releasing". The OCI
-console steps and the live host checks are operator-executed; public ACME, HSTS,
-and public webhook delivery are LAS-186, and backups are LAS-187.
+LAS-183 provisions the host, LAS-184 makes its data durable, LAS-185 adds the
+release script and SSH deploy job described under "Releasing", and LAS-186
+delivers the public edge: Let's Encrypt TLS, the HTTP to HTTPS redirect, HSTS,
+SSE without buffering or compression, and the public GitHub webhook. The OCI
+console steps and the live host checks are operator-executed; backups are
+LAS-187.
 `npm run smoke:provision` is the repository-side proof: it runs the bootstrap
 and verifier inside a disposable container against Ubuntu 24.04 stubs and proves
-the Docker data root, mount gate, log rotation, and prune timer, so a change to
+the Docker data root, mount gate, log rotation, and prune timer, the public-mode
+environment generated by `--acme-email`, the public verifier checks (certificate,
+redirect, HSTS, compression, ACME issuance), and their negatives, so a change to
 either script is caught without an OCI tenancy.
 
 ## Releasing
@@ -389,7 +426,10 @@ seven-character HEAD commit, and follows a fixed order:
    ten-second request timeout, and 30 attempts two seconds apart. With an empty
    `ACME_EMAIL` the probe extracts Caddy's internal root CA from
    `/data/caddy/pki/authorities/local/root.crt` and passes it as `--cacert`.
-   The token never reaches the output.
+   With a non-empty `ACME_EMAIL` it verifies the public certificate against the
+   system trust and requires a `Strict-Transport-Security` header, whose max-age
+   must equal `CURVED_HSTS_MAX_AGE` when that is set. The token never reaches
+   the output.
 7. After a successful probe, tag `curved:<short>` as `curved:latest`, write the
    release state atomically, and print `release: ok <short>`.
 
@@ -410,6 +450,11 @@ The state file records the tag (`curved:<short>`), the short SHA, and the UTC
 timestamp. `--env-file` and `--compose-file` override the `deploy/.env` and
 `deploy/docker-compose.yml` defaults, and `--help` prints the usage. The script
 never runs `docker compose down` or `down -v`.
+
+The live host proves the public path: deploy run 44551897724 logged
+`release: public probe ok` and `release: ok c711540`, so the ACME certificate
+verified against the system trust, the HSTS header was present, and its max-age
+matched `CURVED_HSTS_MAX_AGE=31536000`.
 
 To release by hand on the server, or to retry a failed probe:
 
@@ -437,8 +482,10 @@ the newer schema stays in place when the older image returns.
 path. It drives the script against stubbed `git`, `docker`, `curl`, and `sleep`
 binaries in a temporary `PATH`, with no Docker, database, or network, and
 asserts the ordering, the migration failure path, the first-deploy skip, the
-second-deploy probe failure, rollback, and that the bearer token never appears
-in the output.
+second-deploy probe failure, the public probe's HSTS requirement (a matching
+max-age passes, a missing header or a mismatched max-age is fatal and leaves
+`curved:latest` and the state file untouched), rollback, and that the bearer
+token never appears in the output.
 
 ## Continuous integration
 
@@ -519,6 +566,12 @@ The gate builds on the other two entry points rather than replacing them:
 `./scripts/init.sh` is still the baseline (install, database, check, build) and
 `./scripts/clean-state.sh` is still the end-of-session gate. This is the only one
 that runs the CLI, MCP server, HTTP server, webhook, and SPA together.
+
+The repository-side gates all pass: `npm run check` passes 197 tests plus the
+architecture check, `npm run smoke:compose` covers the HTTP to HTTPS redirect, the
+HSTS toggle before and after enabling `CURVED_HSTS_MAX_AGE`, gzip on the JS asset,
+and an `issues_changed` frame within 5s, `npm run smoke:provision` reports 42
+PASS, `npm run smoke:release` 20 PASS, and `npm run smoke:webhook` 9 PASS.
 
 ## HTTP API
 
@@ -620,13 +673,24 @@ shares no credential with it: a delivery is accepted only when the
 by `GITHUB_WEBHOOK_SECRET`. The raw body is read and checked before anything is
 parsed, and it is rejected above 1 MiB.
 
-Point the repository webhook at `https://<host>/webhooks/github`, use the same
-secret, select content type `application/json`, and subscribe only to the
-`pull_request` event. The `x-github-event` header must read `pull_request`;
-deliveries carrying any other event value are ignored. `GITHUB_WEBHOOK_SECRET`
-must be exported for the server process; until it is, the route answers
-`503 webhook_not_configured`. A missing or wrong signature is
-`401 not_authenticated`, and a body that is not valid JSON is `400 validation`.
+The live repository hook posts to
+`https://158.101.127.247.sslip.io/webhooks/github` (hook id 714067501, event
+`pull_request`, content type `application/json`). Configure it with
+`deploy/webhook.sh`: it derives the repository from `origin`, reads
+`GITHUB_WEBHOOK_SECRET` and `CURVED_DOMAIN` from `deploy/.env`, and either
+creates the hook or updates the existing hook with the same URL, so the secret is
+reapplied on every run (GitHub never returns a stored secret). Pass
+`--repo OWNER/NAME` and `--url URL` to target another repository or endpoint, and
+`--dry-run` to print the plan. `npm run smoke:webhook` runs
+`scripts/webhook-smoke.sh` against a stub `gh` and proves the create path, the
+update path, the dry run, the missing-secret and localhost guards, and that the
+secret never reaches the output or argv.
+
+The `x-github-event` header must read `pull_request`; deliveries carrying any
+other event value are ignored. `GITHUB_WEBHOOK_SECRET` must be exported for the
+server process; until it is, the route answers `503 webhook_not_configured`. A
+missing or wrong signature is `401 not_authenticated`, and a body that is not
+valid JSON is `400 validation`.
 
 Only `pull_request` events act, and the payload's `action` with the
 `pull_request` object's `merged` decide the move. `opened` and `reopened` move
@@ -643,6 +707,13 @@ uppercase, which means a lowercase branch name such as `tac-14-fix-the-thing`
 falls through to the title. A move the webhook makes is an ordinary status change
 by the `git` actor, so the same transition graph and actor matrix apply, and its
 timeline event body reads `pull request #<number> <action>`.
+
+On the live host the flow is exercised end to end: a pull request opened moved
+its issue to In Review with a `git` event body `pull request #<n> opened`, a
+reopen after a close moved it to In Review again, and a merge moved it to Done
+with `pull request #<n> closed`. A replayed signed delivery, an unknown key, and
+non-PR `issues` or `push` deliveries all answered
+`200 {"ok":true,"ignored":true}` and left the issue untouched.
 
 To test locally, sign the exact bytes you send:
 

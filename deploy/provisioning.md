@@ -1,4 +1,4 @@
-# Oracle Cloud host provisioning (LAS-183, LAS-184, LAS-185)
+# Oracle Cloud host provisioning (LAS-183, LAS-184, LAS-185, LAS-186)
 
 This runbook creates the production host for Curved on Oracle Cloud Infrastructure
 (OCI) and leaves it running the production Compose stack from `deploy/`. Follow it
@@ -13,39 +13,48 @@ export IP=203.0.113.10
 ```
 
 Prose uses `<domain>` and `<ip>` for those same two values. A new SSH session is
-a new shell, so export the variables again after logging in to the server.
+a new shell, so export the variables again after logging in to the server. The
+reference deployment uses `DOMAIN=158.101.127.247.sslip.io` and
+`IP=158.101.127.247`; section 6 explains why.
 
-Before you start you need an OCI tenancy in its home region, a Cloudflare-managed
-domain, an Ed25519 key pair, and `ssh`, `scp`, `curl`, `dig`, and `nc` on the
-operator workstation.
+Before you start you need an OCI tenancy in its home region, an Ed25519 key
+pair, and `ssh`, `scp`, `curl`, `dig`, and `nc` on the operator workstation. A
+public hostname is required for the Let's Encrypt certificate: either a
+Cloudflare-managed domain as described in section 6, or the free `sslip.io`
+wildcard that the reference deployment uses.
 
 ## 1. Scope and ownership
 
 In scope:
 
 - One Always Free Ampere A1 instance in the tenancy's home region.
-- VCN, public subnet, security list, reserved public IPv4, and the DNS-only
-  Cloudflare record.
+- VCN, public subnet, security list, reserved public IPv4, and the public name
+  (the `sslip.io` wildcard or a DNS-only Cloudflare record).
 - Host bootstrap: Docker, the `deploy` account, the 100 GB data volume at
   `/srv/curved`, the repository checkout, the mode-600 environment file, and the
-  production Compose stack behind Caddy's internal CA.
-- A repeatable verifier that proves the host and the access boundary.
+  production Compose stack behind Caddy.
+- A public Let's Encrypt certificate for `CURVED_DOMAIN`, obtained by Caddy over
+  ACME (HTTP-01 and TLS-ALPN-01), with HSTS enabled through
+  `CURVED_HSTS_MAX_AGE`.
+- A repeatable verifier that proves the host, the access boundary, the public
+  certificate, the HTTP redirect, HSTS, compression, and Caddy's issuance log.
 - Release automation on that host: `deploy/release.sh` (build, one-shot
-  migration, app and Caddy recreate, authenticated public probe, image tagging,
-  release state, and rollback) plus the GitHub Actions deploy job that runs it
-  over SSH after verification.
+  migration, app and Caddy recreate, authenticated public probe that requires
+  HSTS under public TLS, image tagging, release state, and rollback) plus the
+  GitHub Actions deploy job that runs it over SSH after verification.
+- Public GitHub webhook delivery on `/webhooks/github` through
+  `deploy/webhook.sh`, subscribed to `pull_request` events.
 
-Out of scope, owned by later tickets:
+Out of scope, owned by a later ticket:
 
 | Ticket | Owns |
 |---|---|
-| LAS-186 | Public ACME certificates, HSTS, and public GitHub webhook delivery. |
 | LAS-187 | Backups of Postgres and the Caddy volumes. |
 
 There is no Terraform and no OCI Resource Manager stack. The OCI console steps in
 this document plus the committed `deploy/bootstrap-host.sh`,
-`deploy/verify-host.sh`, `deploy/docker-compose.yml`, and `deploy/Caddyfile` are
-the source of truth.
+`deploy/verify-host.sh`, `deploy/release.sh`, `deploy/webhook.sh`,
+`deploy/docker-compose.yml`, and `deploy/Caddyfile` are the source of truth.
 
 ## 2. Topology and cost
 
@@ -53,7 +62,7 @@ the source of truth.
 Internet
   |
   v
-Cloudflare DNS-only A record  <domain> -> <reserved IPv4>
+Public DNS-only name  <domain> -> <reserved IPv4>
   |
   v
 VCN curved-vcn 10.0.0.0/16
@@ -62,13 +71,22 @@ VCN curved-vcn 10.0.0.0/16
     v
   VM.Standard.A1.Flex, 2 OCPU, 12 GB, Ubuntu 24.04 aarch64
     22/tcp    sshd, key-only, ubuntu and deploy accounts
-    80/tcp    Caddy (HTTP, future ACME)
-    443/tcp   Caddy (HTTPS)
+    80/tcp    Caddy (ACME HTTP-01 and the HTTPS redirect)
+    443/tcp   Caddy (public HTTPS, TLS-ALPN-01)
     443/udp   Caddy (HTTP/3)
       |
       +-- app:4747 (Compose network only, no host port)
       +-- db:5432  (Compose network plus 127.0.0.1:55432 on the host)
 ```
+
+Caddy terminates TLS with a Let's Encrypt certificate for the public name and
+redirects every HTTP request on port 80 to HTTPS with a `308`. When
+`CURVED_HSTS_MAX_AGE` is set, every HTTPS response carries
+`Strict-Transport-Security: max-age=<value>`; the reference host uses
+`31536000`. Server-sent events on `/api/events` are proxied unbuffered and
+excluded from compression, so `issues_changed` frames reach the browser as soon
+as a write lands. A localhost deployment leaves `ACME_EMAIL` empty, which keeps
+Caddy's internal CA and sends no HSTS header.
 
 | Resource | Specification | Always Free accounting |
 |---|---|---|
@@ -107,8 +125,8 @@ so do not create a second A1 instance with these 2 OCPU and 12 GB.
 | Stateless | Source Type | Source CIDR | IP Protocol | Source Port Range | Destination Port Range | Description |
 |---|---|---|---|---|---|---|
 | Unchecked | CIDR | `0.0.0.0/0` | TCP | All | `22` | SSH administration |
-| Unchecked | CIDR | `0.0.0.0/0` | TCP | All | `80` | HTTP and future ACME |
-| Unchecked | CIDR | `0.0.0.0/0` | TCP | All | `443` | HTTPS |
+| Unchecked | CIDR | `0.0.0.0/0` | TCP | All | `80` | ACME HTTP-01 and the HTTPS redirect |
+| Unchecked | CIDR | `0.0.0.0/0` | TCP | All | `443` | HTTPS and ACME TLS-ALPN-01 |
 | Unchecked | CIDR | `0.0.0.0/0` | UDP | All | `443` | HTTP/3 |
 
 8. Under **Egress Rules**, keep exactly the default rule: destination
@@ -173,7 +191,43 @@ If the block volume is added after instance creation, use **Compute** >
 volume** > **Create new block volume**, then attach it as **Paravirtualized** in
 the same availability domain.
 
-## 6. Create the DNS-only A record
+## 6. Point the public name at the host
+
+Let's Encrypt issuance needs a public name that resolves directly to the
+reserved IPv4. Two arrangements are supported; both are DNS-only, meaning no
+proxy sits between the internet and Caddy.
+
+### 6.1 The `sslip.io` wildcard (reference deployment)
+
+The reference host uses `158.101.127.247.sslip.io`. `sslip.io` runs a wildcard
+DNS zone that returns the IPv4 address embedded in the name, so
+`158.101.127.247.sslip.io` resolves to `158.101.127.247` without any record you
+create or any account. This is why the live host needs no Cloudflare zone and
+why the certificate subject is exactly that name.
+
+Set the same values on the host:
+
+```bash
+export DOMAIN=158.101.127.247.sslip.io
+export IP=158.101.127.247
+```
+
+The matching environment keys are `CURVED_DOMAIN=158.101.127.247.sslip.io` and
+`ACME_EMAIL=admin@sslip.io`.
+
+Limitations of this choice:
+
+- The name is derived from the reserved address. Replacing the IPv4 address
+  means choosing a new name, updating `CURVED_DOMAIN`, and issuing a new
+  certificate.
+- `sslip.io` is a shared public wildcard. It resolves names for anyone, offers
+  no control over the zone, and can only be relied on while its service is
+  reachable. Treat it as a convenience for this host, not as your own domain.
+- Some corporate resolvers and DNS filters block wildcard services. If
+  `dig +short "$DOMAIN" @1.1.1.1` returns nothing from one network, check from
+  another before touching the host.
+
+### 6.2 Your own domain through Cloudflare
 
 1. In the Cloudflare dashboard for the domain, open **DNS** > **Records** and
    click **Add record**.
@@ -181,7 +235,8 @@ the same availability domain.
    for the apex), **IPv4 address** to the reserved address, **Proxy status** to
    **DNS only**, and **TTL** to **Auto**.
 3. Click **Save**. The cloud icon must be grey, not orange. A proxied record
-   hides the origin and breaks the internal CA plus the direct port checks.
+   hides the origin, so Let's Encrypt cannot complete the HTTP-01 or
+   TLS-ALPN-01 challenge and the direct port checks fail.
 
 Verify propagation from the operator workstation:
 
@@ -190,6 +245,15 @@ dig +short "$DOMAIN" @1.1.1.1
 ```
 
 The answer must be the reserved IPv4 address.
+
+### 6.3 Changing the name later
+
+A name change is an environment edit plus a Caddy recreate. Edit `CURVED_DOMAIN`
+(and `ACME_EMAIL` if the account contact changes) in
+`/srv/curved/checkout/deploy/.env`, keep mode `600`, then recreate only Caddy
+with the command in section 7. Caddy reads the new site address, obtains a
+certificate for it on startup, and serves it from then on; no other container
+restarts.
 
 ## 7. Bootstrap the host
 
@@ -221,12 +285,20 @@ filesystem. OCI Linux images commonly expose the data volume as
 `--data-device` at the boot disk.
 
 The `DOMAIN` export does not cross the SSH session. Set it again in the server
-shell and return to the bootstrap checkout, using the same value:
+shell, together with the Let's Encrypt account email, and return to the
+bootstrap checkout, using the same values:
 
 ```bash
 cd ~/curved-provision
 export DOMAIN=curved.example.com
+export ACME_EMAIL=ops@example.com
 ```
+
+`ACME_EMAIL` is what switches Caddy from its internal CA to public Let's
+Encrypt. It must be the address that receives certificate expiry notices; the
+reference host uses the `sslip.io` contact `admin@sslip.io`. With
+`--acme-email` set, bootstrap requires `--domain` to be a fully qualified
+hostname and rejects `localhost`, a scheme, or a path.
 
 Run the bootstrap as root. The command below uses the OCI Linux device symlink;
 if `lsblk` reported `/dev/sdb`, use the fallback that follows.
@@ -235,6 +307,7 @@ if `lsblk` reported `/dev/sdb`, use the fallback that follows.
 sudo bash deploy/bootstrap-host.sh \
   --key ~/.ssh/id_ed25519.pub \
   --domain "$DOMAIN" \
+  --acme-email "$ACME_EMAIL" \
   --data-device /dev/oracleoci/oraclevdb
 ```
 
@@ -245,6 +318,7 @@ If `/dev/oracleoci/oraclevdb` does not exist and `lsblk` shows the 100 GB disk a
 sudo bash deploy/bootstrap-host.sh \
   --key ~/.ssh/id_ed25519.pub \
   --domain "$DOMAIN" \
+  --acme-email "$ACME_EMAIL" \
   --data-device /dev/sdb
 ```
 
@@ -253,10 +327,17 @@ unmounted 90-110 GiB disk and fails when it finds none or more than one.
 
 The script accepts `--key` more than once, so every administrator key can be
 installed in one run, and it rejects a file whose lines are not OpenSSH public
-keys. Other options are `--mount-dir`, `--checkout-dir`,
+keys. Other options are `--acme-email`, `--mount-dir`, `--checkout-dir`,
 `--repo-url`, and `--no-stack`; the defaults are `/srv/curved`,
-`/srv/curved/checkout`, `https://github.com/DietKyle956/Curved.git`, domain
-`localhost`, and the stack enabled.
+`/srv/curved/checkout`, `https://github.com/DietKyle956/Curved.git`, an empty
+ACME email (Caddy's internal CA), domain `localhost`, and the stack enabled.
+
+`--acme-email EMAIL` selects public TLS. When it is set, bootstrap writes
+`ACME_EMAIL=<email>` and `CURVED_HSTS_MAX_AGE=31536000` into the environment
+file, so Caddy requests a Let's Encrypt certificate and every HTTPS response
+carries HSTS. When it is absent, bootstrap writes `ACME_EMAIL=` and
+`CURVED_HSTS_MAX_AGE=` (both empty), which keeps the internal CA and sends no
+HSTS header.
 
 The bootstrap performs these steps and prints `PASS <step>` for each:
 
@@ -277,13 +358,16 @@ The bootstrap performs these steps and prints `PASS <step>` for each:
 - Generates `/srv/curved/checkout/deploy/.env` once with mode `600`, owner
   `deploy`, containing `POSTGRES_USER=curved`, a random `POSTGRES_PASSWORD`,
   `POSTGRES_DB=curved`, a random `CURVED_UI_TOKEN`, a random
-  `GITHUB_WEBHOOK_SECRET`, `CURVED_DOMAIN` set to the `--domain` value, an empty
-  `ACME_EMAIL`, and `COOKIE_SECURE=1`. An existing environment file is never
-  overwritten, and one that still contains `change-me` placeholders is rejected.
+  `GITHUB_WEBHOOK_SECRET`, `CURVED_DOMAIN` set to the `--domain` value,
+  `ACME_EMAIL` set to the `--acme-email` value, `CURVED_HSTS_MAX_AGE` set to
+  `31536000` when an ACME email was given and left empty otherwise, and
+  `COOKIE_SECURE=1`. An existing environment file is never overwritten, and one
+  that still contains `change-me` placeholders is rejected.
 - Builds the app image on the host and starts the production stack with
   `docker compose -f deploy/docker-compose.yml up -d --build --wait` from the
   checkout. Compose auto-loads `deploy/.env` because that is the compose file's
-  directory. Caddy uses its internal CA because `ACME_EMAIL` is empty.
+  directory. With `ACME_EMAIL` set, Caddy obtains a public certificate for the
+  domain during this start; with it empty, Caddy uses its internal CA.
 
 Bootstrap also moves Docker onto the data volume, in an order that keeps Docker
 from ever starting without it:
@@ -324,6 +408,63 @@ administrative account.
 It finishes with `bootstrap-host: ok` and never prints a secret. If it exits
 non-zero, stop at the first failing step and see section 15 before rerunning.
 
+### Upgrading an existing host to public TLS
+
+A host bootstrapped before LAS-186 has `CURVED_DOMAIN=localhost`, an empty
+`ACME_EMAIL`, and no HSTS. Bootstrap never rewrites an existing environment
+file, so switch the running host by editing it, then recreate only Caddy.
+
+1. Log in as `deploy` and edit the environment file:
+
+   ```bash
+   ssh deploy@"$IP"
+   cd /srv/curved/checkout
+   ${EDITOR:-vi} deploy/.env
+   ```
+
+   Set the three keys and leave everything else untouched (use your own domain
+   name in place of the `sslip.io` example if you registered one):
+
+   ```text
+   CURVED_DOMAIN=158.101.127.247.sslip.io
+   ACME_EMAIL=admin@sslip.io
+   CURVED_HSTS_MAX_AGE=31536000
+   ```
+
+2. Confirm the file is still mode `600` and owned by `deploy`:
+
+   ```bash
+   chmod 600 deploy/.env
+   stat -c '%a %U:%G %n' deploy/.env
+   ```
+
+   Expected: `600 deploy:deploy deploy/.env`.
+
+3. Recreate only Caddy so it reads the new site address and ACME account. The
+   app and Postgres keep running:
+
+   ```bash
+   docker compose -p curved-prod --env-file deploy/.env \
+     -f deploy/docker-compose.yml up -d --no-deps caddy
+   ```
+
+4. Watch the log until issuance completes:
+
+   ```bash
+   docker compose -p curved-prod --env-file deploy/.env \
+     -f deploy/docker-compose.yml logs -f --tail=50 caddy
+   ```
+
+   Success shows `certificate obtained successfully` with
+   `identifier 158.101.127.247.sslip.io`, `issuer
+   acme-v02.api.letsencrypt.org-directory`, and account email `admin@sslip.io`.
+   The challenge may be `tls-alpn-01` on 443 or `http-01` on 80. Press Ctrl-C
+   once the certificate line appears, then confirm with section 9.
+
+Setting `CURVED_HSTS_MAX_AGE` at the same time as the public certificate is
+what satisfies the release probe: public TLS without HSTS fails the probe and
+leaves `curved:latest` untouched. If issuance fails, see section 15.
+
 ## 8. Sign in to the running stack
 
 From the operator workstation, work as `deploy` for Compose operations:
@@ -340,8 +481,39 @@ Read the UI token from the environment file. The file is mode 600 and owned by
 grep '^CURVED_UI_TOKEN=' deploy/.env
 ```
 
-Because `ACME_EMAIL` is empty, Caddy signs with its internal CA. Extract that
-root certificate and trust it on the workstation that opens the UI:
+### 8.1 Public deployment
+
+With `ACME_EMAIL` set, Caddy serves the public name with a Let's Encrypt
+certificate and no browser warning. On the reference host the certificate has
+subject `CN=158.101.127.247.sslip.io`, issuer `CN=YE2` under
+`O=Let's Encrypt`, and expires `Feb 17 2027`. Open:
+
+```text
+https://<domain>/
+```
+
+and sign in with the `CURVED_UI_TOKEN` value. The browser shows the normal padlock
+with no certificate exception to accept. If Caddy has not finished issuance yet,
+the connection fails or shows a warning; wait for `certificate obtained
+successfully` in the Caddy log (section 7) and retry.
+
+Confirm the same thing from the workstation with the system trust store, without
+`-k`:
+
+```bash
+curl -o /dev/null -sS -w '%{http_code} %{ssl_verify_result}\n' "https://$DOMAIN/"
+```
+
+Expected: `200 0`, meaning HTTP 200 and a verified chain (`ssl_verify_result`
+0). HSTS means a browser that has seen the host will refuse plain HTTP until
+`CURVED_HSTS_MAX_AGE` expires; see the HSTS lockout entry in section 15.
+
+### 8.2 Localhost deployment with the internal CA
+
+This path is only for a localhost deployment, where `CURVED_DOMAIN=localhost`
+and `ACME_EMAIL` is empty. Caddy then signs with its own CA, so the browser
+warns about an unknown issuer until the root certificate is trusted. Extract it
+on the server:
 
 ```bash
 docker compose --env-file deploy/.env -f deploy/docker-compose.yml exec caddy \
@@ -369,10 +541,10 @@ sudo security add-trusted-cert -d -r trustRoot -k /Library/Keychains/System.keyc
 certutil -addstore -f Root curved-caddy-root.crt
 ```
 
-Open `https://<domain>/` and sign in with the `CURVED_UI_TOKEN` value. Without
-the CA installed the browser warns about an unknown issuer; that warning is
-expected until LAS-186 switches to a public ACME certificate. `curl -k` is the
-supported way to check the endpoint before the CA is trusted.
+Open `https://localhost/` and sign in with the `CURVED_UI_TOKEN` value. Before
+the CA is trusted, `curl -k` is the supported way to check the endpoint. On a
+public deployment none of this applies: do not install the internal CA, and do
+not use `-k` for checks.
 
 ## 9. Verification
 
@@ -400,17 +572,88 @@ all pass, ending with `verify-host: ok`. A failing run ends with
 `verify-host: FAIL (<n>)` and never prints a secret value. Any other ending is a
 failure; fix the reported check and rerun.
 
+The checks run in this order: `os`, `deploy-user`, `deploy-ssh-dir`,
+`deploy-authorized-keys`, `sshd-config`, `data-mount`, `storage`,
+`docker-root`, `docker-config`, `docker-mount-dependency`,
+`docker-prune-timer`, `env-file`, `checkout`, `tcp-listeners`, `udp-listeners`,
+then, unless `--skip-stack` is given, `stack`, `tls-certificate`,
+`http-redirect`, `hsts`, `compression`, `caddy-issuance`, and `https-api`.
+
+Public mode is detected from the environment file: `ACME_EMAIL` non-empty and
+the domain not `localhost`. In that mode:
+
+- `tls-certificate` requires `200` from `https://<domain>/api/projects` with
+  `ssl_verify_result` 0 and a leaf issuer that is not Caddy's local authority.
+- `http-redirect` requires a `301`, `302`, `307`, or `308` whose target is an
+  `https://` URL.
+- `hsts` requires a `Strict-Transport-Security` header with `max-age` of at
+  least `31536000`.
+- `compression` requires `gzip` or `zstd` content-encoding on the shell or on
+  the first `/assets/` script it references.
+- `caddy-issuance` requires `certificate obtained successfully` in the Caddy log
+  for the domain, plus a Let's Encrypt or ACME issuer marker.
+
+With the internal CA, the certificate checks run with `-k` and `hsts` instead
+requires that no `Strict-Transport-Security` header is sent. A live public host
+closes all 22 checks in one run, including the five edge checks above.
+
 ### 9.2 External reachability and boundary
 
 Run these from a machine that is not the server, using the `$DOMAIN` and `$IP`
-values set earlier.
+values set earlier. They use the system trust store: never add `-k` to a check
+on a public deployment, because `-k` hides exactly the certificate failure the
+check exists to catch.
+
+Certificate chain and status:
 
 ```bash
-curl -k --resolve "$DOMAIN:443:$IP" "https://$DOMAIN/"
-curl -k --resolve "$DOMAIN:443:$IP" -o /dev/null -sS -w '%{http_code}\n' "https://$DOMAIN/"
+curl --resolve "$DOMAIN:443:$IP" -o /dev/null -sS \
+  -w '%{http_code} %{ssl_verify_result}\n' "https://$DOMAIN/"
 ```
 
-The first command returns the SPA shell and the second returns `200`.
+Expected: `200 0`. HTTP 200 and a verified chain (0). Any nonzero
+`ssl_verify_result`, or a curl exit code naming an expired or untrusted
+certificate, is a failure.
+
+The SPA shell itself:
+
+```bash
+curl --resolve "$DOMAIN:443:$IP" "https://$DOMAIN/"
+```
+
+This returns the app shell HTML.
+
+Plain HTTP must redirect to HTTPS:
+
+```bash
+curl --resolve "$DOMAIN:80:$IP" -o /dev/null -sS \
+  -w '%{http_code} %{redirect_url}\n' "http://$DOMAIN/"
+```
+
+Expected: `308 https://$DOMAIN/`.
+
+HSTS must be on the HTTPS response:
+
+```bash
+curl --resolve "$DOMAIN:443:$IP" -sS -D - -o /dev/null "https://$DOMAIN/" \
+  | grep -i '^strict-transport-security:'
+```
+
+Expected: `strict-transport-security: max-age=31536000`, matching
+`CURVED_HSTS_MAX_AGE`.
+
+Compression must be on the JS asset. The asset name carries a build hash, so
+read it from the shell rather than hard-coding it:
+
+```bash
+asset=$(curl --resolve "$DOMAIN:443:$IP" -sS "https://$DOMAIN/" \
+  | grep -oE 'src="/assets/[^"]+\.js"' | head -n 1 | cut -d'"' -f2)
+curl --resolve "$DOMAIN:443:$IP" -sS -H 'Accept-Encoding: gzip' -D - \
+  -o /dev/null "https://$DOMAIN$asset" | grep -i '^content-encoding:'
+```
+
+Expected: `content-encoding: gzip`. On the reference build the asset was
+`/assets/index-CjN4_7RW.js`.
 
 ```bash
 for p in 22 80 443; do nc -zv -w 5 "$IP" "$p"; done
@@ -526,8 +769,8 @@ Only these listeners are allowed:
 | Socket | Process | Purpose |
 |---|---|---|
 | `0.0.0.0:22` and `[::]:22` | `sshd` | SSH |
-| `*:80` | `docker-proxy` or `caddy` | HTTP |
-| `*:443` TCP and UDP | `docker-proxy` or `caddy` | HTTPS and HTTP/3 |
+| `*:80` | `docker-proxy` or `caddy` | ACME HTTP-01 and the HTTPS redirect |
+| `*:443` TCP and UDP | `docker-proxy` or `caddy` | Public HTTPS, ACME TLS-ALPN-01, and HTTP/3 |
 | `*:68` UDP | `dhclient` or `systemd-networkd` | DHCPv4 client lease renewal |
 | `*:546` UDP | `systemd-networkd` | DHCPv6 client lease renewal, when IPv6 is enabled |
 | `127.0.0.1:55432` | `docker-proxy` | Postgres, loopback only, for an SSH tunnel |
@@ -588,7 +831,7 @@ The four acceptance criteria for LAS-183, with the evidence that closes each one
 
 | AC | Criterion | Evidence |
 |---|---|---|
-| AC1 | A fresh A1 instance runs the production stack and answers on its reserved IP with only 22, 80, and 443 open. | OCI **Instance details** show the instance **RUNNING** with the data volume **Attached**; the bootstrap transcript ends with `bootstrap-host: ok`; `verify-host` ends with `verify-host: ok`; the external `nc` loop succeeds on 22, 80, and 443 while the closed-port loop prints `PASS: 5432 closed` and `PASS: 4747 closed`; `curl -k --resolve "$DOMAIN:443:$IP" "https://$DOMAIN/"` returns the SPA shell, and `curl -k --resolve "$DOMAIN:443:$IP" -o /dev/null -sS -w '%{http_code}\n' "https://$DOMAIN/"` returns `200`. |
+| AC1 | A fresh A1 instance runs the production stack and answers on its reserved IP with only 22, 80, and 443 open. | OCI **Instance details** show the instance **RUNNING** with the data volume **Attached**; the bootstrap transcript ends with `bootstrap-host: ok`; `verify-host` ends with `verify-host: ok`; the external `nc` loop succeeds on 22, 80, and 443 while the closed-port loop prints `PASS: 5432 closed` and `PASS: 4747 closed`; `curl --resolve "$DOMAIN:443:$IP" "https://$DOMAIN/"` returns the SPA shell, and `curl --resolve "$DOMAIN:443:$IP" -o /dev/null -sS -w '%{http_code} %{ssl_verify_result}\n' "https://$DOMAIN/"` returns `200 0`. |
 | AC2 | The deploy user authenticates by key only; password authentication is disabled; docker-group privilege is documented. | `sudo sshd -T` reports `permitrootlogin no`, `passwordauthentication no`, `kbdinteractiveauthentication no`, `pubkeyauthentication yes`, and `allowusers ubuntu deploy`; both the password and root SSH attempts above end in `Permission denied (publickey).`; `id -nG deploy` includes `docker`; section 12 documents that docker-group membership is root-equivalent. |
 | AC3 | The host uses 150 GB of block storage against the 200 GB Always Free allowance. | OCI shows a 50 GB boot volume plus a 100 GB attached block volume; `verify-host` prints its `PASS storage: ...` line; `df -h / /srv/curved` shows the boot and data filesystems; section 13 records the 50 + 100 = 150 of 200 GB math. |
 | AC4 | The out-of-capacity fallback is documented and does not switch to the micro shape. | Section 11 states the 24-hour rule, the Pay As You Go upgrade and same-shape retry in the home region, and explicitly forbids `VM.Standard.E2.1.Micro`. |
@@ -603,9 +846,25 @@ one:
 | AC3 | Global log rotation is json-file 10 MB x 3 and an enabled daily prune timer handles build cache and unused images. | `cat /etc/docker/daemon.json` shows `log-driver` `json-file` with `max-size` `10m` and `max-file` `3`; `docker inspect --format '{{json .HostConfig.LogConfig}}' "$(docker compose ... ps -q db)"` shows the recreated container on `json-file` with `max-size` `10m` and `max-file` `3`; `systemctl list-timers curved-docker-prune.timer` shows the daily 04:37 schedule; `journalctl -u curved-docker-prune.service` shows the `builder prune` and `image prune` runs. |
 | AC4 | The stack returns after a reboot without manual steps. | The section 9.4 transcript: `uptime -p` reports minutes, `findmnt /srv/curved` shows the data volume, `docker info` prints `/srv/curved/docker`, `docker compose ps` shows the stack healthy, and `verify-host` ends with `verify-host: ok`. |
 
+The six acceptance criteria for LAS-186, with the evidence that closes each one:
+
+| AC | Criterion | Evidence |
+|---|---|---|
+| AC1 | The public host serves HTTPS with a publicly trusted certificate for its domain. | On `158.101.127.247.sslip.io` the certificate is subject `CN=158.101.127.247.sslip.io`, issuer `C=US, O=Let's Encrypt, CN=YE2`, valid until `Feb 17 14:11:43 2027 GMT`; from the operator workstation `https://158.101.127.247.sslip.io/` returns `200 0` (`http_code` 200, `ssl_verify_result` 0); `verify-host` prints `PASS tls-certificate`. |
+| AC2 | Port 80 redirects to HTTPS and every HTTPS response carries HSTS with the configured max-age. | `http://158.101.127.247.sslip.io/` returns `308 https://158.101.127.247.sslip.io/`; the HTTPS response carries `strict-transport-security: max-age=31536000`, matching `CURVED_HSTS_MAX_AGE`; `verify-host` prints `PASS http-redirect` and `PASS hsts`. |
+| AC3 | Server-sent events work through the public edge, and a client disconnect cancels its subscription. | A session on the public URL received the `ready` frame and then `issues_changed` with `data: 1` after a comment; the transport regression test `a client disconnect through the Node transport cancels the subscription` (`test/sse.test.ts`) proves cancellation; the compose smoke check fails unless `ready` and `issues_changed` arrive within 5 s. |
+| AC4 | PR opened and reopened move the issue to In Review, merged moves it to Done, all as the git actor with a pull-request body. | PR #1 (`LIVE-1 Public webhook delivery`) opened moved issue LIVE-1 to `in_review` with event `actorType git` and body `pull request #1 opened`; merge moved it to `done` with body `pull request #1 closed`. PR #2 (`LIVE-3 Reopen probe`): open -> `in_review`, close unmerged -> ignored (status stayed `in_review`), a human move back to `in_progress`, reopen -> `in_review` with actor `git` and body `pull request #2 reopened`, merge -> `done` with body `pull request #2 closed`. |
+| AC5 | Duplicate, unknown, and non-PR deliveries are acknowledged without changing state. | A replayed identical signed delivery for LIVE-2 returned `200 {"ok":true,"ignored":true}` and the issue stayed `in_review`; GitHub's Re-deliver of a processed `pull_request opened` delivery created a `redelivery: true` entry with status `200` and left LIVE-2 in `in_review`; an unknown key `NOPE-999` returned `200 {"ok":true,"ignored":true}`; non-PR `issues` and `push` deliveries also returned `200 {"ok":true,"ignored":true}`. |
+| AC6 | Caddy obtains and renews the certificate automatically, and the release probe requires HSTS under public TLS before promoting a release. | The Caddy log shows `certificate obtained successfully`, `identifier 158.101.127.247.sslip.io`, `issuer acme-v02.api.letsencrypt.org-directory`, account email `admin@sslip.io`, with challenge `tls-alpn-01`; `verify-host` prints `PASS caddy-issuance`; deploy run 44551897724 printed `release: public probe ok` and `release: ok c711540`, and the public probe requires HSTS with a max-age matching `CURVED_HSTS_MAX_AGE` once `ACME_EMAIL` is set. |
+
+On this host `verify-host` exits 0 with 22 `PASS` lines, including
+`tls-certificate`, `http-redirect`, `hsts`, `compression`, `caddy-issuance`, and
+`https-api` (`200` with the token, `401` without it).
+
 Record the console screenshots, the two command transcripts, the section 9.4
-reboot transcript, and the verifier output with the ticket. Do not record the
-environment file, the UI token, or any generated secret.
+reboot transcript, the verifier output, the GitHub delivery log, and the deploy
+run log with the ticket. Do not record the environment file, the UI token, the
+webhook secret, or any generated secret.
 
 ## 11. Capacity fallback
 
@@ -639,8 +898,8 @@ environment file, and starts the stack without reformatting.
 | Port | Protocol | Source | Purpose | Why it is exposed |
 |---|---|---|---|---|
 | 22 | TCP | `0.0.0.0/0` | SSH | Administration and the GitHub Actions deploy job |
-| 80 | TCP | `0.0.0.0/0` | HTTP | Caddy redirect and future ACME HTTP-01 |
-| 443 | TCP | `0.0.0.0/0` | HTTPS | The UI and API |
+| 80 | TCP | `0.0.0.0/0` | HTTP | ACME HTTP-01 and the HTTPS redirect |
+| 443 | TCP | `0.0.0.0/0` | HTTPS | The UI and API, and ACME TLS-ALPN-01 |
 | 443 | UDP | `0.0.0.0/0` | HTTP/3 | Caddy's QUIC listener |
 | 5432 | TCP | none | Postgres | Container network only; host loopback is 55432 |
 | 4747 | TCP | none | App | Compose network only, no host port |
@@ -689,9 +948,10 @@ The Postgres and Caddy data are named Compose volumes, now under
 **Never run
 `docker compose --env-file deploy/.env -f deploy/docker-compose.yml down -v`
 on the server.** The `-v` flag deletes the named Postgres and Caddy volumes,
-which destroys the database, sessions, and the internal CA with no recovery path
-until LAS-187 exists. Use `down` without `-v` only when intentionally stopping
-the stack, and prefer `stop` and `restart`.
+which destroys the database, sessions, the Caddy certificate state (ACME account
+key, issued certificates) and, on a localhost deployment, the internal CA, with
+no recovery path until LAS-187 exists. Use `down` without `-v` only when
+intentionally stopping the stack, and prefer `stop` and `restart`.
 
 ## 14. Releases, deploys, and rollback
 
@@ -807,10 +1067,18 @@ docker compose -p curved-prod --env-file deploy/.env \
   cat /data/caddy/pki/authorities/local/root.crt
 ```
 
-The file is deleted on exit. When `ACME_EMAIL` is set (after LAS-186), the
-certificate is publicly trusted and no `--cacert` is used. The live host has
-`CURVED_DOMAIN=localhost` and an empty `ACME_EMAIL`, so its probe relies on the
-extracted root CA; `curl -k` is not used by the script.
+The file is deleted on exit. When `ACME_EMAIL` is set, the certificate is
+publicly trusted and no `--cacert` is used.
+
+Under public TLS the probe also requires HSTS: a `200` without
+`Strict-Transport-Security` fails, and when `CURVED_HSTS_MAX_AGE` is set its
+value must equal the header's `max-age`. Under the internal CA no HSTS header is
+required. This is why a public deployment sets both `ACME_EMAIL` and
+`CURVED_HSTS_MAX_AGE` together. The reference host has
+`CURVED_DOMAIN=158.101.127.247.sslip.io`, `ACME_EMAIL=admin@sslip.io`, and
+`CURVED_HSTS_MAX_AGE=31536000`, and a passing release prints
+`release: public probe ok` before `release: ok <short>`; `curl -k` is never used
+by the script.
 
 ### 14.3 Deploy order
 
@@ -937,9 +1205,9 @@ git reset --hard origin/main
 ./deploy/release.sh
 ```
 
-Use `--require-public-probe` once the internal CA is trusted and DNS points at
-the host, so a first release still proves the external path. To roll back
-manually:
+Use `--require-public-probe` for a first release on a freshly provisioned public
+host, so the external path is proven before the release is recorded. To roll
+back manually:
 
 ```bash
 cd /srv/curved/checkout
@@ -950,11 +1218,11 @@ If a release fails at the migration step, the previous app is still serving:
 read the error, fix it with a new forward migration, reset to the new `main`,
 and run the script again. Do not restart `app` to retry the migration and do not
 tear the stack down. If a later release fails only the probe, the new image is
-already serving; fix the cause (Caddy, the CA, DNS, or the UI token), rerun the
-script, or roll back explicitly if the new image is the problem. Because
-`curved:latest` still points at the previous release after a failed probe, do
-not recreate the app by hand: a plain `up` without `CURVED_IMAGE` would start
-the old image. Inspect the stack with:
+already serving; fix the cause (Caddy, the certificate, HSTS, DNS, or the UI
+token), rerun the script, or roll back explicitly if the new image is the
+problem. Because `curved:latest` still points at the previous release after a
+failed probe, do not recreate the app by hand: a plain `up` without
+`CURVED_IMAGE` would start the old image. Inspect the stack with:
 
 ```bash
 docker compose -p curved-prod --env-file deploy/.env \
@@ -981,8 +1249,10 @@ Work outside in, and check the cheap causes first:
    and confirm the four ingress rules exist with source `0.0.0.0/0` and the
    correct protocol and destination port. The instance must use the public
    subnet associated with this list. Security list edits apply immediately.
-2. **Cloudflare proxy.** The record must be **DNS only**. An orange cloud sends
-   traffic to Cloudflare and hides the origin, so the direct checks fail.
+2. **DNS or a proxy in front.** A custom record must be **DNS only**. An orange
+   Cloudflare cloud sends traffic to Cloudflare instead of the origin, so both
+   the direct port checks and ACME validation fail. The `sslip.io` name has no
+   proxy at all; if it does not resolve to `$IP`, see the ACME section below.
 3. **Host firewall.** Some OCI Ubuntu images persist a restrictive iptables
    ruleset. Inspect it and insert ACCEPT rules ahead of any REJECT:
 
@@ -1006,7 +1276,9 @@ Work outside in, and check the cheap causes first:
    sudo ss -ltnp '( sport = :80 or sport = :443 )'
    ```
 
-   Test the origin directly from the host:
+   Test the origin directly from the host. This is a listener check, not a
+   certificate check, so `-k` is acceptable here only to isolate Caddy from trust
+   issues:
 
    ```bash
    curl -k --resolve "$DOMAIN:443:127.0.0.1" -o /dev/null -sS -w '%{http_code}\n' "https://$DOMAIN/"
@@ -1014,6 +1286,125 @@ Work outside in, and check the cheap causes first:
 
    A response here proves the stack is serving and the problem is outside the
    host. A connection error points at Caddy or Docker.
+
+### Caddy cannot obtain the ACME certificate
+
+Symptom: the browser warns about an unknown issuer, `verify-host` fails
+`tls-certificate` or `caddy-issuance`, and the Caddy log shows an ACME error
+instead of `certificate obtained successfully`. Work through the causes in order:
+
+1. **The name does not resolve to this host.** Check from the operator
+   workstation and compare with `$IP`:
+
+   ```bash
+   dig +short "$DOMAIN" @1.1.1.1
+   ```
+
+   The answer must be the reserved IPv4. `sslip.io` names are derived from the
+   address embedded in the name, so a mismatch means `CURVED_DOMAIN` holds the
+   wrong name or the instance no longer owns that address. Fix the value and
+   recreate Caddy (section 7).
+2. **A proxy sits in front of the origin.** A proxied Cloudflare record
+   terminates TLS at Cloudflare, so the ACME challenge cannot reach Caddy. Set
+   the record to **DNS only** and wait for the TTL.
+3. **Port 80 is blocked.** HTTP-01 validation needs port 80 reachable from the
+   internet, and TLS-ALPN-01 needs 443. Confirm both ingress rules in the
+   security list and test from outside the host:
+
+   ```bash
+   for p in 80 443; do nc -zv -w 5 "$IP" "$p"; done
+   ```
+
+   A host firewall rule that drops 80 shows the same symptom; see the listener
+   and firewall checks above.
+4. **Let's Encrypt rate limits.** Repeated failures for one hostname trip the
+   failed-validation limit, and repeated issuance for the same name trips the
+   duplicate-certificate limit. Caddy logs the rate-limit error and backs off
+   instead of succeeding. Do not recreate Caddy in a loop; fix the underlying
+   DNS, proxy, or port problem, then wait for the window and let Caddy retry.
+5. **`sslip.io` is unavailable or filtered.** The wildcard is a third-party
+   service. If `dig` returns nothing for the name from several networks, the
+   service or a DNS filter is the problem; switch to your own domain (section
+   6.2) rather than debugging the host.
+
+After any fix, recreate only Caddy and watch the log:
+
+```bash
+cd /srv/curved/checkout
+docker compose -p curved-prod --env-file deploy/.env \
+  -f deploy/docker-compose.yml up -d --no-deps caddy
+docker compose -p curved-prod --env-file deploy/.env \
+  -f deploy/docker-compose.yml logs -f --tail=50 caddy
+```
+
+### HSTS locks the browser out of the site
+
+Once a browser has seen `Strict-Transport-Security: max-age=31536000`, it
+refuses plain HTTP for that host for a year and will not let you click through a
+certificate warning. A broken certificate or a name change then looks like the
+site is gone, even though Caddy is running.
+
+Clear it in two places:
+
+1. Turn the header off on the host. Edit `deploy/.env` and set the key to empty:
+
+   ```bash
+   cd /srv/curved/checkout
+   ${EDITOR:-vi} deploy/.env
+   # CURVED_HSTS_MAX_AGE=
+   ```
+
+   Keep mode 600, then recreate Caddy so the empty value stops the `@hsts`
+   header from being set:
+
+   ```bash
+   chmod 600 deploy/.env
+   docker compose -p curved-prod --env-file deploy/.env \
+     -f deploy/docker-compose.yml up -d --no-deps caddy
+   ```
+
+2. Clear the browser's stored HSTS state, because the header already sent is
+   still in force there:
+   - Chrome and Edge: open `chrome://net-internals/#hsts`, use **Delete domain
+     security policies** for the host.
+   - Firefox: **Settings** > **Privacy & Security** > **Cookies and Site Data** >
+     **Manage Data**, remove the site, or use **Forget About This Site** from
+     the history entry.
+   - Safari: remove the site's website data under **Settings** > **Privacy**.
+
+Re-enable HSTS by restoring `CURVED_HSTS_MAX_AGE=31536000` and recreating Caddy
+once the certificate is correct again. Never set HSTS on a localhost deployment;
+leave the key empty there so the internal CA cannot lock a browser out.
+
+### GitHub webhook deliveries fail
+
+A delivery failure shows in the repository's webhook page and in the GitHub
+delivery log, and the issue status does not move. Check the four things that
+matter:
+
+1. **The URL.** It must be exactly `https://$CURVED_DOMAIN/webhooks/github`,
+   content type `application/json`. Any other path returns the SPA or a 404, not
+   the webhook handler.
+2. **The secret.** A `401` with a signature error means the secret in GitHub is
+   not the `GITHUB_WEBHOOK_SECRET` the app is reading. GitHub never returns the
+   stored secret, so a mismatch is silent on the GitHub side. Reapply it with
+   `deploy/webhook.sh` (section 16), which PATCHes the existing hook in place.
+3. **Expected ignores.** Replays, unknown issue keys, and non-`pull_request`
+   events answer `200 {"ok":true,"ignored":true}` and change nothing. That is
+   success, not a failure: `ignored: true` is the documented answer for a
+   delivery the app deliberately does not act on.
+4. **The delivery log.** Open the repository's **Settings** > **Webhooks** >
+   the hook > **Recent Deliveries**, or use `gh api` as shown in section 16.
+   Look at the response code and body of the failing delivery, then at the app
+   log for the reason:
+
+   ```bash
+   docker compose -p curved-prod --env-file deploy/.env \
+     -f deploy/docker-compose.yml logs --tail=100 app
+   ```
+
+   `not_authenticated` means the signature did not verify; `ignored: true` is
+   normal for events the app does not handle.
 
 ### The verifier reports a public listener on 111
 
@@ -1131,3 +1522,134 @@ sudo ss -ltnp '( sport = :80 or sport = :443 )'
 
 Stop the conflicting service or container. The production stack owns 80 and 443;
 the development stack from the repository root is not meant to run on this host.
+
+## 16. GitHub webhook
+
+The app receives GitHub deliveries at `/webhooks/github`. The handler verifies
+`X-Hub-Signature-256` against `GITHUB_WEBHOOK_SECRET` over the raw body before it
+parses anything, so the route needs no cookie and no bearer token. Only
+`pull_request` deliveries change state; everything else is acknowledged and
+ignored.
+
+`deploy/webhook.sh` creates or updates the repository hook. It requires an
+authenticated `gh`, `python3`, and `git`, and it must run inside the checkout so
+it can find the environment file:
+
+```bash
+deploy/webhook.sh [--repo OWNER/NAME] [--url URL] [--env-file PATH] \
+  [--dry-run] [--help]
+```
+
+Defaults and inputs:
+
+- `--repo` defaults to `OWNER/NAME` derived from the `origin` remote.
+- `--url` defaults to `https://$CURVED_DOMAIN/webhooks/github`. A `localhost` or
+  empty `CURVED_DOMAIN` is refused; pass `--url` for a public target.
+- `--env-file` defaults to `deploy/.env` and must supply
+  `GITHUB_WEBHOOK_SECRET`; the secret is sent to `gh` on stdin and never appears
+  in arguments or output.
+- `--dry-run` prints `webhook: would create <url>` or
+  `webhook: would update <id> <url>` without writing.
+
+The hook payload it applies is fixed:
+
+- `active: true`
+- `events: ["pull_request"]`
+- `config.content_type: "json"`
+- `config.url: <url>`
+- `config.secret: $GITHUB_WEBHOOK_SECRET`
+
+### 16.1 Idempotent update semantics
+
+The script lists the repository hooks (`?per_page=100`), looks for one whose
+`config.url` matches the target exactly, and then:
+
+- If none matches, it creates the hook with `POST /repos/OWNER/NAME/hooks` and
+  prints `webhook: created <id> <url>`.
+- If one matches, it updates that hook with
+  `PATCH /repos/OWNER/NAME/hooks/<id>` and prints
+  `webhook: updated <id> <url>`.
+
+The update path exists because GitHub never returns the stored secret. Matching
+on URL and always PATCHing is what reapplies the current secret on every run, so
+rerunning the script after a secret change rotates the hook in place instead of
+accumulating a second hook. The reference host has hook `714067501` with
+`events: ["pull_request"]`, `config.content_type: json`, and URL
+`https://158.101.127.247.sslip.io/webhooks/github`, created by this script.
+
+### 16.2 Secret rotation
+
+`GITHUB_WEBHOOK_SECRET` is generated once by bootstrap. To rotate it:
+
+1. Generate a new value and write it into `deploy/.env` on the host, keeping
+   mode `600` and owner `deploy`.
+2. Recreate the app so the handler reads the new secret from its environment:
+
+   ```bash
+   cd /srv/curved/checkout
+   docker compose -p curved-prod --env-file deploy/.env \
+     -f deploy/docker-compose.yml up -d --no-deps app
+   ```
+
+3. Apply the same value to GitHub:
+
+   ```bash
+   bash deploy/webhook.sh
+   ```
+
+Between steps 2 and 3 deliveries fail with `401`, so run them back to back. The
+script prints `webhook: updated 714067501 https://...` on success; it never
+prints the secret.
+
+### 16.3 Delivery behavior
+
+| Delivery | Result |
+|---|---|
+| PR opened | Issue moves to `in_review`, event `actorType git`, body `pull request #<n> opened` |
+| PR reopened | Issue moves to `in_review`, actor `git`, body `pull request #<n> reopened` |
+| PR merged | Issue moves to `done`, actor `git`, body `pull request #<n> closed` |
+| PR closed unmerged | Ignored; status unchanged |
+| Replay of a processed delivery | `200 {"ok":true,"ignored":true}`; no state change |
+| Unknown issue key | `200 {"ok":true,"ignored":true}`; no state change |
+| Any non-`pull_request` event | `200 {"ok":true,"ignored":true}`; no state change |
+| Bad or missing signature | `401` with a `not_authenticated` error |
+
+Live evidence: PR #1 opened, closed (merged), and PR #2 opened, closed unmerged,
+moved back to `in_progress` by a human, reopened, and merged all produced the
+rows above, and GitHub's delivery log showed `ping`, `pull_request opened`, and
+`pull_request closed` all answered `200`. A replayed LIVE-2 delivery and an
+unknown key `NOPE-999` both answered `200 {"ok":true,"ignored":true}` with the
+issue unchanged, as did `issues` and `push` deliveries. GitHub's own Re-deliver
+on a processed `pull_request opened` delivery produced a `redelivery: true`
+entry with status `200` and left LIVE-2 in `in_review`.
+
+### 16.4 Verify deliveries
+
+List the hooks and confirm the URL, event, and active flag:
+
+```bash
+gh api "repos/OWNER/NAME/hooks" \
+  --jq '.[] | {id, url: .config.url, events, active}'
+```
+
+List the most recent deliveries for the hook:
+
+```bash
+gh api "repos/OWNER/NAME/hooks/714067501/deliveries?per_page=20" \
+  --jq '.[] | {id, event, status_code, delivered_at}'
+```
+
+Every accepted delivery should show `status_code` `200`, including the ignored
+ones. Rejected deliveries show `401`. For a failing delivery, inspect its
+recorded response and redeliver the same payload:
+
+```bash
+gh api "repos/OWNER/NAME/hooks/714067501/deliveries/<delivery-id>"
+gh api --method POST \
+  "repos/OWNER/NAME/hooks/714067501/deliveries/<delivery-id>/attempts"
+```
+
+The same history is visible in the repository UI under **Settings** >
+**Webhooks** > the hook > **Recent Deliveries**. If deliveries return `401`,
+rotate the secret with section 16.2; if they return `200` with `ignored: true`
+for a PR event, check that the payload's issue key matches an existing issue.
