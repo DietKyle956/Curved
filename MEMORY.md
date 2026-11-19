@@ -1,9 +1,9 @@
 # MEMORY.md
 
-- **Last updated:** 2026-11-18
+- **Last updated:** 2026-11-19
 - **Project:** curved
-- **Phase:** product and infrastructure complete through `LAS-184`. Next work is
-  `LAS-185` (release script and SSH deploy).
+- **Phase:** product and infrastructure complete through `LAS-185`. Next work is
+  `LAS-186` (public ACME, HSTS, and public webhook delivery).
 
 ## Current verified state
 
@@ -20,10 +20,12 @@ git history and the Linear comments.
 - Gates: `./scripts/init.sh` (install, database, check, build),
   `./scripts/clean-state.sh`, `npm run acceptance`,
   `npm run smoke:container`, `npm run smoke:compose`,
-  `npm run smoke:provision`, and `.github/workflows/verify.yml` on every push to
-  `main` and manual dispatch.
+  `npm run smoke:provision`, `npm run smoke:release`, and
+  `.github/workflows/verify.yml` on every push to `main` and manual dispatch,
+  where the main-only `deploy` job runs after `verify`.
 - Baseline: 196 tests pass (190 behavior, 6 architecture),
-  `architecture: ok (74 files)`, web build green.
+  `architecture: ok (74 files)`, web build green; `npm run acceptance` passes
+  (145 checks) and `npm run smoke:release` passes (16 assertions).
 - Layout: `src/domain/` pure rules and types; `src/application/` ports plus
   SQL-free use cases; `src/adapters/` inbound (`http`, `mcp`, `cli`, `github`,
   `sse`, `static`) and outbound (`postgres`, `token-codec`, `timing-safe`);
@@ -117,7 +119,26 @@ git history and the Linear comments.
   `caddy` publishing 80/443 TCP+UDP). An empty `ACME_EMAIL` selects Caddy's
   internal CA; a set email switches to ACME. Host ports and the image tag are
   compose variables. Agents reach the deployed Postgres through an SSH tunnel
-  (55433 is the future convention).
+  (55433 is the future convention). `deploy/release.sh` is the only release
+  path: database `up -d --wait --wait-timeout 300`, build `curved:<short-sha>`,
+  the one-shot `run --rm --no-deps -T app node src/composition/migrate.ts`,
+  app `up -d --no-deps --wait --wait-timeout 600`, caddy `up -d --no-deps`,
+  then an authenticated probe of `GET https://$CURVED_DOMAIN/api/projects`
+  with the UI bearer (Caddy's internal root CA extracted through
+  `compose exec -T caddy cat /data/caddy/pki/authorities/local/root.crt` when
+  `ACME_EMAIL` is empty), and only then `docker tag curved:<short-sha>
+  curved:latest`, an atomic write to `/srv/curved/release-state`, and
+  `release: ok <short>`. A failed migration exits before any app or caddy
+  recreate, latest tag, or state write and states the previous app is still
+  serving. An absent state file is a first release, which skips the public probe
+  unless `--require-public-probe`; later releases require it and a probe failure
+  is red with latest and state untouched. `--skip-public-probe` skips with a
+  warning and is a usage error together with `--require-public-probe`.
+  `./deploy/release.sh rollback <tag>` normalizes `curved:<tag>`, requires
+  `docker image inspect`, runs no migrations, recreates app then caddy, applies
+  the same probe policy, updates state, and warns that a non-backward-compatible
+  migration requires a database restore instead of an image rollback. The
+  release path never runs `down` or `down -v`.
 - Provisioning (`LAS-183`): `deploy/provisioning.md` is the OCI console runbook
   for one Always Free `VM.Standard.A1.Flex` (2 OCPU, 12 GB, Ubuntu 24.04
   aarch64, home region), a 50 GB boot volume plus a 100 GB block volume, a
@@ -157,8 +178,25 @@ git history and the Linear comments.
   401; 5432 and 4747 are filtered externally.
 - CI: `.github/workflows/verify.yml`, one global concurrency group `verify` with
   `cancel-in-progress: false`, a Postgres 18 service on 55432, then `npm ci`,
-  `typecheck`, `check:arch`, `test`, and `build:web`. There is no deploy job yet;
-  `LAS-185` must declare `needs: verify`.
+  `typecheck`, `check:arch`, `test`, and `build:web`. The `deploy` job declares
+  `needs: verify` and `if: github.ref == 'refs/heads/main'`, so it runs on a push
+  to main and on manual dispatch only. It validates `DEPLOY_SSH_KEY`,
+  `DEPLOY_KNOWN_HOSTS`, and `DEPLOY_HOST`, writes the key and known_hosts under
+  `$RUNNER_TEMP` mode 600, and SSHes as `deploy@$DEPLOY_HOST` (BatchMode,
+  IdentitiesOnly, StrictHostKeyChecking=yes against the pinned file) to run
+  `cd /srv/curved/checkout && git fetch --prune origin main && git reset --hard origin/main && ./deploy/release.sh`;
+  a manual dispatch exposes `skip_public_probe`, which appends
+  `--skip-public-probe`. The deploy key is a dedicated Ed25519 pair whose private
+  half exists only as the `DEPLOY_SSH_KEY` secret, and the `deploy` account is
+  root-equivalent through the docker group. Live on 2026-11-19: push run
+  44538665002 (verify 1m10s, deploy 40s) deployed fcfafd4 with the first-release
+  probe skip logged, and manual dispatch run 44539044406 (verify 58s, deploy
+  16s) re-released fcfafd4 with `release: public probe ok`. A live rollback to
+  the pre-release image retagged `curved:480a069` recreated a healthy app,
+  probed, and recorded state, then a forward release rebuilt and returned to
+  `curved:fcfafd4` and recorded
+  `tag=curved:fcfafd4 sha=fcfafd4 at=2026-11-19T14:02:06Z`; `curved:latest` and
+  `curved:fcfafd4` share image c37487aa4a13.
 - Tracker: Linear workspace last-known-good (`LAS`), project Curved
   (`P-LAS-8`). Test seams: application layer primary, HTTP in-process fetch, raw
   SQL only for the append-only trigger and the partial unique index.
@@ -243,9 +281,9 @@ git history and the Linear comments.
   `Secure` only under `COOKIE_SECURE`, so local HTTP development keeps its
   default while production compose sets `COOKIE_SECURE=1`.
 - The production compose `app` runs the idempotent migration command before the
-  server so one `up` reaches a healthy schema; `LAS-185` still runs migrations
-  separately in the release script. Local TLS uses Caddy's internal CA; ACME
-  issuance is production-only.
+  server so one `up` reaches a healthy schema; the release script also runs the
+  migration command separately, before it recreates the app. Local TLS uses
+  Caddy's internal CA; ACME issuance is production-only.
 - Provisioning is console-driven, not Terraform: `deploy/provisioning.md` and
   the two host scripts are the source of truth. Bootstrap is idempotent, only
   formats a device that has no filesystem, and refuses the root disk, a whole
@@ -262,9 +300,27 @@ git history and the Linear comments.
   through the docker group and is documented as such. `deploy/.env` is generated
   once, never overwritten, never printed, and rejected while it still contains
   `change-me`.
-- The CI gate is one workflow with one concurrency group and no deploy job. A
-  pending run is replaced by a newer queued run, but an in-flight run is never
-  cancelled.
+- Release automation (`LAS-185`) is one `deploy` job in the existing workflow,
+  not a second pipeline: it declares `needs: verify` and the main-ref `if`, pins
+  the host key through `DEPLOY_KNOWN_HOSTS` with StrictHostKeyChecking=yes, and
+  uses a dedicated Ed25519 key whose private half lives only in the repository
+  secret. The host-side release order is fixed: database, build, one-shot
+  migration, app, caddy, authenticated probe. The migration runs before any
+  app or caddy recreate, so a bad migration exits while the previous app is
+  still serving and no latest tag or state write happens. First-release
+  detection is the absent `/srv/curved/release-state`, which skips the public
+  probe unless `--require-public-probe`; later releases require it, a probe
+  failure is red, and `--skip-public-probe` with `--require-public-probe` is a
+  usage error. The probe uses the UI bearer and, with an empty `ACME_EMAIL`,
+  Caddy's internal root CA, because the live host is still
+  `CURVED_DOMAIN=localhost`. `curved:latest` is tagged only after a passing
+  probe, and the state write is atomic, so a red release leaves the previous
+  image and state intact. Rollback retags an existing image, runs no migrations,
+  recreates app then caddy, applies the same probe policy, and updates state; it
+  cannot reverse a schema, so a non-backward-compatible migration needs a
+  database restore. The release path never runs `down` or `down -v`. The
+  workflow stays one concurrency group: a pending run is replaced by a newer
+  queued run, but an in-flight run is never cancelled.
 
 ## Known risks
 
@@ -281,12 +337,27 @@ git history and the Linear comments.
 - Palette traits recorded, not changed: the active palette status label is about
   3.5:1 contrast, the muted pill about 4.04:1, and the mobile toast overlays the
   comment composer for its 5 second lifetime.
-- The arm64 image is build-proven only; running it emulated on x64 crashes inside
-  Node 26 type stripping with `ERR_INTERNAL_ASSERTION`, so native arm64 is the
-  runtime proof still outstanding.
-- CI is not a required status check and `main` takes direct pushes, so deploy
-  enforcement depends on `LAS-185` declaring `needs: verify` or on branch
-  protection.
+- arm64 is the live architecture: the image builds and runs natively on the
+  aarch64 host and served the live releases. Running the arm64 image emulated on
+  x64 still crashes inside Node 26 type stripping with
+  `ERR_INTERNAL_ASSERTION`.
+- CI is not a required status check and `main` takes direct pushes, so an
+  unverified commit can land on main. The deploy job's `needs: verify` keeps
+  that commit off the host, but branch protection is still the only way to keep
+  main green before a deploy attempt.
+- The `deploy` account is root-equivalent through the docker group, so the
+  `DEPLOY_SSH_KEY` secret it authenticates with is effectively host root.
+  Rotate the Ed25519 pair and remove the old public half from
+  `/home/deploy/.ssh/authorized_keys` if the secret leaks.
+- The first-release rule skips the public probe whenever the state file is
+  absent, so a first release proves only that the host-local HTTPS path answers;
+  only a later release exercises the required-probe path.
+- Rollback replays an image, not a schema: a non-backward-compatible migration
+  needs a manual database restore, and there is no automated pre-deploy dump
+  until `LAS-187`.
+- The release probe is host-local (`CURVED_DOMAIN=localhost`, Caddy's internal
+  CA) until `LAS-186`, so a public DNS, ACME, or TLS failure is not caught by
+  the release gate yet.
 - The compose stack's default 80/443 and 55432 binds must be free, and a local
   browser must trust Caddy's extracted root CA. `docker compose -f
   deploy/docker-compose.yml down -v` deletes the Postgres and Caddy volumes and
@@ -314,7 +385,7 @@ git history and the Linear comments.
   security list correct. Both were fixed on the live host: rpcbind disabled and
   masked, and 80/tcp, 443/tcp, 443/udp ACCEPT rules persisted with
   `netfilter-persistent`. Bootstrap does not manage either; `deploy/provisioning.md`
-  section 14 documents the checks and commands.
+  section 15 documents the checks and commands.
 - The `/var/lib/docker` migration is a `cp -a` copy, so it needs free space for
   a second copy on the data volume and leaves the old tree on the 50 GB boot
   volume until an operator removes it after `verify-host` passes.
@@ -329,28 +400,30 @@ git history and the Linear comments.
 
 ## Next best step
 
-`LAS-185` (release script and SSH deploy job) is next. It must declare
-`needs: verify`, never run `down -v` on the server, and account for the Docker
-data root now living at `/srv/curved/docker`. The live host is up at
-`158.101.127.247` with the `deploy` account keyed by the OCI key, so the deploy
-job can target it once the repository secrets exist. `LAS-186` (public ACME,
-HSTS, webhook delivery) and `LAS-187` (backups) follow. Run
-`npm run smoke:provision` after any change to the host scripts.
+`LAS-186` (public ACME, HSTS, and public webhook delivery) is next, then
+`LAS-187` (backups). The release path is live: a push to `main` runs `verify`,
+then the main-only `deploy` job, which resets `/srv/curved/checkout` and runs
+`./deploy/release.sh`; the state file lives at `/srv/curved/release-state` and
+the Docker data root stays at `/srv/curved/docker`. `LAS-186` must keep the
+release probe honest once the host leaves `CURVED_DOMAIN=localhost`. Run
+`npm run smoke:provision` after any change to the host scripts and
+`npm run smoke:release` after any change to the release script.
 
 ## Tracker
 
 - Linear workspace last-known-good (`LAS`), project Curved (`P-LAS-8`).
 - Spec `LAS-140` with 15 sub-issues `LAS-141` through `LAS-155`, all Done.
 - Refactor `LAS-167` with `LAS-168` through `LAS-176`, all Done.
-- Infra and deploy: `LAS-179` through `LAS-184` Done; `LAS-177` (template
-  audit) and `LAS-185` open.
+- Infra and deploy: `LAS-179` through `LAS-185` Done; `LAS-186` next
+  (public ACME, HSTS, public webhook); `LAS-187` (backups) after it; `LAS-177`
+  (template audit) remains open.
 
 ## Session log
 
 One line per session: earlier verification evidence and the full acceptance
 matrices live in git history and the Linear comments. Sessions 001 to 013 ran on
-2026-11-10, 014 to 018 on 2026-11-16, 019 to 030 on 2026-11-17, and 031 to 036
-on 2026-11-18.
+2026-11-10, 014 to 018 on 2026-11-16, 019 to 030 on 2026-11-17, 031 to 036
+on 2026-11-18, and 037 on 2026-11-19.
 
 | Session | Work item | Outcome |
 |---|---|---|
@@ -390,3 +463,4 @@ on 2026-11-18.
 | 034 | `LAS-182` | production compose stack with Caddy TLS and its smoke gate. |
 | 035 | `LAS-183` | OCI provisioning runbook, idempotent host bootstrap, access-boundary verifier, and the stub provisioning gate. |
 | 036 | `LAS-184` | Docker data root on the data volume with migration, systemd mount gate, log rotation, prune timer, verifier checks, reboot runbook, and the extended provisioning gate; live OCI bootstrap and reboot proof passed. |
+| 037 | `LAS-185` | `deploy/release.sh` with the fixed release order, first-release probe rule, latest-after-probe tagging, atomic state, and rollback; main-only `deploy` job with pinned SSH and the `DEPLOY_*` secrets; `npm run smoke:release` gate; live push, manual dispatch, and rollback/forward proof; provisioning docs updated. |

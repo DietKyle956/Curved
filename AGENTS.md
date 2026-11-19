@@ -306,8 +306,9 @@ concurrency group `verify` with `cancel-in-progress: false`, so two runs never
 execute at once. The `verify` job runs on `ubuntu-latest` with a
 `postgres:18-alpine` service on host port 55432, then `npm ci`,
 `npm run typecheck`, `npm run check:arch`, `npm test`, and `npm run build:web`.
-There is no deploy job yet; the future deploy job (LAS-185) must declare
-`needs: verify`.
+LAS-185 later added the `deploy` job to the same workflow with `needs: verify`
+and `if: github.ref == 'refs/heads/main'`, so a green `verify` gates every
+production release.
 
 LAS-182 is live: the production Compose stack lives in `deploy/`.
 `deploy/docker-compose.yml` (compose project `curved-prod`) runs `db`
@@ -360,7 +361,8 @@ container with PATH stubs, and asserts a fresh bootstrap, an idempotent rerun,
 the verifier's happy path, and rejection of a public 5432 listener, password
 authentication, and a non-public `--key` line. The OCI console steps and live
 host checks remain operator-executed; public ACME/HSTS/webhook is LAS-186,
-release and the SSH deploy job are LAS-185, and backups are LAS-187.
+release automation and the SSH deploy job landed in LAS-185, and backups are
+LAS-187.
 
 LAS-184 is live: durable data root and host hygiene. Bootstrap mounts the data
 volume before Docker may start, creates `/srv/curved/docker` (root:root 0710),
@@ -380,6 +382,49 @@ idempotent rerun, and two verifier negatives. The live reboot proof was executed
 on the OCI instance on 2026-11-18: bootstrap, a full `verify-host: ok`, a reboot,
 and `verify-host: ok` again with the stack healthy.
 
+LAS-185 is live: release automation and the SSH deploy job. `deploy/release.sh`
+(executable) is the only release path. It starts the database
+(`up -d --wait --wait-timeout 300`), builds `curved:<short-sha>`, runs the
+one-shot `run --rm --no-deps -T app node src/composition/migrate.ts`, recreates
+the app (`up -d --no-deps --wait --wait-timeout 600`), starts caddy
+(`up -d --no-deps`), then probes `GET https://$CURVED_DOMAIN/api/projects` with
+the UI bearer, extracting Caddy's internal root CA via
+`compose exec -T caddy cat /data/caddy/pki/authorities/local/root.crt` when
+`ACME_EMAIL` is empty; only after a passing probe does it tag
+`curved:<short-sha>` as `curved:latest`, write state atomically to
+`/srv/curved/release-state`, and print `release: ok <short>`. A failed
+migration exits before any app or caddy recreate, latest tag, or state write and
+states the previous app is still serving. An absent state file means the first
+release, which skips the public probe unless `--require-public-probe`; later
+releases require it and a probe failure is red, leaving latest and state
+untouched. `--skip-public-probe` skips with a warning, and both flags together
+is a usage error. `./deploy/release.sh rollback <tag>` normalizes
+`curved:<tag>`, requires `docker image inspect`, runs no migrations, recreates
+app then caddy, applies the same probe policy, updates state, and warns that a
+non-backward-compatible migration requires a database restore instead of an
+image rollback.
+`.github/workflows/verify.yml` adds a `deploy` job with `needs: verify` and
+`if: github.ref == 'refs/heads/main'`, so it runs on a push to `main` and on
+manual dispatch only after verification passes. It validates the
+`DEPLOY_SSH_KEY`, `DEPLOY_KNOWN_HOSTS`, and `DEPLOY_HOST` secrets, writes the key
+and known_hosts under `$RUNNER_TEMP` mode 600, and SSHes as `deploy@$DEPLOY_HOST`
+with BatchMode, IdentitiesOnly, and StrictHostKeyChecking=yes against the pinned
+file to run
+`cd /srv/curved/checkout && git fetch --prune origin main && git reset --hard origin/main && ./deploy/release.sh`;
+a manual dispatch exposes a `skip_public_probe` boolean that appends
+`--skip-public-probe`. `npm run smoke:release` runs
+`scripts/release-smoke.sh`, the release gate. Live proof on 2026-11-19: push run
+44538665002 (verify 1m10s, deploy 40s) deployed commit fcfafd4, reset the host
+checkout to fcfafd4, created `curved:fcfafd4` and `curved:latest`, left the app
+healthy on `curved:fcfafd4`, wrote the state file, and logged the first-release
+probe skip; manual dispatch run 44539044406 (verify 58s, deploy 16s) re-released
+fcfafd4 against the existing state with `release: public probe ok`; a rollback
+to the pre-release image retagged `curved:480a069` recreated a healthy app,
+probed, and recorded state, and a forward release returned to `curved:fcfafd4`
+with `tag=curved:fcfafd4 sha=fcfafd4 at=2026-11-19T14:02:06Z`. The deploy key is
+a dedicated Ed25519 pair whose private half exists only as the `DEPLOY_SSH_KEY`
+repository secret.
+
 Tests: 196 pass, 0 fail, including `test/http.test.ts`, `test/event-hub.test.ts`,
 `test/sse.test.ts`, the label and relation suites in `test/labels.test.ts` and
 `test/relations.test.ts`, the webhook and branch suite in `test/github.test.ts`,
@@ -389,20 +434,22 @@ transaction-scoped ports commit and rollback, and repository find by key, plus
 `test/architecture.test.ts`, which proves the real tree passes and five fixtures
 fail (application -> adapter, domain -> `pg`, web ui -> adapter, web application
 -> adapter, web domain -> a backend module other than `src/domain/status.ts`).
-`ARCH.md` codifies the layers and the one-way dependency rule; all six steps
-have landed, along with the import-direction gate and the completion handoff,
-so the refactor parent `LAS-167` and `LAS-176` are complete. `LAS-155` added the
-end-to-end acceptance gate: `npm run acceptance` runs `scripts/acceptance.sh`
-(`db.sh --no-migrate`, then `npm run build:web`), and `scripts/acceptance.mjs`
-creates a throwaway `curved_acceptance_<pid>_<epoch>` database, migrates it,
-runs the CLI lifecycle, MCP stdio with all eight tools, `npm start` with HTTP
-plus SSE, a signed GitHub webhook and its replay, a `palette-seed` leg that
-creates 24 backlog issues over the human bearer so the palette list overflows,
-and the browser leg, then drops it and proves the default `curved` rows are
-unchanged through per-table digests. The browser leg creates an issue through
-the palette and the new issue dialog, lands on its detail route, and checks the
-palette: a key query shows the issue key on the matched row, and ArrowDown
-through the overflowing list scrolls the selected row fully into the listbox.
+Those 196 are the node tests; `npm run smoke:release` is a shell gate, not part
+of them. `ARCH.md` codifies the layers and the one-way dependency rule; all
+six steps have landed, along with the import-direction gate and the completion
+handoff, so the refactor parent `LAS-167` and `LAS-176` are complete. `LAS-155`
+added the end-to-end acceptance gate: `npm run acceptance` runs
+`scripts/acceptance.sh` (`db.sh --no-migrate`, then `npm run build:web`), and
+`scripts/acceptance.mjs` creates a throwaway `curved_acceptance_<pid>_<epoch>`
+database, migrates it, runs the CLI lifecycle, MCP stdio with all eight tools,
+`npm start` with HTTP plus SSE, a signed GitHub webhook and its replay, a
+`palette-seed` leg that creates 24 backlog issues over the human bearer so the
+palette list overflows, and the browser leg, then drops it and proves the
+default `curved` rows are unchanged through per-table digests. The browser leg
+creates an issue through the palette and the new issue dialog, lands on its
+detail route, and checks the palette: a key query shows the issue key on the
+matched row, and ArrowDown through the overflowing list scrolls the selected row
+fully into the listbox.
 `--skip-browser` skips the seed and browser legs; `--keep` keeps the throwaway
 database. `LAS-151`, `LAS-153`, and `LAS-154` are Done after black-box
 verification: the webhook over HTTP and the CLI branch helper, issue detail and
@@ -425,11 +472,11 @@ carries the same rules as a project-agnostic template.
 | `MEMORY.md` | Verified state, decisions, session log. Update it every session. |
 | `Dockerfile` | Multi-stage `node:26-slim` production image: build (`npm ci`, `build:web`, prune dev), then a runtime stage as `USER node`. |
 | `.dockerignore` | Build-context exclusions for the image build. |
-| `deploy/` | Production compose stack (`docker-compose.yml`), the Caddy TLS config, and the environment template; app and Caddy are compose-network only, Postgres binds loopback. |
-| `deploy/provisioning.md` | OCI console runbook: topology, security list, reserved IPv4, DNS-only record, bootstrap and verifier commands, Docker data root and mount gate, reboot persistence, LAS-183 and LAS-184 acceptance evidence, capacity fallback, access boundary, storage, troubleshooting. |
+| `deploy/` | Production compose stack (`docker-compose.yml`), the Caddy TLS config, the environment template, and `release.sh` (build, migrate, recreate app then caddy, authenticated probe, latest tag, atomic state, rollback); app and Caddy are compose-network only, Postgres binds loopback. |
+| `deploy/provisioning.md` | OCI console runbook: topology, security list, reserved IPv4, DNS-only record, bootstrap and verifier commands, Docker data root and mount gate, reboot persistence, LAS-183 and LAS-184 acceptance evidence, capacity fallback, access boundary, storage, releases and rollback, troubleshooting. |
 | `deploy/bootstrap-host.sh` | Idempotent Ubuntu 24.04 host bootstrap: Docker install, Docker data root on the data volume with the mount dependency, log rotation and prune timer, key-only `deploy` user and sshd drop-in, ext4 data volume and UUID fstab entry, checkout, mode-600 env, compose up. |
 | `deploy/verify-host.sh` | Read-only host verifier: OS, deploy account, sshd policy, ext4 mount, 150 GB storage, Docker data root, daemon config, mount dependency and prune timer, env, checkout, listener allowlist, stack health, authenticated HTTPS API. |
-| `.github/workflows/verify.yml` | CI verification gate: push to main plus manual dispatch, Postgres 18 service, typecheck, architecture check, tests, web build. |
+| `.github/workflows/verify.yml` | CI gate: push to main plus manual dispatch, Postgres 18 service, typecheck, architecture check, tests, web build; the main-only `deploy` job (`needs: verify`) SSHes with the `DEPLOY_*` secrets and runs `deploy/release.sh`. |
 | `src/domain/` | Pure rules and types: status and transition contract, actor matrix, claim and move policy, validation, key parsing, domain errors, shared record types. |
 | `src/application/` | Ports (`ports.ts`) and the full SQL-free use-case set: `projects.ts`, `issues.ts` with `issue-read-model.ts`, `agents.ts`, `queue.ts`, `blocking.ts`, `comments.ts`, `labels.ts`, `relations.ts`, and `github.ts`. |
 | `src/adapters/` | Adapters. Inbound: `http/` (router, auth, error mapping, request/response transport, webhook), `mcp/`, `cli/`, `github/` (signature and payload), `sse/`, `static/`. Outbound: `postgres/` (`pool.ts`, `migrate.ts`, `event-hub.ts`, `ports.ts` binding the pool and transactions, plus `repositories/`: projects, issues, issue events, issue meta, agents, labels, relations), `token-codec.ts`, `timing-safe.ts`. |
@@ -449,6 +496,7 @@ carries the same rules as a project-agnostic template.
 | `scripts/container-smoke.sh` | Container contract gate: starts the local DB, builds `curved:container-smoke`, and asserts the SPA shell, `401`/`200` on `/api/projects`, `already up to date` from the in-image migrate, a non-root uid, and the absent paths. `--platform`, `--build-only`, `--keep`. |
 | `scripts/compose-smoke.sh` | Production compose gate: throwaway project and env, HTTPS through Caddy's internal CA, SPA/API/ready/detail/SSE/webhook/binding assertions. |
 | `scripts/provision-smoke.sh` | Provisioning gate: runs the bootstrap and verifier in a disposable Ubuntu 24.04 container with PATH stubs; fresh and idempotent bootstrap, Docker data-root migration, daemon config, mount dependency, prune timer, container recreation, verifier positive, wrong-root and disabled-timer negatives, public-5432 and password-auth negatives. |
+| `scripts/release-smoke.sh` | Release gate (`npm run smoke:release`): asserts `deploy/release.sh` release order, the first-release probe rule, the probe skip and require flags, the migration-failure exit before any recreate or tag, and rollback. |
 | `.codegraph/` | Local index, gitignored. Refresh with `codegraph sync`. |
 
 ## Working rules
