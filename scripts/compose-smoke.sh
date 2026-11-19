@@ -30,7 +30,8 @@ Usage: bash scripts/compose-smoke.sh [--keep]
 Builds the app image from the repository root, boots deploy/docker-compose.yml
 as a throwaway compose project with a random UI token, random Postgres and
 webhook secrets, and free host ports, then verifies the stack through Caddy
-over TLS: the SPA shell, the token boundary, the Secure session cookie, the
+over TLS: the HTTP to HTTPS redirect, the SPA shell, compression of the JS
+bundle, the HSTS toggle, the token boundary, the Secure session cookie, the
 issue lifecycle, SSE frames, the GitHub webhook route, and the published
 ports.
 
@@ -135,6 +136,7 @@ CURVED_UI_TOKEN=$UI_TOKEN
 GITHUB_WEBHOOK_SECRET=$WEBHOOK_SECRET
 CURVED_DOMAIN=$DOMAIN
 ACME_EMAIL=
+CURVED_HSTS_MAX_AGE=
 COOKIE_SECURE=1
 CURVED_DB_PORT=$DB_PORT
 CURVED_HTTP_PORT=$HTTP_PORT
@@ -193,6 +195,54 @@ if ! printf '%s' "$body" | grep -q 'id="root"'; then
   fail "GET / body is missing the SPA root element (id=\"root\")"
 fi
 printf 'compose-smoke: PASS SPA shell served through Caddy at %s/\n' "$base_url"
+
+redirect="$(curl -s --max-time 30 -o /dev/null -w '%{http_code} %{redirect_url}' \
+  -H 'Host: localhost' "http://127.0.0.1:$HTTP_PORT/" || true)"
+redirect_code="${redirect%% *}"
+redirect_url="${redirect#* }"
+case "$redirect_code" in
+  3??) ;;
+  *) fail "GET http://127.0.0.1:$HTTP_PORT/ returned ${redirect_code:-nothing} (expected a 3xx redirect)" ;;
+esac
+case "$redirect_url" in
+  https://*) ;;
+  *) fail "HTTP redirect points at '${redirect_url}' (expected an https:// URL)" ;;
+esac
+printf 'compose-smoke: PASS HTTP redirects to HTTPS with %s\n' "$redirect_code"
+
+hsts_headers="$TMP_DIR/hsts.headers"
+tls_curl -D "$hsts_headers" -o /dev/null "$base_url/" || true
+if tr -d '\r' < "$hsts_headers" | grep -qi '^strict-transport-security:'; then
+  fail "GET / sent Strict-Transport-Security while CURVED_HSTS_MAX_AGE is empty"
+fi
+printf 'compose-smoke: PASS no Strict-Transport-Security header while CURVED_HSTS_MAX_AGE is empty\n'
+
+# The shell is small enough that Caddy may not compress it; the JS bundle it
+# references is what proves the encoder is active.
+tls_curl -D "$TMP_DIR/shell.headers" -o "$TMP_DIR/shell.html" \
+  -H 'Accept-Encoding: gzip' "$base_url/" || true
+shell_encoding="$(tr -d '\r' < "$TMP_DIR/shell.headers" | grep -i '^content-encoding:' \
+  | sed 's/^[^:]*:[[:space:]]*//' | head -n 1 || true)"
+case "$shell_encoding" in
+  ""|identity) shell_body="$(cat "$TMP_DIR/shell.html")" ;;
+  gzip) shell_body="$(gzip -dc "$TMP_DIR/shell.html" 2>/dev/null || true)" ;;
+  *) fail "GET / used unsupported content-encoding '${shell_encoding}'" ;;
+esac
+asset_path="$(printf '%s' "$shell_body" | grep -o '/assets/[^"]*\.js' | head -n 1 || true)"
+[ -n "$asset_path" ] \
+  || fail "GET / did not reference an /assets/...js bundle to test compression"
+
+asset_headers="$TMP_DIR/asset.headers"
+status="$(tls_curl -D "$asset_headers" -o /dev/null -w '%{http_code}' \
+  -H 'Accept-Encoding: gzip' "$base_url$asset_path" || true)"
+[ "$status" = "200" ] || fail "GET $asset_path returned ${status:-nothing} (expected 200)"
+asset_encoding="$(tr -d '\r' < "$asset_headers" | grep -i '^content-encoding:' \
+  | sed 's/^[^:]*:[[:space:]]*//' | head -n 1 || true)"
+case "$asset_encoding" in
+  gzip|zstd) ;;
+  *) fail "GET $asset_path content-encoding is '${asset_encoding:-none}' (expected gzip or zstd)" ;;
+esac
+printf 'compose-smoke: PASS Caddy compresses %s with %s\n' "$asset_path" "$asset_encoding"
 
 status="$(tls_status "$base_url/api/projects" || true)"
 [ "$status" = "401" ] || fail "unauthenticated GET /api/projects returned ${status:-nothing} (expected 401)"
@@ -301,7 +351,7 @@ status="$(tls_curl -o "$TMP_DIR/comment.json" -w '%{http_code}' -X POST \
 [ "$status" = "201" ] || fail "POST /api/issues/SMK-1/comments returned ${status:-nothing} (expected 201)"
 
 sse_changed=0
-for _ in $(seq 1 20); do
+for _ in $(seq 1 5); do
   if grep -q '^event: issues_changed' "$SSE_FILE" 2>/dev/null \
     && grep -Fxq "data: $project_id" "$SSE_FILE" 2>/dev/null; then
     sse_changed=1
@@ -312,7 +362,7 @@ done
 if [ "$sse_changed" -ne 1 ]; then
   printf 'compose-smoke: SSE stream tail follows\n' >&2
   tail -n 40 "$SSE_FILE" >&2 || true
-  fail "SSE stream did not report issues_changed for project $project_id"
+  fail "SSE stream did not report issues_changed for project $project_id within 5s"
 fi
 
 if ! python3 - "$SSE_FILE" "$project_id" <<'PY'
@@ -367,6 +417,27 @@ case "$app_binding" in
   *) fail "app publishes host port '${app_binding}' (expected compose-network only)" ;;
 esac
 printf 'compose-smoke: PASS app is not published on the host\n'
+
+if ! sed -i 's/^CURVED_HSTS_MAX_AGE=.*/CURVED_HSTS_MAX_AGE=31536000/' "$ENV_FILE"; then
+  fail "could not enable CURVED_HSTS_MAX_AGE in the smoke env file"
+fi
+if ! "${COMPOSE[@]}" up -d --no-deps --force-recreate caddy; then
+  fail "could not recreate caddy with CURVED_HSTS_MAX_AGE=31536000"
+fi
+hsts_ready=0
+for _ in $(seq 1 20); do
+  tls_curl -D "$hsts_headers" -o /dev/null "$base_url/" 2>/dev/null || true
+  if tr -d '\r' < "$hsts_headers" \
+    | grep -Fxi 'strict-transport-security: max-age=31536000' >/dev/null; then
+    hsts_ready=1
+    break
+  fi
+  sleep 1
+done
+if [ "$hsts_ready" -ne 1 ]; then
+  fail "GET / did not send 'Strict-Transport-Security: max-age=31536000' within 20s of enabling CURVED_HSTS_MAX_AGE"
+fi
+printf 'compose-smoke: PASS HSTS max-age=31536000 served after enabling CURVED_HSTS_MAX_AGE\n'
 
 printf 'compose-smoke: all checks passed\n'
 if [ "$keep" -eq 1 ]; then

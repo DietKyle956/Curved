@@ -3,10 +3,18 @@
 # throwaway PATH, so no Docker daemon, database, image build, or network is
 # touched. Covers deploy ordering, migration failure isolation, first-release
 # probe skip, probe failure on a later release, a later passing release, the
-# explicit probe skip, rollback, token secrecy, and the no-teardown rule.
+# explicit probe skip, rollback, token secrecy, and the no-teardown rule. It
+# also covers the public TLS probe: a matching HSTS header passes, while a
+# missing or mismatched Strict-Transport-Security header fails without moving
+# curved:latest or writing state. The internal (local CA) probe still passes
+# when the endpoint sends no HSTS header.
 #
 # Stub knobs, set in the environment of a scenario:
 #   SMOKE_CURL_FAIL=1             curl exits 7 on every probe (connection failure)
+#   SMOKE_CURL_STATUS=N           curl answers HTTP N and writes a synthetic
+#                                 header block for -D (default 200)
+#   SMOKE_CURL_HSTS=VALUE         value of the Strict-Transport-Security
+#                                 response header; absent when unset
 #   SMOKE_DOCKER_FAIL=SUBSTRING   docker exits 1 when its joined args contain SUBSTRING
 #   SMOKE_DOCKER_MISSING_IMAGE=TAG
 #                                 docker image inspect TAG fails
@@ -94,17 +102,53 @@ STUB
 cat > "$STUB_DIR/curl" <<'STUB'
 #!/usr/bin/env bash
 # Fake curl: logs the request (so the assertion can read the probe URL and
-# header) and returns 200 unless SMOKE_CURL_FAIL asks for a connection failure.
+# header), honors -D by writing a realistic response header block, and returns
+# SMOKE_CURL_STATUS (default 200) unless SMOKE_CURL_FAIL asks for a connection
+# failure. SMOKE_CURL_HSTS, when non-empty, becomes the value of the
+# Strict-Transport-Security response header; otherwise that header is absent.
 set -uo pipefail
 line="$*"
 printf 'curl %s\n' "$line" >> "$STUB_LOG/curl.log"
 printf 'curl %s\n' "$line" >> "$STUB_LOG/order.log"
 
+header_file=""
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    -D)
+      header_file="${2:-}"
+      shift
+      [ "$#" -gt 0 ] && shift
+      ;;
+    -D*)
+      header_file="${1#-D}"
+      shift
+      ;;
+    *)
+      shift
+      ;;
+  esac
+done
+
 if [ -n "${SMOKE_CURL_FAIL:-}" ]; then
   printf 'curl: (7) simulated connection failure\n' >&2
   exit 7
 fi
-printf '200'
+
+status="${SMOKE_CURL_STATUS:-200}"
+if [ -n "$header_file" ]; then
+  {
+    printf 'HTTP/2 %s\n' "$status"
+    printf 'content-type: application/json\n'
+    printf 'server: caddy\n'
+    printf 'date: Wed, 19 Nov 2026 00:00:00 GMT\n'
+    if [ -n "${SMOKE_CURL_HSTS:-}" ]; then
+      printf 'strict-transport-security: %s\n' "$SMOKE_CURL_HSTS"
+    fi
+    printf '\n'
+  } > "$header_file"
+fi
+
+printf '%s' "$status"
 exit 0
 STUB
 
@@ -320,6 +364,85 @@ D="$LOGDIR/docker.log"
 require_line "latest tag" "tag curved:$SHORT curved:latest" "$D"
 [ ! -s "$LOGDIR/curl.log" ] || fail "--skip-public-probe still probed"
 pass "--skip-public-probe lets a later release pass with a failing endpoint"
+
+# --- Public TLS: the probe requires a matching HSTS header -----------------
+PUBLIC_ENV="$TMP_DIR/public.env"
+cat > "$PUBLIC_ENV" <<EOF
+POSTGRES_USER=smoke
+POSTGRES_PASSWORD=smoke
+POSTGRES_DB=smoke
+CURVED_UI_TOKEN=$TOKEN
+GITHUB_WEBHOOK_SECRET=smoke-webhook-secret
+CURVED_DOMAIN=public.test
+ACME_EMAIL=ops@public.test
+CURVED_HSTS_MAX_AGE=31536000
+COOKIE_SECURE=1
+EOF
+chmod 600 "$PUBLIC_ENV"
+
+PUBLIC_COMMON=(--env-file "$PUBLIC_ENV" --compose-file "$COMPOSE_FILE")
+
+new_logdir public-ok
+STATE="$TMP_DIR/state/public-ok"
+seed_state "$STATE"
+unset SMOKE_CURL_FAIL SMOKE_DOCKER_FAIL SMOKE_DOCKER_MISSING_IMAGE || true
+export SMOKE_CURL_HSTS="max-age=31536000"
+
+run_release public-ok "${PUBLIC_COMMON[@]}" --state-file "$STATE"
+unset SMOKE_CURL_HSTS
+[ "$RC" -eq 0 ] || fail "a public release with a matching HSTS header exited $RC: $(cat "$OUT")"
+D="$LOGDIR/docker.log"
+C="$LOGDIR/curl.log"
+require_line "public latest tag" "tag curved:$SHORT curved:latest" "$D"
+require_line "public probe path" "https://public.test/api/projects" "$C"
+assert_no_line "public probe keeps certificate verification on" " -k" "$C"
+grep -q '^tag=curved:'"$SHORT"'$' "$STATE" || fail "the public release did not write state"
+grep -q '^sha='"$SHORT"'$' "$STATE" || fail "the public release did not record the sha"
+pass "a public release passes the probe with a matching HSTS max-age"
+
+new_logdir public-nohsts
+STATE="$TMP_DIR/state/public-nohsts"
+seed_state "$STATE"
+cp "$STATE" "$TMP_DIR/state/public-nohsts.before"
+unset SMOKE_CURL_HSTS SMOKE_CURL_FAIL SMOKE_DOCKER_FAIL SMOKE_DOCKER_MISSING_IMAGE || true
+
+run_release public-nohsts "${PUBLIC_COMMON[@]}" --state-file "$STATE"
+[ "$RC" -ne 0 ] || fail "a public release without an HSTS header exited zero"
+out_contains "missing HSTS" "no Strict-Transport-Security header"
+cmp -s "$TMP_DIR/state/public-nohsts.before" "$STATE" || fail "a release without HSTS changed the state file"
+assert_no_line "no latest tag without HSTS" "tag curved:$SHORT curved:latest" "$LOGDIR/docker.log"
+pass "a public release without HSTS is fatal and leaves latest and state untouched"
+
+new_logdir public-hsts-mismatch
+STATE="$TMP_DIR/state/public-hsts-mismatch"
+seed_state "$STATE"
+cp "$STATE" "$TMP_DIR/state/public-hsts-mismatch.before"
+unset SMOKE_CURL_FAIL SMOKE_DOCKER_FAIL SMOKE_DOCKER_MISSING_IMAGE || true
+export SMOKE_CURL_HSTS="max-age=600"
+
+run_release public-hsts-mismatch "${PUBLIC_COMMON[@]}" --state-file "$STATE"
+unset SMOKE_CURL_HSTS
+[ "$RC" -ne 0 ] || fail "a public release with a mismatched HSTS max-age exited zero"
+out_contains "HSTS max-age mismatch" \
+  "Strict-Transport-Security max-age is '600' but CURVED_HSTS_MAX_AGE is '31536000'"
+cmp -s "$TMP_DIR/state/public-hsts-mismatch.before" "$STATE" \
+  || fail "a release with a mismatched HSTS max-age changed the state file"
+assert_no_line "no latest tag on HSTS mismatch" "tag curved:$SHORT curved:latest" "$LOGDIR/docker.log"
+pass "a public release with a mismatched HSTS max-age is fatal and leaves latest and state untouched"
+
+new_logdir internal-nohsts
+STATE="$TMP_DIR/state/internal-nohsts"
+seed_state "$STATE"
+unset SMOKE_CURL_HSTS SMOKE_CURL_FAIL SMOKE_DOCKER_FAIL SMOKE_DOCKER_MISSING_IMAGE || true
+
+run_release internal-nohsts "${COMMON[@]}" --state-file "$STATE"
+[ "$RC" -eq 0 ] || fail "an internal release without an HSTS header exited $RC: $(cat "$OUT")"
+D="$LOGDIR/docker.log"
+C="$LOGDIR/curl.log"
+require_line "internal latest tag" "tag curved:$SHORT curved:latest" "$D"
+require_line "internal CA" "--cacert" "$C"
+grep -q '^tag=curved:'"$SHORT"'$' "$STATE" || fail "the internal release did not write state"
+pass "an internal release passes the probe without an HSTS header"
 
 # --- Rollback --------------------------------------------------------------
 new_logdir rollback

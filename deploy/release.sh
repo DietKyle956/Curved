@@ -22,6 +22,10 @@
 #   CURVED_RELEASE_STATE    Release state file (default /srv/curved/release-state).
 #   RELEASE_PROBE_ATTEMPTS  Public probe attempts (default 30).
 #   RELEASE_PROBE_INTERVAL  Seconds between attempts (default 2).
+#   ACME_EMAIL              Non-empty selects public ACME TLS; the probe then
+#                           also requires a Strict-Transport-Security header.
+#   CURVED_HSTS_MAX_AGE     When set, the public probe requires that header's
+#                           max-age to equal this value.
 #
 # The environment file supplies Compose interpolation and the container
 # environment. Secret values are never printed.
@@ -71,6 +75,10 @@ migrations, app recreation and health, Caddy reload, public probe, then the
 curved:latest tag and the state file. A failed migration stops immediately and
 leaves the previous app serving. Rollback never runs migrations and warns that
 a non-backward-compatible migration needs a database restore instead.
+
+With a public certificate (ACME_EMAIL set) a passing probe must also see a
+Strict-Transport-Security header, and CURVED_HSTS_MAX_AGE, when set, must match
+that header's max-age value. With the internal CA no HSTS header is required.
 
 Requires docker compose v2 and git. Run it from anywhere inside the checkout.
 EOF
@@ -233,15 +241,20 @@ write_state() {
 # curl can verify the localhost-style certificate without touching the host
 # trust store. The path lands in PROBE_CA_FILE and is empty under ACME.
 PROBE_CA_FILE=""
+
+ensure_tmp_dir() {
+  if [ -z "$TMP_DIR" ]; then
+    TMP_DIR=$(mktemp -d "${TMPDIR:-/tmp}/curved-release.XXXXXX") \
+      || fail "cannot create a temporary directory"
+  fi
+}
+
 prepare_probe_ca() {
   PROBE_CA_FILE=""
   if [ -n "${ACME_EMAIL:-}" ]; then
     return 0
   fi
-  if [ -z "$TMP_DIR" ]; then
-    TMP_DIR=$(mktemp -d "${TMPDIR:-/tmp}/curved-release.XXXXXX") \
-      || fail "cannot create a temporary directory"
-  fi
+  ensure_tmp_dir
   local ca="$TMP_DIR/caddy-root.crt"
   if ! "${COMPOSE[@]}" exec -T caddy \
     cat /data/caddy/pki/authorities/local/root.crt > "$ca" 2>/dev/null; then
@@ -253,21 +266,53 @@ prepare_probe_ca() {
   PROBE_CA_FILE=$ca
 }
 
+# A public certificate only protects anything once browsers are pinned to
+# HTTPS, so a 200 from an ACME deployment must also carry HSTS. When
+# CURVED_HSTS_MAX_AGE is set the edge must send exactly that max-age. An
+# internal CA is a localhost-style deployment, so no HSTS header is required.
+check_probe_hsts() {
+  local headers=$1
+  local hsts
+  local age
+
+  hsts=$(grep -i '^strict-transport-security:' "$headers" 2>/dev/null | tail -n 1 | tr -d '\r' || true)
+  if [ -z "$hsts" ]; then
+    fail "public probe failed: https://${DOMAIN}/api/projects returned 200 but no Strict-Transport-Security header, which public TLS (ACME_EMAIL is set) requires; curved:latest and the release state were left untouched"
+  fi
+  if [[ "${hsts,,}" =~ max-age=([^;[:space:]]*) ]]; then
+    age=${BASH_REMATCH[1]}
+  else
+    fail "public probe failed: the Strict-Transport-Security header has no max-age directive, which public TLS requires; curved:latest and the release state were left untouched"
+  fi
+  if [ -n "${CURVED_HSTS_MAX_AGE:-}" ] && [ "$age" != "$CURVED_HSTS_MAX_AGE" ]; then
+    fail "public probe failed: Strict-Transport-Security max-age is '$age' but CURVED_HSTS_MAX_AGE is '$CURVED_HSTS_MAX_AGE'; curved:latest and the release state were left untouched"
+  fi
+}
+
 probe_public_endpoint() {
   local attempt=1
   local status
-  local args=(-sS -o /dev/null -w '%{http_code}' --max-time 10)
+  local rc=0
+  local headers
 
   prepare_probe_ca
+  ensure_tmp_dir
+  headers="$TMP_DIR/probe.headers"
+
+  local args=(-sS -o /dev/null -D "$headers" -w '%{http_code}' --max-time 10)
   if [ -n "$PROBE_CA_FILE" ]; then
     args+=(--cacert "$PROBE_CA_FILE")
   fi
 
   while :; do
+    rc=0
     status=$(curl "${args[@]}" \
       -H "Authorization: Bearer ${CURVED_UI_TOKEN}" \
-      "https://${DOMAIN}/api/projects" 2>/dev/null || true)
-    if [ "$status" = "200" ]; then
+      "https://${DOMAIN}/api/projects" 2>/dev/null) || rc=$?
+    if [ "$rc" -eq 0 ] && [ "$status" = "200" ]; then
+      if [ -n "${ACME_EMAIL:-}" ]; then
+        check_probe_hsts "$headers"
+      fi
       return 0
     fi
     if [ "$attempt" -ge "$PROBE_ATTEMPTS" ]; then

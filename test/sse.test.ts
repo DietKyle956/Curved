@@ -4,6 +4,7 @@ import { createHash } from "node:crypto";
 import { resolve } from "node:path";
 import { after, afterEach, before, beforeEach, test } from "node:test";
 import { createApp, type App } from "../src/adapters/http/app.ts";
+import { createNodeServer } from "../src/adapters/http/transport.ts";
 import { createEventHub } from "../src/adapters/postgres/event-hub.ts";
 import type { EventHub } from "../src/application/ports.ts";
 import { commentOnIssue } from "../src/application/comments.ts";
@@ -333,4 +334,58 @@ test("cancelling a stream releases its subscription while the hub keeps one LIST
 
   await second.cancel();
   assert.deepEqual(hub.stats(), { subscribers: 0, clients: 1 });
+});
+
+test("a client disconnect through the Node transport cancels the subscription", async () => {
+  const server = createNodeServer(app);
+  const listening = Promise.withResolvers<void>();
+  server.listen(0, "127.0.0.1", () => {
+    listening.resolve();
+  });
+  let reader: EventStreamReader | undefined;
+  try {
+    await withTimeout(
+      listening.promise,
+      FRAME_TIMEOUT_MS,
+      "the test server did not start",
+    );
+    const address = server.address();
+    assert.ok(
+      address !== null && typeof address === "object",
+      "the test server has no bound port",
+    );
+    const controller = new AbortController();
+    const response = await fetch(
+      new URL("/api/events", `http://127.0.0.1:${address.port}`),
+      { headers: { cookie: COOKIE_HEADER }, signal: controller.signal },
+    );
+    assert.equal(response.status, 200);
+    const body = response.body;
+    assert.ok(body, "event stream response has no body");
+    reader = new EventStreamReader(body);
+    assert.equal((await reader.nextFrame()).event, "ready");
+    assert.deepEqual(hub.stats(), { subscribers: 1, clients: 1 });
+
+    controller.abort();
+
+    // The disconnect travels over a real socket, so there is no promise to
+    // await; poll the hub until it notices within the frame timeout.
+    const deadline = Date.now() + FRAME_TIMEOUT_MS;
+    while (hub.stats().subscribers > 0 && Date.now() < deadline) {
+      const sleeping = Promise.withResolvers<void>();
+      setTimeout(() => {
+        sleeping.resolve();
+      }, 10);
+      await sleeping.promise;
+    }
+    assert.deepEqual(hub.stats(), { subscribers: 0, clients: 1 });
+  } finally {
+    await reader?.cancel();
+    server.closeAllConnections();
+    const closed = Promise.withResolvers<void>();
+    server.close(() => {
+      closed.resolve();
+    });
+    await closed.promise;
+  }
 });

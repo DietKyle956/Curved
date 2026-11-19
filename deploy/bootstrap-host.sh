@@ -2,12 +2,16 @@
 # Idempotent host bootstrap for the curved production stack on Ubuntu 24.04.
 # Run as root from the repository root:
 #   sudo bash deploy/bootstrap-host.sh --key ~/.ssh/id_ed25519.pub
+# For public HTTPS, pass the Let's Encrypt account email and a public hostname:
+#   sudo bash deploy/bootstrap-host.sh --key ~/.ssh/id_ed25519.pub \
+#     --acme-email ops@example.com --domain curved.example.com
 set -euo pipefail
 
 MOUNT_DIR=/srv/curved
 CHECKOUT_DIR=
 REPO_URL=https://github.com/DietKyle956/Curved.git
 DOMAIN=localhost
+ACME_EMAIL=
 DATA_DEVICE=
 WANT_STACK=1
 KEY_FILES=()
@@ -31,6 +35,9 @@ Options:
   --repo-url URL      Repository to clone
                       (default: https://github.com/DietKyle956/Curved.git)
   --domain NAME       Hostname Caddy serves (default: localhost)
+  --acme-email EMAIL  Let's Encrypt account email; when set, Caddy obtains a
+                      public certificate and --domain must be a public
+                      hostname (default: empty, Caddy internal CA)
   --no-stack          Skip starting the production compose stack
   -h, --help          Show this help
 
@@ -133,6 +140,13 @@ while [ "$#" -gt 0 ]; do
       DOMAIN=$2
       shift 2
       ;;
+    --acme-email)
+      if [ "$#" -lt 2 ] || [ -z "$2" ]; then
+        usage_error "--acme-email requires an email argument"
+      fi
+      ACME_EMAIL=$2
+      shift 2
+      ;;
     --no-stack)
       WANT_STACK=0
       shift
@@ -178,6 +192,21 @@ DOCKER_DATA_DIR=$MOUNT_DIR/docker
 case "$DOMAIN" in
   *[[:space:]]*) usage_error "--domain must not contain whitespace" ;;
 esac
+# Public ACME issuance needs a real, fully qualified hostname. --domain alone
+# may stay localhost, which uses Caddy's internal CA instead.
+if [ -n "$ACME_EMAIL" ]; then
+  case "$DOMAIN" in
+    [Ll][Oo][Cc][Aa][Ll][Hh][Oo][Ss][Tt])
+      usage_error "--acme-email requires --domain to be a public hostname, not localhost" ;;
+    *://*)
+      usage_error "--acme-email requires --domain to be a bare hostname without a scheme" ;;
+    */*)
+      usage_error "--acme-email requires --domain to be a bare hostname without a path" ;;
+    *.*) ;;
+    *)
+      usage_error "--acme-email requires --domain to be a fully qualified hostname (with a dot)" ;;
+  esac
+fi
 
 if [ "$(id -u)" -ne 0 ]; then
   die "must run as root (sudo bash deploy/bootstrap-host.sh)"
@@ -661,7 +690,12 @@ if [ ! -e "$env_file" ]; then
     printf 'CURVED_UI_TOKEN=%s\n' "$ui_token"
     printf 'GITHUB_WEBHOOK_SECRET=%s\n' "$webhook_secret"
     printf 'CURVED_DOMAIN=%s\n' "$DOMAIN"
-    printf 'ACME_EMAIL=\n'
+    printf 'ACME_EMAIL=%s\n' "$ACME_EMAIL"
+    if [ -n "$ACME_EMAIL" ]; then
+      printf 'CURVED_HSTS_MAX_AGE=31536000\n'
+    else
+      printf 'CURVED_HSTS_MAX_AGE=\n'
+    fi
     printf 'COOKIE_SECURE=1\n'
   } > "$env_tmp"
   chown deploy:deploy "$env_tmp"

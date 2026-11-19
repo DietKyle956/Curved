@@ -11,6 +11,8 @@ DOMAIN_GIVEN=0
 SKIP_STACK=0
 ENV_FILE=""
 UI_TOKEN=""
+ACME_EMAIL=""
+PUBLIC_TLS=0
 FAILED=0
 
 usage() {
@@ -26,8 +28,9 @@ Options:
   --mount-dir DIR     Data volume mount point (default /srv/curved).
   --domain NAME       Hostname probed over HTTPS. Defaults to CURVED_DOMAIN
                       from <checkout>/deploy/.env, then localhost.
-  --skip-stack        Skip the Docker Compose and HTTPS API checks. Every
-                      host check, including the Docker data-root checks, runs.
+  --skip-stack        Skip the Docker Compose, edge TLS, and HTTPS API checks.
+                      Every host check, including the Docker data-root checks,
+                      runs.
   -h, --help          Show this message and exit.
 
 Checks, in order: os, deploy-user, deploy-ssh-dir, deploy-authorized-keys,
@@ -35,8 +38,13 @@ sshd-config, data-mount, storage, docker-root (daemon data root is on the data
 volume), docker-config (daemon.json data root, log rotation, build-cache GC),
 docker-mount-dependency (drop-in and docker.service mount ordering),
 docker-prune-timer (curved-docker-prune units enabled and active), env-file,
-checkout, tcp-listeners, udp-listeners, then stack and https-api unless
+checkout, tcp-listeners, udp-listeners, then stack, tls-certificate,
+http-redirect, hsts, compression, caddy-issuance, and https-api unless
 --skip-stack is given.
+
+Public TLS is assumed only when ACME_EMAIL is non-empty in the environment
+file and the domain is not localhost; otherwise Caddy's internal CA is
+expected and certificate checks run with -k.
 
 Requires root: sshd -T needs it, and deploy/.env is mode 600. Secret values
 from the environment file are never printed.
@@ -87,6 +95,26 @@ read_env() {
     return 0
   done < "$ENV_FILE"
   return 1
+}
+
+# Certificate checks run without -k only for public ACME certificates, where
+# the chain must verify against the system trust store.
+curl_tls() {
+  if [ "$PUBLIC_TLS" -eq 1 ]; then
+    curl -sS "$@"
+  else
+    curl -ksS "$@"
+  fi
+}
+
+encoding_of() {
+  local value=""
+  value=$(printf '%s\n' "$1" | grep -i '^content-encoding:' | head -n 1 \
+    | tr '[:upper:]' '[:lower:]' || true)
+  case "$value" in
+    *gzip*) printf 'gzip' ;;
+    *zstd*) printf 'zstd' ;;
+  esac
 }
 
 while [ "$#" -gt 0 ]; do
@@ -153,6 +181,10 @@ if [ "$DOMAIN_GIVEN" -eq 0 ]; then
   fi
 fi
 UI_TOKEN=$(read_env CURVED_UI_TOKEN || true)
+ACME_EMAIL=$(read_env ACME_EMAIL || true)
+if [ -n "$ACME_EMAIL" ] && [ "$DOMAIN" != localhost ]; then
+  PUBLIC_TLS=1
+fi
 
 check_os() {
   local id=""
@@ -771,7 +803,7 @@ check_https_api() {
     fail_list https-api "curl is not installed"
     return
   fi
-  status=$(curl -ksS --max-time 10 --resolve "$DOMAIN:443:127.0.0.1" \
+  status=$(curl_tls --max-time 10 --resolve "$DOMAIN:443:127.0.0.1" \
     -o /dev/null -w '%{http_code}' \
     -H "Authorization: Bearer $token" -- "$url" 2>/dev/null)
   rc=$?
@@ -783,7 +815,7 @@ check_https_api() {
     fail_list https-api "authenticated request returned ${status:-no status}, expected 200"
     return
   fi
-  status=$(curl -ksS --max-time 10 --resolve "$DOMAIN:443:127.0.0.1" \
+  status=$(curl_tls --max-time 10 --resolve "$DOMAIN:443:127.0.0.1" \
     -o /dev/null -w '%{http_code}' -- "$url" 2>/dev/null)
   rc=$?
   if [ "$rc" -ne 0 ]; then
@@ -795,6 +827,229 @@ check_https_api() {
     return
   fi
   pass "https-api: $url returns 200 with the token and 401 without it"
+}
+
+check_tls_certificate() {
+  local token=$UI_TOKEN
+  local url="https://$DOMAIN/api/projects"
+  local out=""
+  local rc=0
+  local verify=""
+  local status=""
+  local issuer=""
+  local reasons=()
+  if [ -z "$token" ]; then
+    # Without a token the authenticated leg cannot run; env-file reports why.
+    return
+  fi
+  if ! command -v curl >/dev/null 2>&1; then
+    fail_list tls-certificate "curl is not installed"
+    return
+  fi
+  out=$(curl_tls --max-time 10 --resolve "$DOMAIN:443:127.0.0.1" \
+    -o /dev/null -w '%{ssl_verify_result} %{http_code}' \
+    -H "Authorization: Bearer $token" -- "$url" 2>/dev/null)
+  rc=$?
+  read -r verify status <<<"$out"
+  if [ "$rc" -ne 0 ]; then
+    reasons+=("HTTPS request failed (curl exit $rc)")
+  fi
+  if [ -z "${status:-}" ]; then
+    reasons+=("HTTPS request returned no status")
+  elif [ "$status" != 200 ]; then
+    reasons+=("HTTPS request returned $status, expected 200")
+  fi
+  if [ "$PUBLIC_TLS" -eq 1 ]; then
+    if [ "${verify:-}" != 0 ]; then
+      reasons+=("certificate did not verify (ssl_verify_result ${verify:-none}, expected 0)")
+    fi
+    if ! command -v openssl >/dev/null 2>&1; then
+      reasons+=("openssl is not installed")
+    else
+      # Same resolve as the curl probe: loopback address, SNI for the domain.
+      issuer=$(printf '' | openssl s_client -connect 127.0.0.1:443 \
+        -servername "$DOMAIN" 2>/dev/null | openssl x509 -noout -issuer 2>/dev/null)
+      case "$issuer" in
+        "") reasons+=("cannot read the leaf issuer over 127.0.0.1:443") ;;
+        *"Caddy Local Authority"*) reasons+=("leaf issuer is Caddy Local Authority, expected a public CA") ;;
+      esac
+    fi
+  fi
+  if [ "${#reasons[@]}" -gt 0 ]; then
+    fail_list tls-certificate "${reasons[@]}"
+  elif [ "$PUBLIC_TLS" -eq 1 ]; then
+    pass "tls-certificate: $url returns 200 with a publicly trusted certificate"
+  else
+    pass "tls-certificate: $url returns 200 over HTTPS with the internal CA"
+  fi
+}
+
+check_http_redirect() {
+  local url="http://$DOMAIN/"
+  local out=""
+  local rc=0
+  local status=""
+  local location=""
+  local reasons=()
+  if ! command -v curl >/dev/null 2>&1; then
+    fail_list http-redirect "curl is not installed"
+    return
+  fi
+  out=$(curl -sS --max-time 10 --resolve "$DOMAIN:80:127.0.0.1" \
+    -o /dev/null -w '%{http_code} %{redirect_url}' -- "$url" 2>/dev/null)
+  rc=$?
+  read -r status location <<<"$out"
+  if [ "$rc" -ne 0 ]; then
+    reasons+=("plain HTTP request failed (curl exit $rc)")
+  fi
+  case "${status:-}" in
+    301 | 302 | 307 | 308) ;;
+    *) reasons+=("plain HTTP returned ${status:-no status}, expected a 3xx redirect") ;;
+  esac
+  case "${location:-}" in
+    https://*) ;;
+    *) reasons+=("redirect target is ${location:-empty}, expected an https:// URL") ;;
+  esac
+  if [ "${#reasons[@]}" -gt 0 ]; then
+    fail_list http-redirect "${reasons[@]}"
+  else
+    pass "http-redirect: $url returns a 3xx redirect to $location"
+  fi
+}
+
+check_hsts() {
+  local url="https://$DOMAIN/"
+  local headers=""
+  local header=""
+  local age=""
+  local rc=0
+  local reasons=()
+  if ! command -v curl >/dev/null 2>&1; then
+    fail_list hsts "curl is not installed"
+    return
+  fi
+  headers=$(curl_tls --max-time 10 --resolve "$DOMAIN:443:127.0.0.1" \
+    -D - -o /dev/null -- "$url" 2>/dev/null)
+  rc=$?
+  if [ "$rc" -ne 0 ]; then
+    fail_list hsts "HTTPS request failed (curl exit $rc)"
+    return
+  fi
+  header=$(printf '%s\n' "$headers" | grep -i '^strict-transport-security:' | head -n 1 || true)
+  age=$(printf '%s\n' "$header" | grep -oiE 'max-age=[0-9]+' | head -n 1 | cut -d= -f2 || true)
+  if [ "$PUBLIC_TLS" -eq 1 ]; then
+    if [ -z "$header" ]; then
+      reasons+=("no Strict-Transport-Security header")
+    elif [ -z "$age" ]; then
+      reasons+=("Strict-Transport-Security has no max-age")
+    elif [ "$age" -lt 31536000 ]; then
+      reasons+=("Strict-Transport-Security max-age is $age, expected at least 31536000")
+    fi
+  elif [ -n "$header" ]; then
+    reasons+=("Strict-Transport-Security is present for a non-public deployment")
+  fi
+  if [ "${#reasons[@]}" -gt 0 ]; then
+    fail_list hsts "${reasons[@]}"
+  elif [ "$PUBLIC_TLS" -eq 1 ]; then
+    pass "hsts: $url sends Strict-Transport-Security max-age=$age"
+  else
+    pass "hsts: $url sends no Strict-Transport-Security header"
+  fi
+}
+
+check_compression() {
+  local url="https://$DOMAIN/"
+  local asset_url=""
+  local asset=""
+  local body=""
+  local headers=""
+  local encoding=""
+  local rc=0
+  if ! command -v curl >/dev/null 2>&1; then
+    fail_list compression "curl is not installed"
+    return
+  fi
+  headers=$(curl_tls --max-time 10 --resolve "$DOMAIN:443:127.0.0.1" \
+    -H 'Accept-Encoding: gzip' -D - -o /dev/null -- "$url" 2>/dev/null)
+  rc=$?
+  if [ "$rc" -ne 0 ]; then
+    fail_list compression "HTTPS request failed (curl exit $rc)"
+    return
+  fi
+  encoding=$(encoding_of "$headers")
+  if [ -n "$encoding" ]; then
+    pass "compression: $url returns content-encoding $encoding"
+    return
+  fi
+  # Caddy skips bodies under 512 bytes, so probe the first asset build output.
+  body=$(curl_tls --max-time 10 --resolve "$DOMAIN:443:127.0.0.1" \
+    -H 'Accept-Encoding: gzip' -- "$url" 2>/dev/null)
+  rc=$?
+  if [ "$rc" -ne 0 ]; then
+    fail_list compression "HTTPS request for the shell failed (curl exit $rc)"
+    return
+  fi
+  asset=$(printf '%s' "$body" | grep -oE 'src="/assets/[^"]+"' | head -n 1 || true)
+  asset=${asset#src=\"}
+  asset=${asset%\"}
+  if [ -z "$asset" ]; then
+    fail_list compression "no content-encoding on $url and no /assets/ script in the shell"
+    return
+  fi
+  asset_url="https://$DOMAIN$asset"
+  headers=$(curl_tls --max-time 10 --resolve "$DOMAIN:443:127.0.0.1" \
+    -H 'Accept-Encoding: gzip' -D - -o /dev/null -- "$asset_url" 2>/dev/null)
+  rc=$?
+  if [ "$rc" -ne 0 ]; then
+    fail_list compression "HTTPS request for $asset failed (curl exit $rc)"
+    return
+  fi
+  encoding=$(encoding_of "$headers")
+  if [ -z "$encoding" ]; then
+    fail_list compression "$asset_url returns no gzip or zstd content-encoding"
+    return
+  fi
+  pass "compression: $asset_url returns content-encoding $encoding"
+}
+
+check_caddy_issuance() {
+  local compose_file="$CHECKOUT_DIR/deploy/docker-compose.yml"
+  local out=""
+  local first=""
+  local reasons=()
+  if ! command -v docker >/dev/null 2>&1; then
+    fail_list caddy-issuance "docker is not installed"
+    return
+  fi
+  if [ ! -f "$compose_file" ]; then
+    fail_list caddy-issuance "missing $compose_file"
+    return
+  fi
+  if ! out=$(docker compose -f "$compose_file" logs --tail=2000 caddy 2>&1); then
+    first=${out%%$'\n'*}
+    if [ -n "$first" ]; then
+      fail_list caddy-issuance "docker compose logs failed: $first"
+    else
+      fail_list caddy-issuance "docker compose logs failed"
+    fi
+    return
+  fi
+  if ! grep -Fq 'certificate obtained successfully' <<<"$out"; then
+    reasons+=("log has no 'certificate obtained successfully'")
+  fi
+  if ! grep -Fq -- "$DOMAIN" <<<"$out"; then
+    reasons+=("log does not mention $DOMAIN")
+  fi
+  if [ "$PUBLIC_TLS" -eq 1 ] && ! grep -Eqi 'letsencrypt|acme' <<<"$out"; then
+    reasons+=("log has no Let's Encrypt or ACME issuer marker")
+  fi
+  if [ "${#reasons[@]}" -gt 0 ]; then
+    fail_list caddy-issuance "${reasons[@]}"
+  elif [ "$PUBLIC_TLS" -eq 1 ]; then
+    pass "caddy-issuance: caddy logged an ACME certificate obtained for $DOMAIN"
+  else
+    pass "caddy-issuance: caddy logged a certificate obtained for $DOMAIN"
+  fi
 }
 
 check_os
@@ -814,6 +1069,11 @@ check_tcp_listeners
 check_udp_listeners
 if [ "$SKIP_STACK" -eq 0 ]; then
   check_stack
+  check_tls_certificate
+  check_http_redirect
+  check_hsts
+  check_compression
+  check_caddy_issuance
   check_https_api
 fi
 
