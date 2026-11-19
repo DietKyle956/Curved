@@ -38,6 +38,7 @@ sshd-config, data-mount, storage, docker-root (daemon data root is on the data
 volume), docker-config (daemon.json data root, log rotation, build-cache GC),
 docker-mount-dependency (drop-in and docker.service mount ordering),
 docker-prune-timer (curved-docker-prune units enabled and active),
+keepalive-timer (curved-keepalive units enabled and active with the script installed),
 backup-dir (0700 owned by deploy), backup-timer (curved-backup units installed,
 enabled and active), backup-freshness (newest nightly set at most 93600s old
 with a non-empty postgres.dump), backup-integrity (newest set verifies against
@@ -560,6 +561,48 @@ check_docker_prune_timer() {
     fail_list docker-prune-timer "${reasons[@]}"
   else
     pass "docker-prune-timer: curved-docker-prune.timer is enabled and active with a daily OnCalendar schedule"
+  fi
+}
+
+check_keepalive_timer() {
+  local unit="/etc/systemd/system/curved-keepalive.service"
+  local timer="/etc/systemd/system/curved-keepalive.timer"
+  local script="/usr/local/bin/curved-keepalive"
+  local state=""
+  local active=""
+  local reasons=()
+  if [ ! -f "$unit" ]; then
+    reasons+=("missing $unit")
+  else
+    if ! grep -q '^ExecStart=/usr/local/bin/curved-keepalive$' "$unit" 2>/dev/null; then
+      reasons+=("$unit has no ExecStart=/usr/local/bin/curved-keepalive line")
+    fi
+    if ! grep -q '^Nice=19$' "$unit" 2>/dev/null; then
+      reasons+=("$unit has no Nice=19 line")
+    fi
+  fi
+  if [ ! -f "$timer" ]; then
+    reasons+=("missing $timer")
+  elif ! grep -q '^OnCalendar=hourly$' "$timer" 2>/dev/null; then
+    reasons+=("$timer has no OnCalendar=hourly line")
+  fi
+  if [ ! -f "$script" ]; then
+    reasons+=("missing $script")
+  elif [ ! -x "$script" ]; then
+    reasons+=("$script is not executable")
+  fi
+  state=$(systemctl is-enabled curved-keepalive.timer 2>/dev/null || true)
+  if [ "$state" != enabled ]; then
+    reasons+=("curved-keepalive.timer is ${state:-not installed}, expected enabled")
+  fi
+  active=$(systemctl is-active curved-keepalive.timer 2>/dev/null || true)
+  if [ "$active" != active ]; then
+    reasons+=("curved-keepalive.timer is ${active:-inactive}, expected active")
+  fi
+  if [ "${#reasons[@]}" -gt 0 ]; then
+    fail_list keepalive-timer "${reasons[@]}"
+  else
+    pass "keepalive-timer: curved-keepalive.timer is enabled and active with an hourly OnCalendar schedule and an executable keepalive script"
   fi
 }
 
@@ -1221,6 +1264,7 @@ check_docker_root
 check_docker_config
 check_docker_mount_dependency
 check_docker_prune_timer
+check_keepalive_timer
 check_backup_dir
 check_backup_timer
 check_backup_freshness

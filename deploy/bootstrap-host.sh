@@ -23,10 +23,11 @@ Usage: sudo bash deploy/bootstrap-host.sh [options]
 Prepare an Ubuntu 24.04 host to run the curved production stack: install Docker,
 mount the 100 GiB data volume with an fstab entry, move Docker's data root onto
 that volume, create the key-only deploy user, harden sshd, clone the
-repository, generate deploy/.env once, install the daily backup timer, and
-start the stack, taking one initial nightly backup. Docker images,
-containers and build cache live on the data volume (<mount-dir>/docker), so a
-host rebuild does not re-download the stack. Every step is safe to re-run.
+repository, generate deploy/.env once, install the daily backup timer and the
+hourly keepalive timer, and start the stack, taking one initial nightly
+backup. Docker images, containers and build cache live on the data volume
+(<mount-dir>/docker), so a host rebuild does not re-download the stack. Every
+step is safe to re-run.
 
 Options:
   --key FILE          Authorized public key for the deploy user (repeatable)
@@ -715,6 +716,42 @@ if [ ! -e "$CHECKOUT_DIR/.git" ]; then
 fi
 chown -R deploy:deploy "$CHECKOUT_DIR"
 pass "checkout ($CHECKOUT_DIR)"
+
+keepalive_src=$CHECKOUT_DIR/deploy/keepalive.sh
+keepalive_bin=/usr/local/bin/curved-keepalive
+keepalive_service=$docker_unit_dir/curved-keepalive.service
+keepalive_timer=$docker_unit_dir/curved-keepalive.timer
+if [ ! -f "$keepalive_src" ]; then
+  die "missing $keepalive_src; is $REPO_URL the curved repository?"
+fi
+install -m 0755 -o root -g root "$keepalive_src" "$keepalive_bin"
+
+desired_keepalive_service=$(
+  printf '[Unit]\n'
+  printf "Description=Keep the Always Free Curved instance out of Oracle's idle classification\n"
+  printf '[Service]\n'
+  printf 'Type=oneshot\n'
+  printf 'ExecStart=%s\n' "$keepalive_bin"
+  printf 'Nice=19\n'
+  printf 'IOSchedulingClass=idle\n'
+  printf 'TimeoutStartSec=700\n'
+)
+write_if_changed "$keepalive_service" 0644 "$desired_keepalive_service" >/dev/null
+
+desired_keepalive_timer=$(
+  printf '[Unit]\n'
+  printf 'Description=Hourly low-priority CPU run to keep the Always Free instance active\n'
+  printf '[Timer]\n'
+  printf 'OnCalendar=hourly\n'
+  printf 'AccuracySec=1min\n'
+  printf '[Install]\n'
+  printf 'WantedBy=timers.target\n'
+)
+write_if_changed "$keepalive_timer" 0644 "$desired_keepalive_timer" >/dev/null
+
+systemctl daemon-reload
+systemctl enable --now curved-keepalive.timer
+pass "keepalive-timer (hourly, 10 minutes at idle priority)"
 
 env_example=$CHECKOUT_DIR/deploy/.env.example
 env_file=$CHECKOUT_DIR/deploy/.env

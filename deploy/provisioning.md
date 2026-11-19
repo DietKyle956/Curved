@@ -1,4 +1,4 @@
-# Oracle Cloud host provisioning (LAS-183, LAS-184, LAS-185, LAS-186, LAS-187)
+# Oracle Cloud host provisioning (LAS-183, LAS-184, LAS-185, LAS-186, LAS-187, LAS-188)
 
 This runbook creates the production host for Curved on Oracle Cloud Infrastructure
 (OCI) and leaves it running the production Compose stack from `deploy/`. Follow it
@@ -58,12 +58,13 @@ The tickets split as follows:
 | LAS-185 | `deploy/release.sh` and the GitHub Actions deploy job. |
 | LAS-186 | Public TLS, HSTS, server-sent events through the edge, and the public GitHub webhook. |
 | LAS-187 | Backups of Postgres and the Caddy volumes, restore, and the backup timer. |
+| LAS-188 | Free-tier keepalive (hourly low-priority CPU run) and the rebuild runbook after reclamation. |
 
 There is no Terraform and no OCI Resource Manager stack. The OCI console steps in
 this document plus the committed `deploy/bootstrap-host.sh`,
 `deploy/verify-host.sh`, `deploy/release.sh`, `deploy/backup.sh`,
-`deploy/restore.sh`, `deploy/webhook.sh`, `deploy/docker-compose.yml`, and
-`deploy/Caddyfile` are the source of truth.
+`deploy/restore.sh`, `deploy/webhook.sh`, `deploy/keepalive.sh`,
+`deploy/docker-compose.yml`, and `deploy/Caddyfile` are the source of truth.
 
 ## 2. Topology and cost
 
@@ -401,6 +402,11 @@ from ever starting without it:
   the service daily at 03:17 with up to 20 minutes of randomized delay and
   `Persistent=true`, and the service runs `deploy/backup.sh nightly` as `deploy`
   with `CURVED_BACKUP_DIR=/srv/curved/backups`.
+- Installs `/usr/local/bin/curved-keepalive` from `deploy/keepalive.sh` as
+  `root:root` mode `0755`, then installs and enables `curved-keepalive.service`
+  and `curved-keepalive.timer`. The timer runs the service hourly for ten
+  minutes at idle CPU and I/O priority, which keeps the instance out of
+  Oracle's idle classification (section 18.1).
 - Runs one initial nightly set as `deploy` after the stack is started, so a
   fresh host ends with a published set, and fails if that set cannot be
   written.
@@ -592,10 +598,14 @@ failure; fix the reported check and rerun.
 The checks run in this order: `os`, `deploy-user`, `deploy-ssh-dir`,
 `deploy-authorized-keys`, `sshd-config`, `data-mount`, `storage`,
 `docker-root`, `docker-config`, `docker-mount-dependency`,
-`docker-prune-timer`, `backup-dir`, `backup-timer`, `backup-freshness`,
+`docker-prune-timer`, `keepalive-timer`, `backup-dir`, `backup-timer`, `backup-freshness`,
 `backup-integrity`, `env-file`, `checkout`, `tcp-listeners`, `udp-listeners`,
 then, unless `--skip-stack` is given, `stack`, `tls-certificate`,
 `http-redirect`, `hsts`, `compression`, `caddy-issuance`, and `https-api`.
+
+`keepalive-timer` requires both keepalive unit files to exist,
+`curved-keepalive.timer` to be both enabled and active, and the service's
+`ExecStart` to point at an executable `/usr/local/bin/curved-keepalive`.
 
 The four backup checks are read-only:
 
@@ -625,7 +635,8 @@ the domain not `localhost`. In that mode:
 
 With the internal CA, the certificate checks run with `-k` and `hsts` instead
 requires that no `Strict-Transport-Security` header is sent. A full run covers
-26 checks, including the five edge checks above and the four backup checks.
+27 checks, including the five edge checks above, the keepalive check, and the
+four backup checks.
 
 ### 9.2 External reachability and boundary
 
@@ -855,6 +866,12 @@ loud: Docker refuses to start rather than silently creating an empty
 `/srv/curved` on the boot volume and running the stack against empty named
 volumes.
 
+The keepalive timer needs no manual step after a reboot either: bootstrap
+installs and enables `curved-keepalive.timer`, which lives in
+`/etc/systemd/system`, so it is reinstalled by a rerun and started by
+`timers.target` at boot like the prune and backup timers. Confirm it with
+`systemctl list-timers curved-keepalive.timer` after the reboot.
+
 ## 10. Acceptance evidence
 
 The four acceptance criteria for LAS-183, with the evidence that closes each one:
@@ -887,13 +904,23 @@ The six acceptance criteria for LAS-186, with the evidence that closes each one:
 | AC5 | Duplicate, unknown, and non-PR deliveries are acknowledged without changing state. | A replayed identical signed delivery for LIVE-2 returned `200 {"ok":true,"ignored":true}` and the issue stayed `in_review`; GitHub's Re-deliver of a processed `pull_request opened` delivery created a `redelivery: true` entry with status `200` and left LIVE-2 in `in_review`; an unknown key `NOPE-999` returned `200 {"ok":true,"ignored":true}`; non-PR `issues` and `push` deliveries also returned `200 {"ok":true,"ignored":true}`. |
 | AC6 | Caddy obtains and renews the certificate automatically, and the release probe requires HSTS under public TLS before promoting a release. | The Caddy log shows `certificate obtained successfully`, `identifier 158.101.127.247.sslip.io`, `issuer acme-v02.api.letsencrypt.org-directory`, account email `admin@sslip.io`, with challenge `tls-alpn-01`; `verify-host` prints `PASS caddy-issuance`; deploy run 44551897724 printed `release: public probe ok` and `release: ok c711540`, and the public probe requires HSTS with a max-age matching `CURVED_HSTS_MAX_AGE` once `ACME_EMAIL` is set. |
 
-`verify-host` now runs 26 checks. The transcripts recorded for LAS-183, LAS-184,
+`verify-host` now runs 27 checks. The transcripts recorded for LAS-183, LAS-184,
 and LAS-186 above were produced by the 22-check verifier that predates the
-backup checks, so a rerun on the same host reports four more `PASS` lines:
-`backup-dir`, `backup-timer`, `backup-freshness`, and `backup-integrity`. The
-edge checks are unchanged: `tls-certificate`, `http-redirect`, `hsts`,
-`compression`, `caddy-issuance`, and `https-api` (`200` with the token, `401`
-without it).
+backup and keepalive checks, so a rerun on the same host reports five more
+`PASS` lines: `backup-dir`, `backup-timer`, `backup-freshness`,
+`backup-integrity`, and `keepalive-timer`. The edge checks are unchanged:
+`tls-certificate`, `http-redirect`, `hsts`, `compression`, `caddy-issuance`, and
+`https-api` (`200` with the token, `401` without it).
+
+The four acceptance criteria for LAS-188, with the evidence that closes each
+one:
+
+| AC | Criterion | Evidence |
+|---|---|---|
+| AC1 | The keepalive keeps the instance out of Oracle's idle classification. | `systemctl list-timers curved-keepalive.timer` shows the hourly schedule; `journalctl -u curved-keepalive.service` shows a run completing with status `0`; a `/proc/stat` or `mpstat` sample taken during a run shows roughly 50% total CPU use on the 2-vCPU shape; section 18.3 records the sampling date and the p95 against the 7-day window. |
+| AC2 | A reclaimed instance is rebuilt from a fresh VM plus the newest off-host dump. | Section 18.2 runbook: new `VM.Standard.A1.Flex` (2 OCPU, 12 GB, Ubuntu 24.04 aarch64), the existing volume attached without formatting (or a new volume plus `restore.sh postgres`), bootstrap, then `release.sh`; `verify-host` ends with `verify-host: ok` and 27 checks. |
+| AC3 | The reserved public IPv4 and the deploy known-hosts are re-established. | OCI shows the reserved address reassigned to the new instance; `ssh-keyscan -t ed25519 <ip> > known_hosts` seeds the new host key, `gh secret set DEPLOY_KNOWN_HOSTS < known_hosts` updates the secret, and `ssh-keygen -R <ip>` clears the old entry; the GitHub Actions deploy job connects and prints `release: ok`. |
+| AC4 | Reclamation is treated as a restore, not as a new deployment. | Section 18.2 follows section 17.7: attach the surviving volume and do not format it, or restore the newest dump before the first release; `docker compose down -v` is never run; the sign-in, SSE, and webhook checks in section 18.2 pass on the rebuilt host. |
 
 Record the console screenshots, the two command transcripts, the section 9.4
 reboot transcript, the verifier output, the GitHub delivery log, and the deploy
@@ -1592,6 +1619,35 @@ a new one rather than editing the checksum. `backup-timer` fails when the units
 are missing or the timer is not enabled and active; rerun bootstrap, which
 rewrites both units and re-enables the timer.
 
+### The keepalive timer is not running
+
+Check the state and enable it:
+
+```bash
+systemctl list-timers curved-keepalive.timer
+systemctl is-enabled curved-keepalive.timer
+systemctl is-active curved-keepalive.timer
+```
+
+A missing timer means the units are gone, so rerun bootstrap, which rewrites
+`/etc/systemd/system/curved-keepalive.service`,
+`/etc/systemd/system/curved-keepalive.timer`, and
+`/usr/local/bin/curved-keepalive` and enables the timer. An inactive or
+recently inactive timer points at the last run: read
+`journalctl -u curved-keepalive.service` and confirm the script exits `0`,
+`124`, or `143`. Any other status is propagated and needs a fix before the
+instance is safe from reclamation.
+
+### The instance was reclaimed
+
+Follow section 18.2. The console steps create a new instance, attach the
+existing 100 GB block volume without formatting it, and reassign the reserved
+IPv4, then the host steps rerun bootstrap and `./deploy/release.sh`. Do not
+format the volume: it carries the Postgres data and the backup sets. Do not run
+`docker compose down -v`: it deletes the named volumes and turns a restore into
+data loss. When the volume is gone, restore the newest off-host dump before the
+first release.
+
 ### Bootstrap used the wrong volume device
 
 1. Stop and inspect the block devices:
@@ -1992,3 +2048,149 @@ untouched, the pre-deploy Caddy skip, the `--yes` refusal, checksum tampering,
 a drill restore, a production restore that leaves the app stopped, and a Caddy
 restore. A manual end-to-end confirmation on the host is a drill restore
 (section 17.5) plus `./deploy/backup.sh nightly` and its `backup: ok` line.
+
+## 18. Free-tier keepalive and rebuild
+
+### 18.1 Keepalive
+
+Oracle reclaims Always Free compute that looks idle: an instance whose CPU
+utilization stays below 20% at the 95th percentile over a seven-day window can
+be stopped or reclaimed. A quiet API host reaches that easily. The keepalive
+solves it by burning one core for ten minutes every hour, which lifts the 95th
+percentile well above the threshold without a sustained average load.
+
+`deploy/keepalive.sh` is installed as `/usr/local/bin/curved-keepalive`
+(`root:root`, mode `0755`). It reads two environment variables:
+
+- `CURVED_KEEPALIVE_SECONDS` is the run length, default `600` (ten minutes).
+- `CURVED_KEEPALIVE_CPUS` is the CPU list, default `0`.
+
+When `taskset` exists, the script pins the load to that CPU with
+`taskset -c "$CPUS"`; otherwise it runs unpinned. The work is
+`nice -n 19 ... timeout "$DURATION" bash -c 'while :; do :; done'`, so it yields
+to everything else on the host. Exit status `0`, `124` (timeout expired), and
+`143` (SIGTERM) all count as success; any other status is propagated and fails
+the service.
+
+`curved-keepalive.service` is a `Type=oneshot` unit with `Nice=19`,
+`IOSchedulingClass=idle`, and `TimeoutStartSec=700`. `curved-keepalive.timer`
+has `OnCalendar=hourly` and `AccuracySec=1min`, so the service starts within a
+minute of every hour. Bootstrap installs both units, enables the timer, and
+prints `PASS keepalive-timer (hourly, 10 minutes at idle priority)`.
+
+Inspect the schedule and the last runs:
+
+```bash
+systemctl list-timers curved-keepalive.timer
+journalctl -u curved-keepalive.service
+```
+
+Trigger a run without waiting for the timer and watch it:
+
+```bash
+sudo systemctl start --no-block curved-keepalive.service
+journalctl -u curved-keepalive.service -f
+```
+
+Measure the load while it runs. On the 2-vCPU shape, one saturated core is about
+50% of total CPU; sample `/proc/stat` with `mpstat` or `top`, or take two
+`/proc/stat` samples about a minute apart while the service is active. What
+matters is the band: every 7-day window should contain a stretch near 50% total
+CPU from these runs while the hourly average stays low, which is exactly the
+shape Oracle's idle rule looks for. The verifier records the result as
+`PASS keepalive-timer: curved-keepalive.timer is enabled and active with an
+hourly OnCalendar schedule and an executable keepalive script`.
+
+### 18.2 Rebuild after reclamation
+
+If the instance is stopped for idleness, its boot disk, the reserved IPv4, and
+the block volume still exist (or the volume can be reattached). Treat the work
+as a restore, not a new deployment: the data volume carries the database and the
+backup sets, so it must never be formatted.
+
+Console:
+
+1. Create a new instance with shape `VM.Standard.A1.Flex`, 2 OCPU, 12 GB,
+   image Ubuntu 24.04 aarch64, in the tenancy's home region and the availability
+   domain that has capacity (section 11).
+2. Attach the existing 100 GB block volume to the new instance. Do not format
+   it: its ext4 filesystem already holds `/srv/curved`. If the volume was lost,
+   create a fresh 100 GB volume instead and continue to the host steps; the
+   data comes from the off-host dump.
+3. Reassign the reserved public IPv4 (section 4) to the new instance's private
+   IP, so the public name and the certificate keep working.
+
+Host, as `ubuntu` after SSH:
+
+1. Clone or reuse the checkout:
+
+   ```bash
+   git clone https://github.com/DietKyle956/Curved.git ~/curved-provision
+   cd ~/curved-provision
+   ```
+
+2. Run bootstrap once. It preserves an existing ext4 volume without formatting,
+   recreates the `deploy` user and the docker group, reinstalls the prune, backup,
+   and keepalive units, reuses `deploy/.env` when it is present, and starts the
+   stack:
+
+   ```bash
+   sudo bash deploy/bootstrap-host.sh --key <pub> --domain <name> --acme-email <email>
+   ```
+
+3. Reset the checkout to the release branch, then refresh the host key that the
+   deploy workflow knows. The last three commands run on the operator
+   workstation, because `gh` holds the repository secret:
+
+   ```bash
+   cd /srv/curved/checkout
+   sudo -u deploy git fetch origin
+   sudo -u deploy git reset --hard origin/main
+   ssh-keyscan -t ed25519 <ip> > known_hosts
+   gh secret set DEPLOY_KNOWN_HOSTS < known_hosts
+   ssh-keygen -R <ip>
+   ```
+
+4. Run the release as the deploy user:
+
+   ```bash
+   sudo -u deploy ./deploy/release.sh
+   ```
+
+Data paths:
+
+- Volume survived: the ext4 filesystem already holds the Compose named volumes,
+  so Postgres data is present before the first release. Do not run
+  `docker compose down -v`, and do not reformat the volume. Replace `deploy/.env`
+  only if it is missing, because the database password must match the data.
+- Volume lost: create a new data volume, run bootstrap to prepare it, then copy
+  the newest off-host set into the nightly tree and restore before releasing:
+
+  ```bash
+  sudo bash deploy/restore.sh postgres /srv/curved/backups/nightly/latest --yes
+  sudo -u deploy ./deploy/release.sh
+  ```
+
+Verify with `sudo bash deploy/verify-host.sh` (27 PASS), then sign in on the
+public URL, confirm a server-sent event arrives, and send a webhook delivery
+that the app acknowledges.
+
+### 18.3 Exercise record
+
+The keepalive is live-proven on the production host on 2026-11-19: bootstrap
+installed `/usr/local/bin/curved-keepalive` and enabled
+`curved-keepalive.timer` (next elapse 19:00 UTC), and a manual
+`CURVED_KEEPALIVE_SECONDS=62` run sampled from `/proc/stat` every five seconds
+produced 12 samples of 53-56% total CPU, p95 55%, average 54.1% on the 2-vCPU
+shape. `verify-host` exited 0 with 27 PASS lines including `keepalive-timer`.
+The host-side half of the rebuild is rehearsed by `npm run smoke:provision`
+(fresh container bootstrap plus an idempotent reinstall) and by
+`npm run smoke:backup` plus a compose restore. The console reclamation step
+itself is operator-executed; fill in AC2-AC4 when it is performed.
+
+| AC | Criterion | Evidence | Date |
+|---|---|---|---|
+| AC1 | The keepalive keeps the instance out of Oracle's idle classification. | 12 `/proc/stat` samples during a 62-second run: 53-56% total CPU, p95 55%, average 54.1%, against the 20% threshold; `curved-keepalive.timer` enabled and active, next elapse 19:00 UTC. | 2026-11-19 |
+| AC2 | A reclaimed instance is rebuilt from a fresh VM plus the newest off-host dump. | Section 18.2 transcript, ending in `verify-host: ok`. | TBD |
+| AC3 | The reserved public IPv4 and the deploy known-hosts are re-established. | OCI address reassignment plus `gh secret set DEPLOY_KNOWN_HOSTS` and a successful deploy run. | TBD |
+| AC4 | Reclamation is treated as a restore. | Volume attached unformatted (or `restore.sh postgres` from the dump), never `down -v`, then sign-in, SSE, and webhook checks. | TBD |

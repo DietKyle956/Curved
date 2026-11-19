@@ -2,10 +2,11 @@
 
 - **Last updated:** 2026-11-19
 - **Project:** curved
-- **Phase:** product and infrastructure implemented through `LAS-187` (backups
-  and restore); `LAS-184` and `LAS-187` are now Done in Linear. The remaining
-  open children are `LAS-188` (free-tier keepalive and rebuild runbook, next),
-  `LAS-189`, and `LAS-190`; `LAS-177` (template audit) is independent.
+- **Phase:** product and infrastructure implemented through `LAS-188` (free-tier
+  keepalive and rebuild runbook); `LAS-188` is In Review with the console
+  rebuild drill left to the operator. Next unbuilt work is `LAS-189` (agent
+  tunnel and deployed-commit parity), then `LAS-190`; `LAS-177` (template
+  audit) is independent.
 
 ## Current verified state
 
@@ -29,7 +30,7 @@ git history and the Linear comments.
 - Baseline: 197 tests pass (191 behavior, 6 architecture),
   `architecture: ok (74 files)`, web build green; `npm run acceptance` passes
   (145 checks), `npm run smoke:release` 22 assertions,
-  `npm run smoke:backup` 19, `npm run smoke:provision` 50,
+  `npm run smoke:backup` 19, `npm run smoke:provision` 52,
   `npm run smoke:webhook` 9, and `npm run smoke:compose` includes the real
   backup, Postgres drill, and Caddy restore legs.
 - Layout: `src/domain/` pure rules and types; `src/application/` ports plus
@@ -161,7 +162,7 @@ git history and the Linear comments.
   `acme-v02.api.letsencrypt.org-directory` over tls-alpn-01. The public edge
   serves the SPA, authenticated API, and SSE (`ready`, then `issues_changed`)
   over verified TLS; the unauthenticated `/api/projects` stays 401.
-  `verify-host` exited 0 with 22 PASS lines at LAS-186 (26 after LAS-187),
+  `verify-host` exited 0 with 22 PASS lines at LAS-186 (27 after LAS-188),
   adding `tls-certificate`,
   `http-redirect`, `hsts`, `compression`, and `caddy-issuance`. The release
   probe requires HSTS under ACME and matches `CURVED_HSTS_MAX_AGE`; deploy run
@@ -205,6 +206,25 @@ git history and the Linear comments.
   exits 0 with 26 PASS, and a drill restored 1 project and 3 issues (`LIVE-1`
   at `done`) into `curved_backup_drill` while the app stayed 200; the drill
   database was dropped.
+- Keepalive (`LAS-188`): `deploy/keepalive.sh` burns one core at `nice 19` for
+  600 seconds by default (`CURVED_KEEPALIVE_SECONDS`, `CURVED_KEEPALIVE_CPUS`,
+  `taskset` on core 0 when present, timeout exits 124/143 count as success);
+  bootstrap installs it as `/usr/local/bin/curved-keepalive` (root:root 0755)
+  and writes `curved-keepalive.service` (`Type=oneshot`, `Nice=19`,
+  `IOSchedulingClass=idle`, `TimeoutStartSec=700`) plus
+  `curved-keepalive.timer` (`OnCalendar=hourly`, `AccuracySec=1min`), enabling
+  the timer. `verify-host` adds `keepalive-timer` (units present, script
+  executable, timer enabled and active) for 27 checks; `smoke:provision`
+  asserts the installed script, units, timer state, idempotent reinstall, and
+  a disabled-timer negative for 52 PASS. `deploy/provisioning.md` section 18
+  documents the keepalive and the rebuild-after-reclamation runbook (new A1,
+  volume attached unformatted or a new volume plus `restore.sh postgres` from
+  the newest off-host dump, reserved IPv4 reassigned, known-hosts refreshed,
+  bootstrap, `release.sh`, 27 PASS). Live on 2026-11-19: bootstrap
+  `--no-stack` installed the units, `verify-host` printed 27 PASS and 0 FAIL,
+  and 12 `/proc/stat` samples during a 62 second run read 53-56% total CPU,
+  p95 55%, average 54.1%, with the timer's next elapse at 19:00 UTC. The
+  console reclamation step is operator-executed.
 - Provisioning (`LAS-183`): `deploy/provisioning.md` is the OCI console runbook
   for one Always Free `VM.Standard.A1.Flex` (2 OCPU, 12 GB, Ubuntu 24.04
   aarch64, home region), a 50 GB boot volume plus a 100 GB block volume, a
@@ -242,8 +262,8 @@ git history and the Linear comments.
   `verify-host: ok` again passed; 5432 and 4747 are filtered externally. On
   2026-11-19 the host switched to public HTTPS at
   `https://158.101.127.247.sslip.io` (Let's Encrypt, HSTS), and `verify-host`
-  exits 0 with 26 PASS lines including the edge and backup checks; the SPA and
-  authenticated API answer over the public name and unauthenticated
+  exits 0 with 27 PASS lines including the edge, backup, and keepalive checks;
+  the SPA and authenticated API answer over the public name and unauthenticated
   `/api/projects` is 401.
 - CI: `.github/workflows/verify.yml`, one global concurrency group `verify` with
   `cancel-in-progress: false`, a Postgres 18 service on 55432, then `npm ci`,
@@ -412,6 +432,18 @@ git history and the Linear comments.
   the data volume with the database they protect, so they cover logical
   corruption and operator error but not host or block-volume loss; an off-host
   copy remains an operator step.
+- Keepalive (`LAS-188`) is a CPU burner, not an API pinger: Oracle's idle test
+  looks at the CPU 95th percentile, network, and memory over a rolling window,
+  and one core of two for 16.7% of samples lifts the p95 while the average
+  stays low. The burn runs at `nice 19` and idle I/O so the request path keeps
+  priority, `taskset` pins a single core, and the unit caps a run at
+  `TimeoutStartSec=700` so a stuck loop cannot hold the timer. Verifying a
+  schedule is structural (units, installed script, enabled and active timer);
+  the CPU effect is measured at the host with `/proc/stat`, not asserted by a
+  flaky timing test. The rebuild runbook treats the data volume as the durable
+  object: attach it unformatted and let bootstrap recreate the OS-side state,
+  or, when the volume is gone, restore the newest off-host dump before the
+  first release, and never run `docker compose down -v`.
 
 ## Known risks
 
@@ -425,6 +457,17 @@ git history and the Linear comments.
   snapshot transaction, so a concurrent label write can land between reads.
 - Blocking-relation cycles are permitted and keep the affected issues out of
   `ready`; there is no cycle detection.
+- The keepalive occupies one of two vCPUs for ten minutes every hour; the app
+  stays responsive because the burn is at `nice 19`, but a CPU-heavy request
+  in that window can slow down. A host that misses runs or is stopped for a
+  long quiet period can still be classified idle, so the rebuild runbook is
+  the recovery path, not a guarantee.
+- `keepalive-timer` checks the units and the enabled/active timer, not a recent
+  run; the first trigger lands at the next top of the hour. A run that exits
+  non-zero is only visible in `journalctl -u curved-keepalive.service`.
+- The rebuild runbook's fresh-instance console step is not exercised live from
+  this repository: the smoke gate stubs the host and the OCI console steps are
+  operator-executed.
 - Palette traits recorded, not changed: the active palette status label is about
   3.5:1 contrast, the muted pill about 4.04:1, and the mobile toast overlays the
   comment composer for its 5 second lifetime.
@@ -517,13 +560,13 @@ git history and the Linear comments.
 
 ## Next best step
 
-`LAS-184` and `LAS-187` are Done in Linear as of 2026-11-19; both were
-implemented, merged, and live-proven earlier. `LAS-187` shipped with an
-accepted deviation from its original criteria: 7 sets per kind at 0600 instead
-of 14 days at 0644. The next unbuilt child is `LAS-188` (keepalive and rebuild
-runbook), then `LAS-189` (agent tunnel and deployed-commit parity) and
-`LAS-190` (first-run seed and public product acceptance). `LAS-177` (template
-audit) is independent. The host serves `https://158.101.127.247.sslip.io` with a
+`LAS-188` (keepalive and rebuild runbook) is implemented, live-installed, and
+proven for the keepalive: `verify-host` prints 27 PASS, `smoke:provision` 52
+PASS, and the live CPU sample read a p95 of 55%. Its console rebuild step
+remains operator-executed. The next unbuilt child is `LAS-189` (agent tunnel
+and deployed-commit parity), then `LAS-190` (first-run seed and public product
+acceptance). `LAS-177` (template audit) is independent. The host serves
+`https://158.101.127.247.sslip.io` with a
 Let's Encrypt certificate, HSTS, the HTTP redirect, compressed responses,
 unbuffered SSE, and the configured GitHub `pull_request` webhook. A push to
 `main` runs `verify`, then the main-only `deploy` job, which resets
@@ -545,8 +588,10 @@ Docker data root at `/srv/curved/docker`, and backups at
   `LAS-141` through `LAS-155` are Done.
 - Refactor `LAS-167` with `LAS-168` through `LAS-176`, all Done.
 - Infra and deploy: `LAS-179` through `LAS-187` Done (184 and 187 closed on
-  2026-11-19); parent `LAS-178` is Backlog. Open children: `LAS-188`, `189`,
-  `190` (Todo). `LAS-177` (template audit) is Todo (Medium).
+  2026-11-19); parent `LAS-178` is Backlog. `LAS-188` is In Review: the
+  keepalive is live and proven, and the console rebuild drill is the remaining
+  operator step. `LAS-189` and `190` are Todo. `LAS-177` (template audit) is
+  Todo (Medium).
 
 ## Session log
 
@@ -596,3 +641,4 @@ on 2026-11-18, and 037 to 039 on 2026-11-19.
 | 037 | `LAS-185` | `deploy/release.sh` with the fixed release order, first-release probe rule, latest-after-probe tagging, atomic state, and rollback; main-only `deploy` job with pinned SSH and the `DEPLOY_*` secrets; `npm run smoke:release` gate; live push, manual dispatch, and rollback/forward proof; provisioning docs updated. |
 | 038 | `LAS-186` | public Let's Encrypt TLS at `158.101.127.247.sslip.io`, HTTP 308, conditional HSTS, gzip/zstd except unbuffered SSE, edge verifier checks, HSTS-aware release probe, `deploy/webhook.sh` and its gate, live GitHub opened/reopened/merged PR flow plus replay/unknown/non-PR ignores, compose/provision/release/webhook smokes, docs and MEMORY. |
 | 039 | `LAS-187` | `deploy/backup.sh` (atomic Postgres dump plus Caddy archives, manifest, checksums, flock, retention), `deploy/restore.sh` (checksum-gated production and drill Postgres restore, Caddy restore), mandatory pre-deploy backup in `release.sh`, bootstrap backup directory and daily timer with one initial set, four `verify-host` checks, `npm run smoke:backup`, real compose backup and restore legs, release ordering isolation, provisioning/README docs; `./scripts/init.sh`, 197 tests, acceptance 145 checks, compose/provision/backup/release/webhook smokes green; live deploy run 44578798179 with the pre-deploy set `tag=curved:ec6666d`, timer installed, first nightly set verified, `verify-host` 26 PASS, and a live Postgres drill restored 1 project/3 issues with `LIVE-1` at `done` while the app stayed 200. |
+| 040 | `LAS-188` | `deploy/keepalive.sh`, bootstrap-installed `/usr/local/bin/curved-keepalive` plus hourly `curved-keepalive.service`/`.timer`, `verify-host` `keepalive-timer` check (27 PASS), provisioning-smoke unit/script/idempotency/disabled-timer coverage (52 PASS), and the section 18 keepalive plus rebuild-after-reclamation runbook; live bootstrap `--no-stack` installed the units, `verify-host` printed 27 PASS/0 FAIL, and a 62 s `/proc/stat` run measured 53-56% total CPU, p95 55%, average 54.1%. |
