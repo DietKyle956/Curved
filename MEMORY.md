@@ -2,8 +2,10 @@
 
 - **Last updated:** 2026-11-19
 - **Project:** curved
-- **Phase:** product and infrastructure complete through `LAS-187` (backups
-  and restore). Next work is `LAS-177` (template audit).
+- **Phase:** product and infrastructure implemented through `LAS-187` (backups
+  and restore); `LAS-184` and `LAS-187` are now Done in Linear. The remaining
+  open children are `LAS-188` (free-tier keepalive and rebuild runbook, next),
+  `LAS-189`, and `LAS-190`; `LAS-177` (template audit) is independent.
 
 ## Current verified state
 
@@ -515,8 +517,13 @@ git history and the Linear comments.
 
 ## Next best step
 
-`LAS-187` (backups and restore) is complete. `LAS-177` (template audit) is the
-next open item. The host serves `https://158.101.127.247.sslip.io` with a
+`LAS-184` and `LAS-187` are Done in Linear as of 2026-11-19; both were
+implemented, merged, and live-proven earlier. `LAS-187` shipped with an
+accepted deviation from its original criteria: 7 sets per kind at 0600 instead
+of 14 days at 0644. The next unbuilt child is `LAS-188` (keepalive and rebuild
+runbook), then `LAS-189` (agent tunnel and deployed-commit parity) and
+`LAS-190` (first-run seed and public product acceptance). `LAS-177` (template
+audit) is independent. The host serves `https://158.101.127.247.sslip.io` with a
 Let's Encrypt certificate, HSTS, the HTTP redirect, compressed responses,
 unbuffered SSE, and the configured GitHub `pull_request` webhook. A push to
 `main` runs `verify`, then the main-only `deploy` job, which resets
@@ -533,10 +540,13 @@ Docker data root at `/srv/curved/docker`, and backups at
 ## Tracker
 
 - Linear workspace last-known-good (`LAS`), project Curved (`P-LAS-8`).
-- Spec `LAS-140` with 15 sub-issues `LAS-141` through `LAS-155`, all Done.
+  Verified against the Linear API on 2026-11-19.
+- Spec `LAS-140` is still Todo (High) in Linear although its 15 sub-issues
+  `LAS-141` through `LAS-155` are Done.
 - Refactor `LAS-167` with `LAS-168` through `LAS-176`, all Done.
-- Infra and deploy: `LAS-179` through `LAS-187` Done; `LAS-177` (template
-  audit) remains open.
+- Infra and deploy: `LAS-179` through `LAS-187` Done (184 and 187 closed on
+  2026-11-19); parent `LAS-178` is Backlog. Open children: `LAS-188`, `189`,
+  `190` (Todo). `LAS-177` (template audit) is Todo (Medium).
 
 ## Session log
 
