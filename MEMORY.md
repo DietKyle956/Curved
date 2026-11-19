@@ -160,7 +160,9 @@ git history and the Linear comments.
   `verify-host` exits 0 with 22 PASS lines, adding `tls-certificate`,
   `http-redirect`, `hsts`, `compression`, and `caddy-issuance`. The release
   probe requires HSTS under ACME and matches `CURVED_HSTS_MAX_AGE`; deploy run
-  44551897724 logged `release: public probe ok` and `release: ok c711540`.
+  44551897724 logged `release: public probe ok` and `release: ok c711540`, and
+  the documentation release, run 44553776782, logged the same probe and
+  `release: ok 8d74a62`.
   `deploy/webhook.sh` created hook `714067501` (`pull_request`, JSON) at the
   public URL; live PRs #1 and #2 moved `LIVE-1`/`LIVE-3` to In Review on open
   and reopen and Done on merge, all as `actorType git` with
