@@ -1354,6 +1354,33 @@ docker compose -p curved-prod --env-file deploy/.env \
   -f deploy/docker-compose.yml logs --tail=100 app caddy
 ```
 
+### 14.6 Rotate the UI token
+
+Symptom: the web client or a script reports "token is not valid" while the
+release probe still passes, because the probe and the deployed env hold one
+value and the operator holds another. Only the GitHub deploy key can reach the
+host over SSH, so `ssh deploy@...` from the workstation is denied; rotate
+through the manual workflow instead. Set the repository secret and dispatch it:
+
+```bash
+gh secret set CURVED_UI_TOKEN < /path/to/new-token
+gh workflow run rotate-ui-token.yml
+gh run watch
+```
+
+The workflow validates `DEPLOY_SSH_KEY`, `DEPLOY_KNOWN_HOSTS`, `DEPLOY_HOST`,
+and `CURVED_UI_TOKEN`, writes the key and known_hosts under `$RUNNER_TEMP` with
+mode 600, and pipes the token over stdin, never argv and never a log line. On
+the host it rewrites the `CURVED_UI_TOKEN` line in
+`/srv/curved/checkout/deploy/.env` atomically with the file left mode 600,
+restoring the backup and re-running the release if `./deploy/release.sh` fails;
+a successful run prints `release: ok <short>`. It then proves the new value by
+posting to `https://$CURVED_DOMAIN/api/session` with it and requiring 200
+(`login probe ok`). Concurrency group `rotate-ui-token`, contents read only.
+Existing browser sessions stay valid; only new token logins use the new value.
+Keep the current token out of the repo, for example in a mode-600 file such as
+`~/.curved-ui-token`.
+
 ## 15. Troubleshooting
 
 ### Out of host capacity

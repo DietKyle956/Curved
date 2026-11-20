@@ -565,6 +565,29 @@ max-age passes, a missing header or a mismatched max-age is fatal and leaves
 `curved:latest` and the state file untouched), rollback, and that the bearer
 token never appears in the output.
 
+### Rotate the UI token
+
+The UI bearer token is the `CURVED_UI_TOKEN` line in
+`/srv/curved/checkout/deploy/.env` on the host. Only the GitHub deploy key can
+reach the host over SSH, so a local `ssh deploy@...` is denied; the recovery
+path when the deployed token is unknown or lost is the manual
+`.github/workflows/rotate-ui-token.yml` workflow. Update the repository secret,
+then dispatch the workflow and wait for the green run:
+
+```sh
+gh secret set CURVED_UI_TOKEN < /path/to/new-token
+gh workflow run rotate-ui-token.yml
+```
+
+The job validates the `DEPLOY_SSH_KEY`, `DEPLOY_KNOWN_HOSTS`, `DEPLOY_HOST`,
+and `CURVED_UI_TOKEN` secrets, writes the key and known_hosts under
+`$RUNNER_TEMP` with mode 600, and pipes the token over stdin, never argv and
+never a log line. On the host it atomically rewrites the `CURVED_UI_TOKEN` line
+in the mode-600 env file, backing it up and restoring it along with a release
+re-run if the release fails, then runs `./deploy/release.sh` and proves the new
+value with `POST https://$CURVED_DOMAIN/api/session` returning 200. Existing
+browser sessions stay valid; only new token logins use the new value.
+
 ## Continuous integration
 
 `.github/workflows/verify.yml` runs on every push to `main` and on manual

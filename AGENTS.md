@@ -331,6 +331,19 @@ virtual authenticator (focus emulation is enabled because headless tabs
 otherwise reject WebAuthn with `NotAllowedError`), and `npm run smoke:compose`
 stays green with the new `CURVED_DOMAIN` env.
 
+The UI bearer token still authenticates deploy, health, CLI, and MCP, and its
+only copy is `CURVED_UI_TOKEN` in `/srv/curved/checkout/deploy/.env` on the
+host. Only the GitHub deploy key can reach the host over SSH, so
+`.github/workflows/rotate-ui-token.yml` is the rotation and recovery path when
+the deployed value is unknown or lost: set the repository secret with
+`gh secret set CURVED_UI_TOKEN < value`, dispatch
+`gh workflow run rotate-ui-token.yml`, and the job pipes the token over stdin
+(never argv, never a log line) to `deploy@$DEPLOY_HOST`, atomically rewrites the
+mode-600 env line with backup and release re-run on failure, runs
+`./deploy/release.sh`, and proves `POST https://$CURVED_DOMAIN/api/session`
+returns 200 with the new token. Existing browser sessions stay valid; only new
+token logins use the new value.
+
 LAS-180 is live: a root multi-stage `node:26-slim` `Dockerfile` plus
 `.dockerignore`. The build stage runs `npm ci`, `npm run build:web`, and
 `npm prune --omit=dev`; the runtime stage copies `package.json`, the production
@@ -655,6 +668,7 @@ carries the same rules as a project-agnostic template.
 | `deploy/verify-host.sh` | Read-only host verifier: OS, deploy account, sshd policy, ext4 mount, 150 GB storage, Docker data root, daemon config, mount dependency and prune timer, keepalive timer and script, backup directory, timer, freshness and integrity, env, checkout, listener allowlist, stack health, `tls-certificate`, `http-redirect`, `hsts`, `compression`, `caddy-issuance`, and the 200/401 HTTPS API. |
 | `deploy/webhook.sh` | Creates or updates the GitHub `pull_request` webhook for the deployed host (default `https://$CURVED_DOMAIN/webhooks/github`), always PATCHing an existing same-URL hook so the secret is reapplied; `--repo`, `--url`, `--env-file`, `--dry-run`. |
 | `.github/workflows/verify.yml` | CI gate: push to main plus manual dispatch, Postgres 18 service, typecheck, architecture check, tests, web build; the main-only `deploy` job (`needs: verify`) SSHes with the `DEPLOY_*` secrets and runs `deploy/release.sh`. |
+| `.github/workflows/rotate-ui-token.yml` | Manual `workflow_dispatch` token recovery: validates the `DEPLOY_*` and `CURVED_UI_TOKEN` secrets, pipes the token over stdin to `deploy@$DEPLOY_HOST`, atomically rewrites the mode-600 env line with backup and release re-run on failure, runs `deploy/release.sh`, and proves a 200 from `POST /api/session`. Concurrency group `rotate-ui-token`. |
 | `src/domain/` | Pure rules and types: status and transition contract, actor matrix, claim and move policy, validation, key parsing, domain errors, shared record types. |
 | `src/application/` | Ports (`ports.ts`) and the full SQL-free use-case set: `projects.ts`, `issues.ts` with `issue-read-model.ts`, `agents.ts`, `queue.ts`, `blocking.ts`, `comments.ts`, `labels.ts`, `relations.ts`, `github.ts`, `sessions.ts` (opaque session creation and `SESSION_MAX_AGE_SECONDS`), and `passkeys.ts` (availability, listing, registration, and login options). |
 | `src/adapters/` | Adapters. Inbound: `http/` (router, auth, error mapping, request/response transport, webhook), `mcp/`, `cli/`, `github/` (signature and payload), `sse/`, `static/`. Outbound: `postgres/` (`pool.ts`, `migrate.ts`, `event-hub.ts`, `ports.ts` binding the pool and transactions, plus `repositories/`: projects, issues, issue events, issue meta, agents, labels, relations, passkeys, auth sessions, and passkey challenges), `token-codec.ts`, `timing-safe.ts`. |
