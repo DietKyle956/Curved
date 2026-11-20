@@ -200,9 +200,13 @@ export function SignIn({
                 <div className="relative">
                   <input
                     id={id}
-                    name="token"
+                    name="ui-token"
                     type={showToken ? "text" : "password"}
-                    autoComplete="current-password"
+                    autoComplete="off"
+                    autoCapitalize="none"
+                    autoCorrect="off"
+                    spellCheck={false}
+                    enterKeyHint="go"
                     autoFocus
                     className="field-input pr-10"
                     value={token}
