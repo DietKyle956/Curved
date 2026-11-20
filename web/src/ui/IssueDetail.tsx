@@ -154,6 +154,7 @@ interface IssueDetailProps {
   issueKeys: string[];
   onClose: () => void;
   onOpenIssueKey: (key: string) => void;
+  onOpenProject?: (key: string) => void;
   onRetry: () => void;
   onTransition: (key: string, status: Status) => Promise<boolean>;
   onComment: (key: string, body: string) => Promise<boolean>;
@@ -175,6 +176,7 @@ export function IssueDetail({
   issueKeys,
   onClose,
   onOpenIssueKey,
+  onOpenProject,
   onRetry,
   onTransition,
   onComment,
@@ -413,9 +415,22 @@ export function IssueDetail({
             ) : (
               <>
                 <div className="flex items-center gap-2">
-                  <span className="font-mono text-[10px] text-fg-muted">
-                    {issue.projectKey}
-                  </span>
+                  {onOpenProject === undefined ? (
+                    <span className="font-mono text-[10px] text-fg-muted">
+                      {issue.projectKey}
+                    </span>
+                  ) : (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        onOpenProject(issue.projectKey);
+                      }}
+                      className="rounded-[3px] font-mono text-[10px] text-fg-muted transition-colors hover:text-spice focus-visible:text-spice"
+                      title={`Open ${issue.projectKey} overview`}
+                    >
+                      {issue.projectKey}
+                    </button>
+                  )}
                   <PriorityMark priority={issue.priority} showLabel />
                   {issue.claimedBy !== null ? (
                     <span className="ml-auto inline-flex items-center gap-1.5">

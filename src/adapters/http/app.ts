@@ -27,7 +27,12 @@ import type {
   WebAuthnConfig,
 } from "../../application/passkeys.ts";
 import type { Ports } from "../../application/ports.ts";
-import { createProject, listProjects } from "../../application/projects.ts";
+import {
+  createProject,
+  getProject,
+  listProjects,
+  updateProject,
+} from "../../application/projects.ts";
 import { claimNext, listReady, releaseClaim } from "../../application/queue.ts";
 import { addRelation } from "../../application/relations.ts";
 import { createSession } from "../../application/sessions.ts";
@@ -148,6 +153,54 @@ function optionalNumberField(
   }
   if (typeof value !== "number" || !Number.isInteger(value)) {
     throw new ServiceError("validation", `"${name}" must be an integer`);
+  }
+  return value;
+}
+
+function nullableStringField(
+  body: Record<string, unknown>,
+  name: string,
+): string | null | undefined {
+  const value = body[name];
+  if (value === undefined) {
+    return undefined;
+  }
+  if (value === null) {
+    return null;
+  }
+  if (typeof value !== "string") {
+    throw new ServiceError("validation", `"${name}" must be a string`);
+  }
+  return value;
+}
+
+function nullableNumberField(
+  body: Record<string, unknown>,
+  name: string,
+): number | null | undefined {
+  const value = body[name];
+  if (value === undefined) {
+    return undefined;
+  }
+  if (value === null) {
+    return null;
+  }
+  if (typeof value !== "number" || !Number.isInteger(value)) {
+    throw new ServiceError("validation", `"${name}" must be an integer`);
+  }
+  return value;
+}
+
+function optionalBooleanField(
+  body: Record<string, unknown>,
+  name: string,
+): boolean | undefined {
+  const value = body[name];
+  if (value === undefined) {
+    return undefined;
+  }
+  if (typeof value !== "boolean") {
+    throw new ServiceError("validation", `"${name}" must be a boolean`);
   }
   return value;
 }
@@ -405,22 +458,65 @@ export function createApp(options: CreateAppOptions): App {
     }
 
     if (resource === "projects") {
-      if (key !== undefined) {
+      if (key === undefined) {
+        if (method === "GET") {
+          await auth();
+          const includeArchived =
+            queryParam(url, "includeArchived") === "true";
+          return json({
+            projects: await listProjects(ports, { includeArchived }),
+          });
+        }
+        if (method === "POST") {
+          requireHuman(await auth());
+          const body = await requestBody();
+          const project = await createProject(ports, {
+            key: stringField(body, "key"),
+            name: stringField(body, "name"),
+            summary: optionalStringField(body, "summary"),
+            description: optionalStringField(body, "description"),
+            status: optionalStringField(body, "status"),
+            priority: nullableNumberField(body, "priority"),
+            startDate: nullableStringField(body, "startDate"),
+            targetDate: nullableStringField(body, "targetDate"),
+          });
+          return json({ project }, 201);
+        }
         return json(NOT_FOUND_BODY, 404);
       }
-      if (method === "GET") {
-        await auth();
-        return json({ projects: await listProjects(ports) });
+
+      if (action === undefined) {
+        const authContext = await auth();
+        if (method === "GET") {
+          return json({ project: await getProject(ports, key) });
+        }
+        if (method === "PATCH") {
+          requireHuman(authContext);
+          const body = await requestBody();
+          if (body.key !== undefined) {
+            throw new ServiceError(
+              "validation",
+              "a project key cannot change",
+            );
+          }
+          const project = await updateProject(ports, {
+            key,
+            name: optionalStringField(body, "name"),
+            summary: optionalStringField(body, "summary"),
+            description: optionalStringField(body, "description"),
+            status: optionalStringField(body, "status"),
+            priority: nullableNumberField(body, "priority"),
+            startDate: nullableStringField(body, "startDate"),
+            targetDate: nullableStringField(body, "targetDate"),
+            archived: optionalBooleanField(body, "archived"),
+            actor: authContext.serviceActor,
+            agent: authContext.agentName ?? undefined,
+          });
+          return json({ project });
+        }
+        return json(NOT_FOUND_BODY, 404);
       }
-      if (method === "POST") {
-        requireHuman(await auth());
-        const body = await requestBody();
-        const project = await createProject(ports, {
-          key: stringField(body, "key"),
-          name: stringField(body, "name"),
-        });
-        return json({ project }, 201);
-      }
+
       return json(NOT_FOUND_BODY, 404);
     }
 
@@ -465,6 +561,12 @@ export function createApp(options: CreateAppOptions): App {
         if (method === "PATCH") {
           requireHuman(authContext);
           const body = await requestBody();
+          if (body.project !== undefined) {
+            throw new ServiceError(
+              "validation",
+              "an issue's project cannot change",
+            );
+          }
           const issue = await updateIssue(ports, {
             key,
             title: optionalStringField(body, "title"),

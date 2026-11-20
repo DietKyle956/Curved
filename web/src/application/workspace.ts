@@ -17,7 +17,9 @@ import {
   boardPath,
   issuePath,
   newIssuePath,
+  overviewPath,
   parseRoute,
+  projectsPath,
   queuePath,
 } from "../domain/routes.ts";
 import type { Route } from "../domain/routes.ts";
@@ -25,9 +27,11 @@ import type {
   Issue,
   IssueTimeline,
   NewIssueInput,
+  NewProjectInput,
   PasskeySummary,
   Priority,
   Project,
+  ProjectPatch,
   ReadyQueue,
   Status,
   ToastItem,
@@ -88,9 +92,20 @@ export interface Workspace {
   removePasskey(id: string): Promise<boolean>;
 
   retryProjects(): void;
-  createProject(input: { key: string; name: string }): Promise<Project>;
+  createProject(input: NewProjectInput): Promise<Project>;
   projectCreated(project: Project): void;
   selectProject(key: string): void;
+
+  projectDialog:
+    | { mode: "create" }
+    | { mode: "edit"; project: Project }
+    | null;
+  openNewProject(): void;
+  openEditProject(project: Project): void;
+  closeProjectDialog(): void;
+  saveProject(input: NewProjectInput): Promise<boolean>;
+  archiveProject(key: string): Promise<boolean>;
+  restoreProject(key: string): Promise<boolean>;
 
   refresh(): void;
   retryDetail(): void;
@@ -157,6 +172,9 @@ export function useWorkspace({
   const [query, setQueryState] = useState("");
   const [labelFilter, setLabelFilterState] = useState<string | null>(null);
   const [paletteOpen, setPaletteOpen] = useState(false);
+  const [projectDialog, setProjectDialog] = useState<
+    { mode: "create" } | { mode: "edit"; project: Project } | null
+  >(null);
   const [newIssueStatus, setNewIssueStatus] = useState<Status>("backlog");
   const [toasts, setToasts] = useState<ToastItem[]>([]);
 
@@ -229,7 +247,6 @@ export function useWorkspace({
       return;
     }
     let alive = true;
-    setProjectsLoaded(false);
     setProjectsError(null);
     void api
       .projects()
@@ -264,8 +281,19 @@ export function useWorkspace({
   const project =
     projects.find((item) => item.key === projectKeyFromRoute) ?? null;
 
+  // Progress mutations arrive through the projects payload, so refetch when
+  // entering the projects page or a project overview.
+  useEffect(() => {
+    if (route.kind === "projects" || route.kind === "overview") {
+      setProjectsTick((current) => current + 1);
+    }
+  }, [route.kind, projectKeyFromRoute]);
+
   useEffect(() => {
     if (auth !== "human" || projects.length === 0) {
+      return;
+    }
+    if (route.kind === "projects") {
       return;
     }
     if (
@@ -306,6 +334,7 @@ export function useWorkspace({
     setReady(null);
     setIssuesError(null);
     setTimeline(null);
+    setDetailError(null);
     setIssuesLoading(true);
   }, [projectKeyFromRoute]);
 
@@ -314,7 +343,11 @@ export function useWorkspace({
   }, []);
 
   useEffect(() => {
-    if (auth !== "human" || projectKeyFromRoute === null) {
+    if (
+      auth !== "human" ||
+      projectKeyFromRoute === null ||
+      route.kind === "projects"
+    ) {
       return;
     }
     let alive = true;
@@ -366,20 +399,28 @@ export function useWorkspace({
       alive = false;
       window.removeEventListener("focus", onFocus);
     };
-  }, [auth, projectKeyFromRoute, dataTick, onUnauthorized, api]);
+  }, [auth, projectKeyFromRoute, route.kind, dataTick, onUnauthorized, api]);
 
   const issueKey = route.kind === "issue" ? route.key : null;
 
   const onEventsChange = useCallback((): void => {
+    if (route.kind === "projects") {
+      setProjectsTick((current) => current + 1);
+      return;
+    }
     refresh();
+    if (route.kind === "overview") {
+      setProjectsTick((current) => current + 1);
+    }
     if (issueKey !== null) {
       setDetailTick((current) => current + 1);
     }
-  }, [issueKey, refresh]);
+  }, [issueKey, refresh, route.kind]);
 
   realtime.useIssuesChanged({
-    enabled: auth === "human" && project !== null,
-    projectId: project?.id ?? null,
+    enabled:
+      auth === "human" && (route.kind === "projects" || project !== null),
+    projectId: route.kind === "projects" ? null : project?.id ?? null,
     onChange: onEventsChange,
   });
 
@@ -420,7 +461,7 @@ export function useWorkspace({
     return () => {
       alive = false;
     };
-  }, [auth, issueKey, detailTick, onUnauthorized, api]);
+  }, [auth, issueKey, detailTick, projectKeyFromRoute, onUnauthorized, api]);
 
   const run = useCallback(
     async (action: () => Promise<unknown>, success?: string): Promise<boolean> => {
@@ -531,18 +572,119 @@ export function useWorkspace({
     [navigate, notify, onUnauthorized, project, refresh],
   );
 
+  const upsertProject = useCallback((next: Project): void => {
+    setProjects((current) =>
+      [...current.filter((item) => item.key !== next.key), next].sort(
+        (left, right) => left.key.localeCompare(right.key),
+      ),
+    );
+    setProjectsLoaded(true);
+  }, []);
+
   const projectCreated = useCallback(
     (created: Project): void => {
-      setProjects((current) =>
-        [...current.filter((item) => item.key !== created.key), created].sort(
-          (left, right) => left.key.localeCompare(right.key),
-        ),
-      );
-      setProjectsLoaded(true);
-      navigate(boardPath(created.key));
+      upsertProject(created);
+      navigate(overviewPath(created.key));
       notify("success", `Created project ${created.key}`);
     },
-    [navigate, notify],
+    [navigate, notify, upsertProject],
+  );
+
+  const openNewProject = useCallback((): void => {
+    setPaletteOpen(false);
+    setProjectDialog({ mode: "create" });
+  }, []);
+
+  const openEditProject = useCallback((target: Project): void => {
+    setProjectDialog({ mode: "edit", project: target });
+  }, []);
+
+  const closeProjectDialog = useCallback((): void => {
+    setProjectDialog(null);
+  }, []);
+
+  const saveProject = useCallback(
+    async (input: NewProjectInput): Promise<boolean> => {
+      if (projectDialog === null) {
+        return false;
+      }
+      try {
+        if (projectDialog.mode === "create") {
+          const result = await api.createProject(input);
+          upsertProject(result.project);
+          setProjectDialog(null);
+          navigate(overviewPath(result.project.key));
+          notify("success", `Created project ${result.project.key}`);
+        } else {
+          const patch: ProjectPatch = {
+            name: input.name,
+            summary: input.summary,
+            description: input.description,
+            status: input.status,
+            priority: input.priority,
+            startDate: input.startDate,
+            targetDate: input.targetDate,
+          };
+          const result = await api.updateProject(
+            projectDialog.project.key,
+            patch,
+          );
+          upsertProject(result.project);
+          setProjectDialog(null);
+          notify("success", `Updated project ${result.project.key}`);
+        }
+        return true;
+      } catch (error) {
+        if (isUnauthorized(error)) {
+          onUnauthorized();
+          return false;
+        }
+        notify("error", messageOf(error));
+        return false;
+      }
+    },
+    [api, navigate, notify, onUnauthorized, projectDialog, upsertProject],
+  );
+
+  const archiveProject = useCallback(
+    async (key: string): Promise<boolean> => {
+      try {
+        const result = await api.updateProject(key, { archived: true });
+        upsertProject(result.project);
+        notify("success", `Archived ${key}`);
+        if (project?.key === key) {
+          navigate(projectsPath());
+        }
+        return true;
+      } catch (error) {
+        if (isUnauthorized(error)) {
+          onUnauthorized();
+          return false;
+        }
+        notify("error", messageOf(error));
+        return false;
+      }
+    },
+    [api, navigate, notify, onUnauthorized, project, upsertProject],
+  );
+
+  const restoreProject = useCallback(
+    async (key: string): Promise<boolean> => {
+      try {
+        const result = await api.updateProject(key, { archived: false });
+        upsertProject(result.project);
+        notify("success", `Restored ${key}`);
+        return true;
+      } catch (error) {
+        if (isUnauthorized(error)) {
+          onUnauthorized();
+          return false;
+        }
+        notify("error", messageOf(error));
+        return false;
+      }
+    },
+    [api, notify, onUnauthorized, upsertProject],
   );
 
   const selectProject = useCallback(
@@ -708,7 +850,7 @@ export function useWorkspace({
   }, []);
 
   const createProject = useCallback(
-    async (input: { key: string; name: string }): Promise<Project> => {
+    async (input: NewProjectInput): Promise<Project> => {
       const result = await api.createProject(input);
       return result.project;
     },
@@ -829,6 +971,14 @@ export function useWorkspace({
     createProject,
     projectCreated,
     selectProject,
+
+    projectDialog,
+    openNewProject,
+    openEditProject,
+    closeProjectDialog,
+    saveProject,
+    archiveProject,
+    restoreProject,
 
     refresh,
     retryDetail,

@@ -1,4 +1,8 @@
 export type Route =
+  // `project?: undefined` keeps existing callers that read `route.project`
+  // across the union compiling without narrowing on the route kind.
+  | { kind: "projects"; project?: undefined }
+  | { kind: "overview"; project: string }
   | { kind: "board"; project?: string }
   | { kind: "queue"; project?: string }
   | { kind: "issue"; project: string; key: string }
@@ -22,10 +26,17 @@ export function parseRoute(pathname: string): Route {
     return { kind: "new" };
   }
 
+  if (segments[0] === "projects" && segments.length === 1) {
+    return { kind: "projects" };
+  }
+
   if (segments[0] === "p" && segments[1] !== undefined) {
     const project = decodeSegment(segments[1]);
     if (segments[2] === "queue") {
       return { kind: "queue", project };
+    }
+    if (segments[2] === "overview" && segments[3] === undefined && project !== undefined) {
+      return { kind: "overview", project };
     }
     if (segments[2] === "new" && segments[3] === undefined) {
       return { kind: "new", project };
@@ -42,8 +53,16 @@ export function parseRoute(pathname: string): Route {
   return { kind: "board" };
 }
 
+export function projectsPath(): string {
+  return "/projects";
+}
+
 export function boardPath(project: string): string {
   return `/p/${encodeURIComponent(project)}`;
+}
+
+export function overviewPath(project: string): string {
+  return `/p/${encodeURIComponent(project)}/overview`;
 }
 
 export function queuePath(project: string): string {

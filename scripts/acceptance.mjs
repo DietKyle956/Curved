@@ -410,6 +410,19 @@ function expectStdout(leg, result, command, expected) {
   );
 }
 
+/** Runs a `--json` CLI command and returns its parsed stdout. */
+function readCliJson(leg, result, command) {
+  assert(leg, result.code === 0, `${command} exited ${result.code}: ${describe(result)}`);
+  try {
+    return JSON.parse(result.stdout);
+  } catch {
+    throw new AcceptanceFailure(
+      leg,
+      `${command} printed non-JSON stdout ${JSON.stringify(truncate(result.stdout))}`,
+    );
+  }
+}
+
 function expectFailure(leg, result, command, code, stderrPrefix) {
   assert(
     leg,
@@ -445,6 +458,145 @@ async function cliLeg(databaseUrl) {
     await runCli(databaseUrl, ["project", "add", PROJECT_KEY, "Acceptance"]),
     "project add",
     `created project ${PROJECT_KEY} (Acceptance)\n`,
+  );
+
+  const shown = readCliJson(
+    leg,
+    await runCli(databaseUrl, ["project", "show", PROJECT_KEY, "--json"]),
+    "project show",
+  );
+  assert(
+    leg,
+    shown.key === PROJECT_KEY && shown.name === "Acceptance",
+    `project show key/name was ${JSON.stringify({ key: shown.key, name: shown.name })}`,
+  );
+  assert(
+    leg,
+    shown.status === "planned",
+    `project show status was ${JSON.stringify(shown.status)}`,
+  );
+  assert(leg, shown.summary === "", `project show summary was ${JSON.stringify(shown.summary)}`);
+  assert(
+    leg,
+    shown.description === "",
+    `project show description was ${JSON.stringify(shown.description)}`,
+  );
+  assert(leg, shown.priority === null, `project show priority was ${JSON.stringify(shown.priority)}`);
+  assert(leg, shown.startDate === null, `project show startDate was ${JSON.stringify(shown.startDate)}`);
+  assert(leg, shown.targetDate === null, `project show targetDate was ${JSON.stringify(shown.targetDate)}`);
+  assert(leg, shown.archivedAt === null, `project show archivedAt was ${JSON.stringify(shown.archivedAt)}`);
+  assert(
+    leg,
+    shown.progress?.total === 0 && shown.progress?.done === 0,
+    `project show progress was ${JSON.stringify(shown.progress)}`,
+  );
+
+  expectStdout(
+    leg,
+    await runCli(databaseUrl, ["project", "list"]),
+    "project list",
+    `${PROJECT_KEY}\tAcceptance\tplanned\t-\t0/0\t-\tno\n`,
+  );
+
+  const edited = readCliJson(
+    leg,
+    await runCli(databaseUrl, [
+      "project",
+      "edit",
+      PROJECT_KEY,
+      "--summary",
+      "Acceptance project",
+      "--status",
+      "in_progress",
+      "--priority",
+      "2",
+      "--target",
+      "2026-12-31",
+      "--json",
+    ]),
+    "project edit",
+  );
+  assert(
+    leg,
+    edited.key === PROJECT_KEY && edited.name === "Acceptance",
+    `project edit key/name was ${JSON.stringify({ key: edited.key, name: edited.name })}`,
+  );
+  assert(
+    leg,
+    edited.summary === "Acceptance project",
+    `project edit summary was ${JSON.stringify(edited.summary)}`,
+  );
+  assert(
+    leg,
+    edited.status === "in_progress",
+    `project edit status was ${JSON.stringify(edited.status)}`,
+  );
+  assert(leg, edited.priority === 2, `project edit priority was ${JSON.stringify(edited.priority)}`);
+  assert(
+    leg,
+    edited.targetDate === "2026-12-31",
+    `project edit targetDate was ${JSON.stringify(edited.targetDate)}`,
+  );
+  assert(
+    leg,
+    edited.startDate === null && edited.description === "" && edited.archivedAt === null,
+    `project edit disturbed untouched fields: ${JSON.stringify({
+      startDate: edited.startDate,
+      description: edited.description,
+      archivedAt: edited.archivedAt,
+    })}`,
+  );
+  assert(
+    leg,
+    edited.progress?.total === 0,
+    `project edit progress was ${JSON.stringify(edited.progress)}`,
+  );
+
+  expectStdout(
+    leg,
+    await runCli(databaseUrl, ["project", "archive", PROJECT_KEY]),
+    "project archive",
+    `archived project ${PROJECT_KEY}\n`,
+  );
+  expectStdout(
+    leg,
+    await runCli(databaseUrl, ["project", "list", "--json"]),
+    "project list after archive",
+    "[]\n",
+  );
+  const archived = readCliJson(
+    leg,
+    await runCli(databaseUrl, ["project", "list", "--all", "--json"]),
+    "project list --all",
+  );
+  assert(
+    leg,
+    Array.isArray(archived) && archived.length === 1 && archived[0]?.key === PROJECT_KEY,
+    `project list --all returned ${JSON.stringify(truncate(JSON.stringify(archived)))}`,
+  );
+  assert(
+    leg,
+    typeof archived[0]?.archivedAt === "string",
+    `archived project archivedAt was ${JSON.stringify(archived[0]?.archivedAt)}`,
+  );
+  expectStdout(
+    leg,
+    await runCli(databaseUrl, ["project", "restore", PROJECT_KEY]),
+    "project restore",
+    `restored project ${PROJECT_KEY}\n`,
+  );
+  const restored = readCliJson(
+    leg,
+    await runCli(databaseUrl, ["project", "show", PROJECT_KEY, "--json"]),
+    "project show after restore",
+  );
+  assert(
+    leg,
+    restored.archivedAt === null && restored.status === "in_progress",
+    `project after restore was ${JSON.stringify({
+      archivedAt: restored.archivedAt,
+      status: restored.status,
+    })}`,
   );
 
   const agent = await runCli(databaseUrl, ["agent", "add", "alpha"]);
@@ -1027,6 +1179,161 @@ async function httpLeg(server, databaseUrl) {
     `GET /p/${PROJECT_KEY} did not serve the SPA shell`,
   );
 
+  const projectsResponse = await fetch(`${baseUrl}/api/projects`, {
+    headers: bearer,
+    signal: AbortSignal.timeout(HTTP_REQUEST_TIMEOUT_MS),
+  });
+  assert(
+    leg,
+    projectsResponse.status === 200,
+    `GET /api/projects returned ${projectsResponse.status}`,
+  );
+  const projectsBody = await projectsResponse.json();
+  const listedProjects = Array.isArray(projectsBody?.projects) ? projectsBody.projects : [];
+  const tac = listedProjects.find((project) => project?.key === PROJECT_KEY);
+  assert(
+    leg,
+    tac !== undefined,
+    `GET /api/projects omitted ${PROJECT_KEY}: ${JSON.stringify(truncate(JSON.stringify(projectsBody)))}`,
+  );
+  assert(
+    leg,
+    tac.status === "in_progress",
+    `GET /api/projects ${PROJECT_KEY} status was ${JSON.stringify(tac.status)}`,
+  );
+  assert(
+    leg,
+    tac.archivedAt === null,
+    `GET /api/projects ${PROJECT_KEY} archivedAt was ${JSON.stringify(tac.archivedAt)}`,
+  );
+  const doneIssues = issuesBody.issues.filter((issue) => issue.status === "done").length;
+  assert(
+    leg,
+    tac.progress?.total === issuesBody.issues.length && tac.progress?.done === doneIssues,
+    `GET /api/projects ${PROJECT_KEY} progress was ${JSON.stringify(tac.progress)}, expected ${issuesBody.issues.length} total and ${doneIssues} done`,
+  );
+
+  const projectDetailResponse = await fetch(`${baseUrl}/api/projects/${PROJECT_KEY}`, {
+    headers: bearer,
+    signal: AbortSignal.timeout(HTTP_REQUEST_TIMEOUT_MS),
+  });
+  assert(
+    leg,
+    projectDetailResponse.status === 200,
+    `GET /api/projects/${PROJECT_KEY} returned ${projectDetailResponse.status}`,
+  );
+  const projectDetailBody = await projectDetailResponse.json();
+  assert(
+    leg,
+    JSON.stringify(projectDetailBody?.project) === JSON.stringify(tac),
+    `GET /api/projects/${PROJECT_KEY} returned ${JSON.stringify(truncate(JSON.stringify(projectDetailBody)))}`,
+  );
+
+  const projectPatchResponse = await fetch(`${baseUrl}/api/projects/${PROJECT_KEY}`, {
+    method: "PATCH",
+    headers: { ...bearer, "content-type": "application/json" },
+    body: JSON.stringify({ summary: "HTTP summary", status: "planned" }),
+    signal: AbortSignal.timeout(HTTP_REQUEST_TIMEOUT_MS),
+  });
+  assert(
+    leg,
+    projectPatchResponse.status === 200,
+    `PATCH /api/projects/${PROJECT_KEY} returned ${projectPatchResponse.status}`,
+  );
+  const projectPatchBody = await projectPatchResponse.json();
+  const patchedProject = projectPatchBody?.project;
+  assert(
+    leg,
+    patchedProject?.summary === "HTTP summary" && patchedProject?.status === "planned",
+    `PATCH /api/projects/${PROJECT_KEY} returned ${JSON.stringify(truncate(JSON.stringify(projectPatchBody)))}`,
+  );
+  assert(
+    leg,
+    patchedProject?.key === PROJECT_KEY && patchedProject?.name === "Acceptance",
+    `PATCH /api/projects/${PROJECT_KEY} changed key/name to ${JSON.stringify({
+      key: patchedProject?.key,
+      name: patchedProject?.name,
+    })}`,
+  );
+
+  const projectCreateResponse = await fetch(`${baseUrl}/api/projects`, {
+    method: "POST",
+    headers: { ...bearer, "content-type": "application/json" },
+    body: JSON.stringify({ key: "OPS", name: "Operations" }),
+    signal: AbortSignal.timeout(HTTP_REQUEST_TIMEOUT_MS),
+  });
+  assert(
+    leg,
+    projectCreateResponse.status === 201,
+    `POST /api/projects returned ${projectCreateResponse.status}`,
+  );
+  const projectCreateBody = await projectCreateResponse.json();
+  assert(
+    leg,
+    projectCreateBody?.project?.key === "OPS" &&
+      projectCreateBody?.project?.name === "Operations" &&
+      projectCreateBody?.project?.status === "planned" &&
+      projectCreateBody?.project?.archivedAt === null &&
+      projectCreateBody?.project?.progress?.total === 0,
+    `POST /api/projects returned ${JSON.stringify(truncate(JSON.stringify(projectCreateBody)))}`,
+  );
+
+  const opsArchiveResponse = await fetch(`${baseUrl}/api/projects/OPS`, {
+    method: "PATCH",
+    headers: { ...bearer, "content-type": "application/json" },
+    body: JSON.stringify({ archived: true }),
+    signal: AbortSignal.timeout(HTTP_REQUEST_TIMEOUT_MS),
+  });
+  assert(
+    leg,
+    opsArchiveResponse.status === 200,
+    `PATCH /api/projects/OPS returned ${opsArchiveResponse.status}`,
+  );
+  const opsArchiveBody = await opsArchiveResponse.json();
+  assert(
+    leg,
+    typeof opsArchiveBody?.project?.archivedAt === "string",
+    `PATCH /api/projects/OPS archivedAt was ${JSON.stringify(truncate(JSON.stringify(opsArchiveBody)))}`,
+  );
+
+  const activeProjectsResponse = await fetch(`${baseUrl}/api/projects`, {
+    headers: bearer,
+    signal: AbortSignal.timeout(HTTP_REQUEST_TIMEOUT_MS),
+  });
+  assert(
+    leg,
+    activeProjectsResponse.status === 200,
+    `GET /api/projects after OPS archive returned ${activeProjectsResponse.status}`,
+  );
+  const activeProjectsBody = await activeProjectsResponse.json();
+  const activeKeys = Array.isArray(activeProjectsBody?.projects)
+    ? activeProjectsBody.projects.map((project) => project?.key)
+    : [];
+  assert(
+    leg,
+    activeKeys.includes(PROJECT_KEY) && !activeKeys.includes("OPS"),
+    `GET /api/projects listed ${JSON.stringify(activeKeys)}, expected ${PROJECT_KEY} without OPS`,
+  );
+
+  const allProjectsResponse = await fetch(`${baseUrl}/api/projects?includeArchived=true`, {
+    headers: bearer,
+    signal: AbortSignal.timeout(HTTP_REQUEST_TIMEOUT_MS),
+  });
+  assert(
+    leg,
+    allProjectsResponse.status === 200,
+    `GET /api/projects?includeArchived=true returned ${allProjectsResponse.status}`,
+  );
+  const allProjectsBody = await allProjectsResponse.json();
+  const allKeys = Array.isArray(allProjectsBody?.projects)
+    ? allProjectsBody.projects.map((project) => project?.key)
+    : [];
+  assert(
+    leg,
+    allKeys.includes(PROJECT_KEY) && allKeys.includes("OPS"),
+    `GET /api/projects?includeArchived=true listed ${JSON.stringify(allKeys)}, expected ${PROJECT_KEY} and OPS`,
+  );
+
   const streamFailure = stream.failure;
   await closeSseStream(stream);
   assert(
@@ -1453,7 +1760,7 @@ async function main() {
     await httpLeg(server, acceptanceUrl);
     pass(
       "http+sse",
-      `${checks - legChecks} checks: bearer, session cookie, ready frame, issues_changed for ${PROJECT_KEY}`,
+      `${checks - legChecks} checks: bearer, session cookie, ready frame, issues_changed for ${PROJECT_KEY}, project detail/PATCH/archive`,
     );
 
     gate.currentLeg = "webhook";

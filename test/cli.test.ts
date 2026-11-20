@@ -41,6 +41,27 @@ interface TimelineEvent {
   createdAt: string;
 }
 
+interface ProjectJson {
+  id: number;
+  key: string;
+  name: string;
+  summary: string;
+  description: string;
+  status: string;
+  priority: number | null;
+  startDate: string | null;
+  targetDate: string | null;
+  archivedAt: string | null;
+  nextNumber: number;
+  createdAt: string;
+  updatedAt: string;
+  progress: {
+    total: number;
+    done: number;
+    byStatus: Record<string, number>;
+  };
+}
+
 interface ShowPayload {
   key: string;
   status: string;
@@ -123,6 +144,198 @@ test("project list --json returns the created project", async () => {
   assert.equal(projects.length, 1);
   assert.equal(projects[0]?.key, "TAC");
   assert.equal(projects[0]?.name, "Tac");
+});
+
+test("project add honors --summary, --status, --priority, --start, and --target", async () => {
+  const result = await runCli([
+    "project",
+    "add",
+    "TAC",
+    "Tac",
+    "--summary",
+    "Tactical work",
+    "--status",
+    "in_progress",
+    "--priority",
+    "2",
+    "--start",
+    "2026-01-05",
+    "--target",
+    "2026-12-31",
+    "--json",
+  ]);
+
+  assert.equal(result.code, 0, result.stderr);
+  const project = JSON.parse(result.stdout) as ProjectJson;
+  assert.equal(project.key, "TAC");
+  assert.equal(project.name, "Tac");
+  assert.equal(project.summary, "Tactical work");
+  assert.equal(project.description, "");
+  assert.equal(project.status, "in_progress");
+  assert.equal(project.priority, 2);
+  assert.equal(project.startDate, "2026-01-05");
+  assert.equal(project.targetDate, "2026-12-31");
+  assert.equal(project.archivedAt, null);
+  assert.deepEqual(project.progress, {
+    total: 0,
+    done: 0,
+    byStatus: { backlog: 0, todo: 0, in_progress: 0, in_review: 0, done: 0 },
+  });
+});
+
+test("project show prints JSON and the pinned human block", async () => {
+  const added = await runCli(["project", "add", "TAC", "Tac"]);
+  assert.equal(added.code, 0, added.stderr);
+  assert.equal(added.stdout, "created project TAC (Tac)\n");
+
+  const json = await runCli(["project", "show", "TAC", "--json"]);
+  assert.equal(json.code, 0, json.stderr);
+  const project = JSON.parse(json.stdout) as ProjectJson;
+  assert.equal(project.key, "TAC");
+  assert.equal(project.name, "Tac");
+  assert.equal(project.status, "planned");
+  assert.equal(project.summary, "");
+  assert.equal(project.description, "");
+  assert.equal(project.progress.total, 0);
+  assert.equal(project.progress.done, 0);
+
+  const human = await runCli(["project", "show", "TAC"]);
+  assert.equal(human.code, 0, human.stderr);
+  assert.equal(
+    human.stdout,
+    [
+      "TAC\tTac",
+      "status\tplanned",
+      "priority\t-",
+      "start\t-",
+      "target\t-",
+      "progress\t0/0",
+      "archived\tno",
+      "summary\t",
+      "description\t",
+      "",
+    ].join("\n"),
+  );
+});
+
+test("project list prints the pinned seven-column human row", async () => {
+  const added = await runCli(["project", "add", "TAC", "Acceptance"]);
+  assert.equal(added.code, 0, added.stderr);
+
+  const result = await runCli(["project", "list"]);
+
+  assert.equal(result.code, 0, result.stderr);
+  assert.equal(result.stdout, "TAC\tAcceptance\tplanned\t-\t0/0\t-\tno\n");
+});
+
+test("project edit updates fields and clears priority and start with none", async () => {
+  const added = await runCli([
+    "project",
+    "add",
+    "TAC",
+    "Tac",
+    "--priority",
+    "3",
+    "--start",
+    "2026-01-05",
+  ]);
+  assert.equal(added.code, 0, added.stderr);
+
+  const edited = await runCli([
+    "project",
+    "edit",
+    "TAC",
+    "--name",
+    "Tactical",
+    "--summary",
+    "Updated",
+    "--status",
+    "in_progress",
+    "--priority",
+    "2",
+    "--target",
+    "2026-12-31",
+    "--json",
+  ]);
+  assert.equal(edited.code, 0, edited.stderr);
+  const updated = JSON.parse(edited.stdout) as ProjectJson;
+  assert.equal(updated.name, "Tactical");
+  assert.equal(updated.summary, "Updated");
+  assert.equal(updated.status, "in_progress");
+  assert.equal(updated.priority, 2);
+  assert.equal(updated.startDate, "2026-01-05");
+  assert.equal(updated.targetDate, "2026-12-31");
+
+  const cleared = await runCli([
+    "project",
+    "edit",
+    "TAC",
+    "--priority",
+    "none",
+    "--start",
+    "none",
+    "--json",
+  ]);
+  assert.equal(cleared.code, 0, cleared.stderr);
+  const after = JSON.parse(cleared.stdout) as ProjectJson;
+  assert.equal(after.priority, null);
+  assert.equal(after.startDate, null);
+  assert.equal(after.name, "Tactical");
+
+  const human = await runCli(["project", "edit", "TAC", "--summary", "Human"]);
+  assert.equal(human.code, 0, human.stderr);
+  assert.equal(human.stdout, "updated project TAC\n");
+});
+
+test("project archive and restore filter the list and print pinned lines", async () => {
+  const added = await runCli(["project", "add", "TAC", "Tac", "--json"]);
+  assert.equal(added.code, 0, added.stderr);
+
+  const archived = await runCli(["project", "archive", "TAC"]);
+  assert.equal(archived.code, 0, archived.stderr);
+  assert.equal(archived.stdout, "archived project TAC\n");
+
+  const active = await runCli(["project", "list", "--json"]);
+  assert.equal(active.code, 0, active.stderr);
+  assert.deepEqual(JSON.parse(active.stdout), []);
+
+  const all = await runCli(["project", "list", "--all", "--json"]);
+  assert.equal(all.code, 0, all.stderr);
+  const allProjects = JSON.parse(all.stdout) as ProjectJson[];
+  assert.equal(allProjects.length, 1);
+  assert.equal(allProjects[0]?.key, "TAC");
+  assert.notEqual(allProjects[0]?.archivedAt, null);
+
+  const humanAll = await runCli(["project", "list", "--all"]);
+  assert.equal(humanAll.code, 0, humanAll.stderr);
+  assert.equal(humanAll.stdout, "TAC\tTac\tplanned\t-\t0/0\t-\tyes\n");
+
+  const restored = await runCli(["project", "restore", "TAC"]);
+  assert.equal(restored.code, 0, restored.stderr);
+  assert.equal(restored.stdout, "restored project TAC\n");
+
+  const after = await runCli(["project", "list", "--json"]);
+  assert.equal(after.code, 0, after.stderr);
+  const afterProjects = JSON.parse(after.stdout) as ProjectJson[];
+  assert.equal(afterProjects.length, 1);
+  assert.equal(afterProjects[0]?.archivedAt, null);
+});
+
+test("project usage errors exit 2 with the usage block", async () => {
+  const project = await runCli(["project", "add", "TAC", "Tac", "--json"]);
+  assert.equal(project.code, 0, project.stderr);
+
+  const unknownFlag = await runCli(["project", "add", "TAC", "Tac", "--bogus"]);
+  assert.equal(unknownFlag.code, 2);
+  assert.match(unknownFlag.stderr, /unknown option "--bogus"/);
+  assert.match(unknownFlag.stderr, /Usage: curved <command> \[options\]/);
+  assert.equal(unknownFlag.stdout, "");
+
+  const missingKey = await runCli(["project", "show"]);
+  assert.equal(missingKey.code, 2);
+  assert.match(missingKey.stderr, /project show requires <KEY>/);
+  assert.match(missingKey.stderr, /Usage: curved <command> \[options\]/);
+  assert.equal(missingKey.stdout, "");
 });
 
 test("a duplicate project add exits 1 with a duplicate error on stderr", async () => {

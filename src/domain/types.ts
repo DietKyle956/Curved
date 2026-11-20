@@ -1,4 +1,10 @@
-import type { ActorType, EventKind, Priority, Status } from "./status.ts";
+import type {
+  ActorType,
+  EventKind,
+  Priority,
+  ProjectStatus,
+  Status,
+} from "./status.ts";
 
 export interface Issue {
   id: number;
@@ -27,8 +33,34 @@ export interface Project {
   id: number;
   key: string;
   name: string;
+  summary: string;
+  description: string;
+  status: ProjectStatus;
+  priority: Priority | null;
+  startDate: string | null; // YYYY-MM-DD
+  targetDate: string | null; // YYYY-MM-DD
+  archivedAt: string | null;
   nextNumber: number;
   createdAt: string;
+  updatedAt: string;
+}
+
+export interface ProjectProgress {
+  total: number;
+  done: number;
+  byStatus: Record<Status, number>;
+}
+
+export interface ProjectWithProgress extends Project {
+  progress: ProjectProgress;
+}
+
+export function emptyProgress(): ProjectProgress {
+  return {
+    total: 0,
+    done: 0,
+    byStatus: { backlog: 0, todo: 0, in_progress: 0, in_review: 0, done: 0 },
+  };
 }
 
 export interface Agent {

@@ -1,9 +1,20 @@
-// Single contract for statuses, priorities, event kinds, and actor types.
-// Every layer (database constraints, services, CLI) imports these values so
-// stored strings and compile-time types can never drift apart.
+// Single contract for issue statuses, project statuses, priorities, event
+// kinds, and actor types. Every layer (database constraints, services, CLI)
+// imports these values so stored strings and compile-time types can never
+// drift apart.
 
 export const STATUSES = ["backlog", "todo", "in_progress", "in_review", "done"] as const;
 export type Status = (typeof STATUSES)[number];
+
+export const PROJECT_STATUSES = [
+  "backlog",
+  "planned",
+  "in_progress",
+  "paused",
+  "completed",
+  "canceled",
+] as const;
+export type ProjectStatus = (typeof PROJECT_STATUSES)[number];
 
 export const PRIORITIES = [1, 2, 3, 4] as const;
 export type Priority = (typeof PRIORITIES)[number];
@@ -26,10 +37,15 @@ export const ACTOR_TYPES = ["agent", "human", "git", "system"] as const;
 export type ActorType = (typeof ACTOR_TYPES)[number];
 
 export const DEFAULT_STATUS: Status = "backlog";
+export const DEFAULT_PROJECT_STATUS: ProjectStatus = "planned";
 export const DEFAULT_PRIORITY: Priority = 3;
 
 export function isStatus(value: string): value is Status {
   return (STATUSES as readonly string[]).includes(value);
+}
+
+export function isProjectStatus(value: string): value is ProjectStatus {
+  return (PROJECT_STATUSES as readonly string[]).includes(value);
 }
 
 export function isPriority(value: number): value is Priority {

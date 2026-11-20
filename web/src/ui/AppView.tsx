@@ -1,14 +1,17 @@
 import { WarningCircle } from "@phosphor-icons/react";
 
 import type { Workspace } from "../application/workspace.ts";
-import { boardPath, queuePath } from "../domain/routes.ts";
+import { boardPath, overviewPath, queuePath } from "../domain/routes.ts";
 import { Board } from "./Board.tsx";
 import { BootError, BootScreen } from "./Boot.tsx";
 import { CommandPalette } from "./CommandPalette.tsx";
 import { IssueDetail } from "./IssueDetail.tsx";
 import { NewIssueDialog } from "./NewIssueDialog.tsx";
 import { PasskeysDialog } from "./PasskeysDialog.tsx";
+import { ProjectDialog } from "./ProjectDialog.tsx";
+import { ProjectOverview } from "./ProjectOverview.tsx";
 import { ProjectSetup } from "./ProjectSetup.tsx";
+import { ProjectsPage } from "./ProjectsPage.tsx";
 import { Queue } from "./Queue.tsx";
 import { MobileNav, Sidebar, Topbar } from "./Shell.tsx";
 import { SignIn } from "./SignIn.tsx";
@@ -94,9 +97,16 @@ export function AppView({ workspace }: { workspace: Workspace }) {
             query={workspace.query}
             onQueryChange={workspace.setQuery}
             onProjectChange={workspace.selectProject}
-            onNewIssue={() => {
-              workspace.openNewIssue("backlog");
-            }}
+            primaryLabel={
+              workspace.route.kind === "projects" ? "New project" : "New issue"
+            }
+            onNewIssue={
+              workspace.route.kind === "projects"
+                ? workspace.openNewProject
+                : () => {
+                    workspace.openNewIssue("backlog");
+                  }
+            }
             onRefresh={workspace.refresh}
             refreshing={workspace.refreshing}
             onOpenPasskeys={workspace.openPasskeys}
@@ -111,7 +121,46 @@ export function AppView({ workspace }: { workspace: Workspace }) {
                 </div>
               ) : null}
 
-              {workspace.issuesError !== null && workspace.issues.length === 0 ? (
+              {workspace.route.kind === "projects" ? (
+                <ProjectsPage
+                  projects={workspace.projects}
+                  onOpenProject={(target) => {
+                    workspace.navigate(overviewPath(target.key));
+                  }}
+                  onNewProject={workspace.openNewProject}
+                  onRestore={(key) => {
+                    void workspace.restoreProject(key);
+                  }}
+                />
+              ) : workspace.route.kind === "overview" &&
+                workspace.project !== null ? (
+                <ProjectOverview
+                  project={workspace.project}
+                  onOpenBoard={() => {
+                    if (workspace.project !== null) {
+                      workspace.navigate(boardPath(workspace.project.key));
+                    }
+                  }}
+                  onNewIssue={() => {
+                    workspace.openNewIssue("backlog");
+                  }}
+                  onEdit={() => {
+                    if (workspace.project !== null) {
+                      workspace.openEditProject(workspace.project);
+                    }
+                  }}
+                  onArchive={() => {
+                    if (workspace.project !== null) {
+                      void workspace.archiveProject(workspace.project.key);
+                    }
+                  }}
+                  onRestore={() => {
+                    if (workspace.project !== null) {
+                      void workspace.restoreProject(workspace.project.key);
+                    }
+                  }}
+                />
+              ) : workspace.issuesError !== null && workspace.issues.length === 0 ? (
                 <div className="flex flex-1 items-center justify-center px-5">
                   <div className="w-full max-w-sm rounded-ui border border-line bg-panel p-4">
                     <WarningCircle className="size-4 text-storm" aria-hidden="true" />
@@ -177,6 +226,9 @@ export function AppView({ workspace }: { workspace: Workspace }) {
                   workspace.navigate(boardPath(project.key));
                 }}
                 onOpenIssueKey={workspace.openIssueKey}
+                onOpenProject={(key) => {
+                  workspace.navigate(overviewPath(key));
+                }}
                 onRetry={workspace.retryDetail}
                 onTransition={workspace.move}
                 onComment={workspace.comment}
@@ -212,6 +264,7 @@ export function AppView({ workspace }: { workspace: Workspace }) {
         onNewIssue={() => {
           workspace.openNewIssue("backlog");
         }}
+        onNewProject={workspace.openNewProject}
         onSignOut={workspace.signOut}
         onRefresh={workspace.refresh}
         onOpenPasskeys={workspace.openPasskeys}
@@ -224,6 +277,18 @@ export function AppView({ workspace }: { workspace: Workspace }) {
         allLabels={workspace.allLabels}
         onClose={workspace.closeNewIssue}
         onCreate={workspace.createIssue}
+      />
+
+      <ProjectDialog
+        open={workspace.projectDialog !== null}
+        project={
+          workspace.projectDialog !== null &&
+          workspace.projectDialog.mode === "edit"
+            ? workspace.projectDialog.project
+            : null
+        }
+        onClose={workspace.closeProjectDialog}
+        onSave={workspace.saveProject}
       />
 
       <PasskeysDialog

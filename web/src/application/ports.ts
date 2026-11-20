@@ -7,9 +7,11 @@ import type {
   Issue,
   IssueEvent,
   IssueTimeline,
+  NewProjectInput,
   PasskeySummary,
   Project,
   ProjectList,
+  ProjectPatch,
   ReadyQueue,
   Status,
 } from "../domain/types.ts";
@@ -25,7 +27,9 @@ export interface ApiPort {
   signIn(token: string): Promise<{ actor: Actor }>;
   signOut(): Promise<void>;
   projects(): Promise<ProjectList>;
-  createProject(input: { key: string; name: string }): Promise<{ project: Project }>;
+  project(key: string): Promise<{ project: Project }>;
+  createProject(input: NewProjectInput): Promise<{ project: Project }>;
+  updateProject(key: string, patch: ProjectPatch): Promise<{ project: Project }>;
   issues(project: string): Promise<{ issues: Issue[] }>;
   issue(key: string): Promise<IssueTimeline>;
   ready(project: string): Promise<ReadyQueue>;

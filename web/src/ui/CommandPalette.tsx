@@ -14,7 +14,12 @@ import { useEffect, useRef, useState } from "react";
 import type { ReactNode } from "react";
 
 import { matchesQuery } from "../domain/presentation.ts";
-import { boardPath, queuePath } from "../domain/routes.ts";
+import {
+  boardPath,
+  overviewPath,
+  projectsPath,
+  queuePath,
+} from "../domain/routes.ts";
 import type { Issue, Project } from "../domain/types.ts";
 import { Kbd, PriorityMark, StatusChip } from "./ui.tsx";
 
@@ -39,6 +44,7 @@ interface CommandPaletteProps {
   onOpenIssue: (issue: Issue) => void;
   onNavigate: (path: string) => void;
   onNewIssue: () => void;
+  onNewProject: () => void;
   onOpenPasskeys: () => void;
   onSignOut: () => void;
   onRefresh: () => void;
@@ -53,6 +59,7 @@ export function CommandPalette({
   onOpenIssue,
   onNavigate,
   onNewIssue,
+  onNewProject,
   onOpenPasskeys,
   onSignOut,
   onRefresh,
@@ -85,6 +92,24 @@ export function CommandPalette({
       hint: "create",
       icon: <Plus className="size-4" aria-hidden="true" />,
       run: onNewIssue,
+    },
+    {
+      id: "new-project",
+      group: "Actions",
+      label: "New project",
+      hint: "create",
+      icon: <Plus className="size-4" aria-hidden="true" />,
+      run: onNewProject,
+    },
+    {
+      id: "projects",
+      group: "Actions",
+      label: "Go to projects",
+      hint: projectsPath(),
+      icon: <Folder className="size-4" aria-hidden="true" />,
+      run: () => {
+        onNavigate(projectsPath());
+      },
     },
     {
       id: "board",
@@ -130,18 +155,16 @@ export function CommandPalette({
       icon: <SignOut className="size-4" aria-hidden="true" />,
       run: onSignOut,
     },
-    ...projects
-      .filter((item) => item.key !== project.key)
-      .map<PaletteItem>((item) => ({
-        id: `project-${item.key}`,
-        group: "Projects",
-        label: `Switch to ${item.name}`,
-        hint: item.key,
-        icon: <Folder className="size-4" aria-hidden="true" />,
-        run: () => {
-          onNavigate(boardPath(item.key));
-        },
-      })),
+    ...projects.map<PaletteItem>((item) => ({
+      id: `project-${item.key}`,
+      group: "Projects",
+      label: `Open ${item.name}`,
+      hint: item.key,
+      icon: <Folder className="size-4" aria-hidden="true" />,
+      run: () => {
+        onNavigate(overviewPath(item.key));
+      },
+    })),
   ];
 
   const needle = query.trim().toLowerCase();

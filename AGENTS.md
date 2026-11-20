@@ -17,6 +17,8 @@ in prompts:
 - Agents use the tool interface only (`list_ready`, `claim_next`, `comment`,
   `submit_for_review`, `mark_blocked`). No agent writes SQL or touches tables.
 - Per-project sequential IDs (`TAC-014` style), assigned atomically.
+- Projects are human-managed: a project key never changes, and archive is the
+  terminal lifecycle action - there is no project delete.
 
 ## Startup workflow
 
@@ -602,7 +604,70 @@ with 27 PASS and 0 FAIL, and 12 `/proc/stat` samples during a 62 second run
 read 53-56% total CPU, p95 55%, average 54.1%; the timer's next elapse was
 19:00 UTC. The console reclamation step itself remains operator-executed.
 
-Tests: 205 pass, 0 fail, including `test/http.test.ts` and `test/sse.test.ts`,
+The project entity is live: migration `0007_project_details.sql` gives `projects`
+a trimmed `summary` of at most 255 characters, a `description` of at most
+20000, a six-value `status` (`backlog`, `planned`, `in_progress`, `paused`,
+`completed`, `canceled`; default `planned`), a nullable 1..4 `priority`,
+nullable `start_date` and `target_date`, and `archived_at` plus `updated_at`.
+The backfill marks a project `in_progress` when it already owns issues and
+`planned` otherwise, and four check constraints fence the shape. There is no
+project delete: archive is the terminal lifecycle action, archived projects stay
+readable and their issues stay writable, and project changes never write issue
+events, only `updated_at`. `src/domain/status.ts` owns `PROJECT_STATUSES`,
+`ProjectStatus`, `DEFAULT_PROJECT_STATUS`, and `isProjectStatus`;
+`src/domain/types.ts` owns `Project`, `ProjectProgress`, `ProjectWithProgress`,
+and `emptyProgress`; `src/domain/validation.ts` owns `validateProjectSummary`,
+`validateProjectDescription`, `validateProjectStatus`,
+`validateProjectPriority`, and `validateProjectDate` (strict `YYYY-MM-DD` plus a
+real calendar date), where summary trims and description does not.
+`ProjectRepository` in `src/application/ports.ts` offers `create`,
+`list({ includeArchived })`, `findByKey`, `findWithProgressByKey`, and `update`:
+progress comes from one lateral counts block (total plus per-status counts),
+`findByKey` stays plain for the issue existence checks, and `update` is one
+static tri-state statement (`coalesce` for strings, boolean guards for the
+nullable priority, dates, and archive) returning the row with progress or null.
+`src/application/projects.ts` holds `createProject`, `listProjects`,
+`getProject`, and `updateProject` with no SQL; edits are human-only
+(`forbidden_transition` otherwise), the key is immutable, an empty update is
+`validation`, and any of the six statuses is legal at any time. HTTP:
+`GET /api/projects` (human or agent; `?includeArchived=true` adds archived rows
+to the default exclusion), `POST /api/projects` (human, 201),
+`GET /api/projects/:key` (human or agent), and `PATCH /api/projects/:key`
+(human; a `key` body field is `validation` "a project key cannot change",
+`priority` and the dates are nullable, and `archived` is a boolean). Issue
+`PATCH` rejects `project` with "an issue's project cannot change". CLI:
+`project add <KEY> <name...>` with `--summary`, `--description`, `--status`,
+`--priority`, `--start`, and `--target`; `project list [--all]`;
+`project show <KEY>`; `project edit <KEY>`; `project archive <KEY>`; and
+`project restore <KEY>`. `--json` prints the project with progress, a human list
+row is `<key>\t<name>\t<status>\t<priority|->\t<done>/<total>\t<target|->\t<no|yes>`,
+`--priority none`, `--start none`, and `--target none` clear on edit, and every
+project command stays human-actor. SPA: `web/src/domain` gains the
+`ProjectStatus` re-export, `Project` with progress, `NewProjectInput`,
+`ProjectPatch`, `PROJECT_STATUS_ORDER`/`LABEL`/`TONE` (the `Tone` object shape),
+`projectPriorityLabel`, `projectProgressPercent`, and the `projects` and
+`overview` routes with `projectsPath()`/`overviewPath()`. `ApiPort` gains
+`project(key)`/`updateProject(key, patch)`, and `projects()` always sends
+`includeArchived=true`. The workspace gains `projectDialog` state,
+`openNewProject`, `openEditProject`, `closeProjectDialog`, `saveProject`,
+`archiveProject`, and `restoreProject`, upserting projects by key, and realtime
+subscribes to all projects when `projectId` is null. The UI adds `ProjectsPage`,
+`ProjectOverview`, `ProjectDialog`, `ProjectStatusChip` (uppercase chip text),
+Projects and Overview sidebar rows, a five-cell mobile nav at 390 px (78 px per
+cell), shell breadcrumb and primary-button variants, the palette actions Go to
+projects and New project, issue-detail project navigation, and the new
+ProjectSetup footer copy. `npm run check` is green with 223 tests (217 behavior,
+6 architecture) and `architecture: ok (84 files)`; `npm run acceptance` is green
+with 194 checks, including the project CLI show/edit/archive/restore assertions,
+the HTTP detail, `PATCH`, and archive assertions, and the browser lines `PASS
+browser: projects page fits 390px ...`, `PASS browser: project created WEB at
+/p/WEB/overview with "0%" progress ...`, and the status edit to In progress.
+The browser leg's direct issue-URL tab exposed and now guards a deep-link race:
+the timeline fetch effect keys on `projectKeyFromRoute`, so a late project
+resolution that clears the timeline refetches exactly once instead of leaving
+the detail modal empty.
+
+Tests: 223 pass, 0 fail, including `test/http.test.ts` and `test/sse.test.ts`,
 whose session cases exercise the opaque `auth_sessions` cookie rows,
 `test/passkeys.test.ts` for availability without auth, listing without
 verification material, registration and login option contents, single-use
@@ -610,12 +675,13 @@ challenges, unknown credentials, and nickname validation,
 `test/event-hub.test.ts`, the label and relation suites in `test/labels.test.ts`
 and `test/relations.test.ts`, the webhook and branch suite in
 `test/github.test.ts`, the issue filter and human-only edit cases in
-`test/issues.test.ts`, `test/projects.test.ts` for create and list, duplicate
-and validation, the transaction-scoped ports commit and rollback, and
+`test/issues.test.ts`, `test/projects.test.ts` for create, list, detail,
+update, archive, duplicate, validation, and the strict date rules, the
+transaction-scoped ports commit and rollback, and
 repository find by key, plus `test/architecture.test.ts`, which proves the real
 tree passes and five fixtures fail (application -> adapter, domain -> `pg`, web
 ui -> adapter, web application -> adapter, web domain -> a backend module other
-than `src/domain/status.ts`). Those 205 are the node tests (199 behavior and 6
+than `src/domain/status.ts`). Those 223 are the node tests (217 behavior and 6
 architecture); `npm run smoke:release` is a shell gate, not part
 of them. `ARCH.md` codifies the layers and the one-way dependency rule; all
 six steps have landed, along with the import-direction gate and the completion
@@ -635,7 +701,8 @@ fully into the listbox. It also registers a passkey through Chromium's CDP
 virtual authenticator and signs in with it, printing `PASS browser: passkey
 registered ...` and `PASS browser: passkey sign-in reached the board ...`; focus
 emulation is enabled because headless tabs otherwise reject WebAuthn with
-`NotAllowedError`. The gate reports 145 checks in total.
+`NotAllowedError`. The gate reports 194 checks in total, including the project
+CLI, HTTP, and browser assertions.
 
 `--skip-browser` skips the seed and browser legs; `--keep` keeps the throwaway
 database. `LAS-151`, `LAS-153`, and `LAS-154` are Done after black-box
@@ -669,21 +736,21 @@ carries the same rules as a project-agnostic template.
 | `deploy/webhook.sh` | Creates or updates the GitHub `pull_request` webhook for the deployed host (default `https://$CURVED_DOMAIN/webhooks/github`), always PATCHing an existing same-URL hook so the secret is reapplied; `--repo`, `--url`, `--env-file`, `--dry-run`. |
 | `.github/workflows/verify.yml` | CI gate: push to main plus manual dispatch, Postgres 18 service, typecheck, architecture check, tests, web build; the main-only `deploy` job (`needs: verify`) SSHes with the `DEPLOY_*` secrets and runs `deploy/release.sh`. |
 | `.github/workflows/rotate-ui-token.yml` | Manual `workflow_dispatch` token recovery: validates the `DEPLOY_*` and `CURVED_UI_TOKEN` secrets, pipes the token over stdin to `deploy@$DEPLOY_HOST`, atomically rewrites the mode-600 env line with backup and release re-run on failure, runs `deploy/release.sh`, and proves a 200 from `POST /api/session`. Concurrency group `rotate-ui-token`. |
-| `src/domain/` | Pure rules and types: status and transition contract, actor matrix, claim and move policy, validation, key parsing, domain errors, shared record types. |
-| `src/application/` | Ports (`ports.ts`) and the full SQL-free use-case set: `projects.ts`, `issues.ts` with `issue-read-model.ts`, `agents.ts`, `queue.ts`, `blocking.ts`, `comments.ts`, `labels.ts`, `relations.ts`, `github.ts`, `sessions.ts` (opaque session creation and `SESSION_MAX_AGE_SECONDS`), and `passkeys.ts` (availability, listing, registration, and login options). |
+| `src/domain/` | Pure rules and types: status, project-status, and transition contract, actor matrix, claim and move policy, validation, key parsing, domain errors, shared record types. |
+| `src/application/` | Ports (`ports.ts`) and the full SQL-free use-case set: `projects.ts` (create, list, get, and update projects with progress), `issues.ts` with `issue-read-model.ts`, `agents.ts`, `queue.ts`, `blocking.ts`, `comments.ts`, `labels.ts`, `relations.ts`, `github.ts`, `sessions.ts` (opaque session creation and `SESSION_MAX_AGE_SECONDS`), and `passkeys.ts` (availability, listing, registration, and login options). |
 | `src/adapters/` | Adapters. Inbound: `http/` (router, auth, error mapping, request/response transport, webhook), `mcp/`, `cli/`, `github/` (signature and payload), `sse/`, `static/`. Outbound: `postgres/` (`pool.ts`, `migrate.ts`, `event-hub.ts`, `ports.ts` binding the pool and transactions, plus `repositories/`: projects, issues, issue events, issue meta, agents, labels, relations, passkeys, auth sessions, and passkey challenges), `token-codec.ts`, `timing-safe.ts`. |
 | `src/composition/` | Composition roots: `config.ts` (`loadConfig`, including WebAuthn origins and RP ID resolution), `server.ts` (HTTP entry, requires `CURVED_UI_TOKEN`, owns the event hub and shutdown), `cli.ts`, `mcp.ts`, `migrate.ts`. |
-| `web/src/domain/` | Pure client domain: `types.ts` (contract types, `NewIssueInput`, toast types), `presentation.ts` (label/tone maps and formatting helpers), `routes.ts` (`Route`, `parseRoute`, and the path builders). May import only `src/domain/status.ts` from the server. |
-| `web/src/application/` | Client ports and orchestration: `errors.ts` (`ApplicationError` and its guards), `ports.ts` (`ApiPort` including passkey availability, listing, registration, login, and removal, `RealtimePort`, `NavigationPort`, `PasskeyPort`), `workspace.ts` (`useWorkspace` and its types, including passkey state). React hooks allowed; no JSX, no `fetch`, no `EventSource`, no history writes, no credential API. |
+| `web/src/domain/` | Pure client domain: `types.ts` (contract types including `Project` with progress, `NewProjectInput`, `ProjectPatch`, `NewIssueInput`, toast types), `presentation.ts` (label/tone maps, project status label/tone maps, progress percent, and formatting helpers), `routes.ts` (`Route`, `parseRoute`, and the path builders, including `projectsPath()` and `overviewPath()`). May import only `src/domain/status.ts` from the server. |
+| `web/src/application/` | Client ports and orchestration: `errors.ts` (`ApplicationError` and its guards), `ports.ts` (`ApiPort` including project create, detail, update, archive, and restore plus passkey availability, listing, registration, login, and removal, `RealtimePort`, `NavigationPort`, `PasskeyPort`), `workspace.ts` (`useWorkspace` and its types, including the `projectDialog` state, project actions, and passkey state). React hooks allowed; no JSX, no `fetch`, no `EventSource`, no history writes, no credential API. |
 | `web/src/adapters/` | Transport adapters: `api-client.ts` (`createApiClient`), `realtime.ts` (`useIssuesChanged`, `realtime`), `history.ts` (`useHistoryRouter`, `NAVIGATE_EVENT`), `passkeys.ts` (`createPasskeysAdapter(): PasskeyPort` over `@simplewebauthn/browser` for support, registration, and authentication). |
-| `web/src/ui/` | React and styles only: `AppView.tsx`, `Boot.tsx`, `PasskeysDialog.tsx`, and the shell, board, queue, detail, dialog, palette, sign-in (passkey button plus the UI-token divider), setup, toast, and primitive components plus `styles.css`. No transport imports. |
+| `web/src/ui/` | React and styles only: `AppView.tsx`, `Boot.tsx`, `PasskeysDialog.tsx`, `ProjectsPage.tsx`, `ProjectOverview.tsx`, `ProjectDialog.tsx`, `ProjectStatusChip.tsx`, and the shell, board, queue, detail, dialog, palette, sign-in (passkey button plus the UI-token divider), setup, toast, and primitive components plus `styles.css`. No transport imports. |
 | `web/src/main.tsx` | Composition root: creates the API client and passkey adapter, calls the history and realtime adapters, injects all four ports into `useWorkspace`, renders `AppView`. |
 | `web/` | Vite + React SPA around `web/src/`. `npm run build` writes `web/dist`; `npm start` serves it; `npm run dev` proxies `/api` to 4747. |
 | `scripts/init.sh` | Baseline runner: install, check, build. `--no-install` skips install. |
 | `scripts/check-architecture.mjs` | Import-direction check over `src/**/*.ts` and `web/src/**/*.ts(x)`; exits 1 on any violation. |
 | `scripts/clean-state.sh` | End-of-session gate. Idempotent, writes nothing. |
 | `scripts/acceptance.sh` | Acceptance entry: `bash scripts/db.sh --no-migrate`, `npm run build:web`, then `scripts/acceptance.mjs` with the caller's flags. |
-| `scripts/acceptance.mjs` | End-to-end gate over a throwaway database: CLI, MCP, server, HTTP plus SSE, webhook, palette seed, browser; drops the database and fails if the default `curved` rows changed. `--skip-browser`, `--keep`. |
+| `scripts/acceptance.mjs` | End-to-end gate over a throwaway database: CLI (including project add/list/show/edit/archive/restore), MCP, server, HTTP plus SSE (including project detail, `PATCH`, and archive), webhook, palette seed, browser (including the 390 px projects page, project creation at 0%, and the status edit); drops the database and fails if the default `curved` rows changed. `--skip-browser`, `--keep`. |
 | `scripts/acceptance-browser.mjs` | Dependency-free Chromium/CDP driver at 390x844 over the built SPA; writes run-scoped screenshots under the system temp dir. `CHROMIUM_BIN` overrides the binary search. |
 | `scripts/container-smoke.sh` | Container contract gate: starts the local DB, builds `curved:container-smoke`, and asserts the SPA shell, `401`/`200` on `/api/projects`, `already up to date` from the in-image migrate, a non-root uid, and the absent paths. `--platform`, `--build-only`, `--keep`. |
 | `scripts/compose-smoke.sh` | Production compose gate: throwaway project and env, HTTPS through Caddy's internal CA, the HTTP 308 redirect, the HSTS toggle (absent by default, `max-age=31536000` after enabling), gzip on the JS asset, SPA/API/ready/detail assertions, SSE `ready` and `issues_changed` within 5s, unsigned webhook 401, the bind/port checks, and a real nightly backup restored into a throwaway database plus a Caddy volume restore. |

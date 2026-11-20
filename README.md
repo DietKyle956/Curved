@@ -112,6 +112,23 @@ issue payload carries `labels` and `relations: { blocks, blockedBy }`, where
 `blocks` holds the keys this issue blocks and `blockedBy` the keys blocking it.
 `ready` and `claim` exclude an issue while any issue blocking it is not `done`.
 
+- `node src/composition/cli.ts project add <KEY> <name...> [--summary <text>]
+  [--description <text>] [--status <status>] [--priority <1-4>] [--start <date>]
+  [--target <date>]` - create a project; status defaults to `planned`.
+- `node src/composition/cli.ts project list [--all]` - list active projects, or
+  all with `--all`; columns are key, name, status, priority (or `-`),
+  done/total progress, target date (or `-`), and `no`/`yes` for archived.
+- `node src/composition/cli.ts project show <KEY>` - print the project with its
+  summary, description, dates, progress, and archive state; `--json` prints the
+  project with progress.
+- `node src/composition/cli.ts project edit <KEY> [--name <name>]
+  [--summary <text>] [--description <text>] [--status <status>]
+  [--priority <1-4|none>] [--start <date|none>] [--target <date|none>]` - edit a
+  project; `none` clears the priority or a date.
+- `node src/composition/cli.ts project archive <KEY>` - archive a project; it
+  stays readable and its issues stay writable. There is no delete.
+- `node src/composition/cli.ts project restore <KEY>` - restore an archived
+  project.
 - `node src/composition/cli.ts issue add <PROJECT> <title...>` - create an issue;
   keys are assigned atomically.
 - `node src/composition/cli.ts issue list [PROJECT]` - list issues, optionally
@@ -625,7 +642,9 @@ The orchestrator creates one throwaway database,
 `.env`, then `postgres://curved:curved@127.0.0.1:55432/curved`), migrates it, and
 runs every leg against it:
 
-- `cli` - `project add`, `agent add`, `issue add`, then `ready` with its busy
+- `cli` - `project add`, `project list`, `project show`, `project edit` with a
+  status, priority, and date change, `project archive`, and `project restore`,
+  then `agent add`, `issue add`, `ready` with its busy
   line, `claim`, a second claim returning `agent_busy`, `review`, a human
   `issue move` to done, and the `no_ready_issue` exit code.
 - `mcp` - the eight tools over NDJSON stdio, checked against the expected
@@ -633,7 +652,9 @@ runs every leg against it:
 - `server` - `npm start` on a free port until it prints its listening line, with
   fresh `CURVED_UI_TOKEN` and `GITHUB_WEBHOOK_SECRET` values.
 - `http+sse` - the UI bearer and the session cookie, the `ready` frame, an
-  `issues_changed` frame for the acceptance project, and the built SPA.
+  `issues_changed` frame for the acceptance project, and the project assertions:
+  list with `includeArchived`, detail, `PATCH` with progress, create, and
+  archive, plus the built SPA.
 - `webhook` - a signed `pull_request` delivery moves an issue to `in_review`, and
   the replay answers `ignored` without adding a second event.
 - `browser` - `scripts/acceptance-browser.mjs` drives Chromium at 390x844 through
@@ -642,7 +663,11 @@ runs every leg against it:
   Chromium's CDP virtual authenticator and signs in with it, printing `PASS
   browser: passkey registered ...` and `PASS browser: passkey sign-in reached the
   board ...`; the driver enables focus emulation because headless tabs otherwise
-  reject WebAuthn with `NotAllowedError`.
+  reject WebAuthn with `NotAllowedError`. It also checks the projects page fits
+  390px with no horizontal overflow, creates project `WEB` (printing `PASS
+  browser: project created WEB at /p/WEB/overview with "0%" progress ...`), and
+  edits its status to In progress through the dialog; the status chip renders
+  uppercase and the assertion is case-insensitive.
 
 Prerequisites: Docker with Postgres from `docker compose up -d`, and Chromium
 found on `PATH` as `chromium`, `chromium-browser`, `google-chrome`, or
@@ -672,9 +697,10 @@ The gate builds on the other two entry points rather than replacing them:
 `./scripts/clean-state.sh` is still the end-of-session gate. This is the only one
 that runs the CLI, MCP server, HTTP server, webhook, and SPA together.
 
-The repository-side gates all pass: `npm run check` passes 205 tests (199
-behavior, 6 architecture) with `architecture: ok (81 files)`, and `npm run
-acceptance` passes 145 checks including the two browser passkey lines. `npm run
+The repository-side gates all pass: `npm run check` passes 223 tests (217
+behavior, 6 architecture) with `architecture: ok (84 files)`, and `npm run
+acceptance` passes 194 checks, including the project CLI, HTTP, and browser
+lines and the two browser passkey lines. `npm run
 smoke:compose` covers the HTTP to HTTPS redirect, the HSTS toggle before and
 after enabling `CURVED_HSTS_MAX_AGE`, gzip on the JS asset,
 an `issues_changed` frame within 5s, and a real nightly backup restored into a
@@ -729,6 +755,13 @@ through the `agents` table. A bearer that is present but invalid is
 `401 not_authenticated`, even alongside a valid cookie, so a stale agent token is
 never silently downgraded.
 
+Projects have no delete route. `PATCH /api/projects/:key` is the only edit path
+and rejects a `key` field, because a project key never changes; `archived: true`
+is the terminal lifecycle action, an archived project stays readable, and its
+issues stay writable. Project edits only touch `updated_at` and never write
+issue events. `PATCH /api/issues/:key` likewise rejects `project`, since an
+issue's project cannot change.
+
 Passkeys use one implicit human identity: every registered credential belongs to
 that identity, there is no users table, and passkey registration or login does
 not create timeline events or a new actor type. `GET /api/passkeys/available`
@@ -767,8 +800,10 @@ issue and `{"ok":true,"ignored":true}` otherwise, so GitHub never retries.
 | `DELETE` | `/api/passkeys/:id` | human only | `204` |
 | `POST` | `/api/session/passkey/options` | none | login options |
 | `POST` | `/api/session/passkey` | none | `{ actor }` plus the session cookie |
-| `GET` | `/api/projects` | human or agent | `{ projects }` |
-| `POST` | `/api/projects` | human only | `{ project }` |
+| `GET` | `/api/projects` | human or agent | `{ projects }` with progress; archived rows are excluded unless `?includeArchived=true` |
+| `POST` | `/api/projects` | human only | `201 { project }` |
+| `GET` | `/api/projects/:key` | human or agent | `{ project }` with progress |
+| `PATCH` | `/api/projects/:key` | human only | `{ project }`; `name`, `summary`, `description`, `status`, `priority`, `startDate`, `targetDate`, `archived`; `null` clears priority or a date, and a `key` field is `validation` |
 | `GET` | `/api/issues` | human or agent | `{ issues }`; optional `project` and `status` filters |
 | `POST` | `/api/issues` | human or agent | `{ issue }` |
 | `GET` | `/api/issues/:key` | human or agent | `{ issue, events }` |

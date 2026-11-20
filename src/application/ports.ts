@@ -1,15 +1,53 @@
-import type { ActorType, EventKind, Priority, Status } from "../domain/status.ts";
-import type { Agent, IssueEvent, IssueMeta, PasskeySummary, Project } from "../domain/types.ts";
+import type {
+  ActorType,
+  EventKind,
+  Priority,
+  ProjectStatus,
+  Status,
+} from "../domain/status.ts";
+import type {
+  Agent,
+  IssueEvent,
+  IssueMeta,
+  PasskeySummary,
+  Project,
+  ProjectWithProgress,
+} from "../domain/types.ts";
 
 /**
  * The application boundary. Use cases depend only on these interfaces, so no
  * PostgreSQL types, SQL text, or driver knowledge leak into the application
  * layer. Adapters implement them.
  */
+export interface CreateProjectRecordInput {
+  key: string;
+  name: string;
+  summary: string;
+  description: string;
+  status: ProjectStatus;
+  priority: Priority | null;
+  startDate: string | null;
+  targetDate: string | null;
+}
+
+export interface UpdateProjectRecordInput {
+  key: string;
+  name?: string;
+  summary?: string;
+  description?: string;
+  status?: ProjectStatus;
+  priority?: Priority | null;
+  startDate?: string | null;
+  targetDate?: string | null;
+  archived?: boolean;
+}
+
 export interface ProjectRepository {
-  create(input: { key: string; name: string }): Promise<Project>;
-  list(): Promise<Project[]>;
+  create(input: CreateProjectRecordInput): Promise<ProjectWithProgress>;
+  list(input: { includeArchived: boolean }): Promise<ProjectWithProgress[]>;
   findByKey(key: string): Promise<Project | null>;
+  findWithProgressByKey(key: string): Promise<ProjectWithProgress | null>;
+  update(input: UpdateProjectRecordInput): Promise<ProjectWithProgress | null>;
 }
 
 /** A stored issue row projected by the issue repository. */

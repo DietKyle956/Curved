@@ -1,18 +1,25 @@
 import {
   ArrowsClockwise,
   CaretDown,
+  Folder,
   Kanban,
   Key,
   ListChecks,
   MagnifyingGlass,
   Plus,
+  Rows,
   SignOut,
   SquaresFour,
 } from "@phosphor-icons/react";
 import type { ReactNode } from "react";
 
 import { STATUS_ORDER } from "../domain/presentation.ts";
-import { boardPath, queuePath } from "../domain/routes.ts";
+import {
+  boardPath,
+  overviewPath,
+  projectsPath,
+  queuePath,
+} from "../domain/routes.ts";
 import type { Route } from "../domain/routes.ts";
 import type { Issue, Project } from "../domain/types.ts";
 import { AgentMark, Button, IconButton, Kbd, LogoMark } from "./ui.tsx";
@@ -22,6 +29,12 @@ const isMac =
 const SHORTCUT = isMac ? "⌘K" : "Ctrl K";
 
 function sectionLabel(route: Route): string {
+  if (route.kind === "projects") {
+    return "Projects";
+  }
+  if (route.kind === "overview") {
+    return "Overview";
+  }
   if (route.kind === "queue") {
     return "Ready queue";
   }
@@ -52,7 +65,7 @@ function ProjectSelect({
       >
         {projects.map((item) => (
           <option key={item.key} value={item.key}>
-            {item.key} · {item.name}
+            {`${item.key} · ${item.name}${item.archivedAt === null ? "" : " (archived)"}`}
           </option>
         ))}
       </select>
@@ -159,6 +172,22 @@ export function Sidebar({
 
       <nav className="flex flex-col gap-0.5 p-2" aria-label="Workspace">
         <NavRow
+          active={route.kind === "projects"}
+          label="Projects"
+          icon={<Folder className="size-4" aria-hidden="true" />}
+          onClick={() => {
+            onNavigate(projectsPath());
+          }}
+        />
+        <NavRow
+          active={route.kind === "overview"}
+          label="Overview"
+          icon={<Rows className="size-4" aria-hidden="true" />}
+          onClick={() => {
+            onNavigate(overviewPath(project.key));
+          }}
+        />
+        <NavRow
           active={route.kind === "board" || route.kind === "issue"}
           label="Board"
           icon={<SquaresFour className="size-4" aria-hidden="true" />}
@@ -177,6 +206,7 @@ export function Sidebar({
         />
       </nav>
 
+      {route.kind === "projects" ? null : (
       <div className="scroll-area min-h-0 flex-1 overflow-y-auto px-2 pb-4">
         <section className="mt-3">
           <h2 className="px-2 pb-1.5 font-mono text-[9.5px] tracking-[0.12em] text-fg-muted uppercase">
@@ -265,6 +295,7 @@ export function Sidebar({
           </ol>
         </section>
       </div>
+      )}
 
       <div className="shrink-0 border-t border-line p-3">
         <div className="flex items-center gap-2">
@@ -301,6 +332,7 @@ export function Topbar({
   onQueryChange,
   onProjectChange,
   onNewIssue,
+  primaryLabel = "New issue",
   onOpenPasskeys,
   onRefresh,
   refreshing,
@@ -312,6 +344,7 @@ export function Topbar({
   onQueryChange: (value: string) => void;
   onProjectChange: (key: string) => void;
   onNewIssue: () => void;
+  primaryLabel?: string;
   onOpenPasskeys: () => void;
   onRefresh: () => void;
   refreshing: boolean;
@@ -330,9 +363,19 @@ export function Topbar({
       </div>
 
       <div className="hidden min-w-0 items-center gap-2 lg:flex">
-        <span className="truncate text-[12px] text-fg-secondary">{project.name}</span>
-        <span className="text-[11px] text-line-strong">/</span>
-        <span className="font-mono text-[11px] text-fg">{sectionLabel(route)}</span>
+        {route.kind === "projects" ? (
+          <span className="font-mono text-[11px] text-fg">Projects</span>
+        ) : (
+          <>
+            <span className="truncate text-[12px] text-fg-secondary">
+              {project.name}
+            </span>
+            <span className="text-[11px] text-line-strong">/</span>
+            <span className="font-mono text-[11px] text-fg">
+              {sectionLabel(route)}
+            </span>
+          </>
+        )}
       </div>
 
       <div className="ml-auto flex items-center gap-1.5 sm:gap-2">
@@ -378,7 +421,7 @@ export function Topbar({
           icon={<Plus className="size-3.5" weight="bold" aria-hidden="true" />}
           className="max-sm:hidden"
         >
-          New issue
+          {primaryLabel}
         </Button>
       </div>
     </header>
@@ -402,12 +445,26 @@ export function MobileNav({
 }) {
   const boardActive = route.kind === "board" || route.kind === "issue";
   const queueActive = route.kind === "queue";
+  const overviewActive = route.kind === "overview";
   return (
     <nav
       aria-label="Primary"
       className="fixed inset-x-0 bottom-0 z-30 border-t border-line bg-canvas/95 pb-[env(safe-area-inset-bottom)] backdrop-blur-sm lg:hidden"
     >
-      <div className="grid h-14 grid-cols-4">
+      <div className="grid h-14 grid-cols-5">
+        <button
+          type="button"
+          onClick={() => {
+            onNavigate(overviewPath(projectKey));
+          }}
+          aria-current={overviewActive ? "page" : undefined}
+          className={`flex flex-col items-center justify-center gap-1 text-[9.5px] transition-colors ${
+            overviewActive ? "text-spice" : "text-fg-muted hover:text-fg"
+          }`}
+        >
+          <Rows className="size-[18px]" aria-hidden="true" />
+          Overview
+        </button>
         <button
           type="button"
           onClick={() => {

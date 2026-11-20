@@ -8,9 +8,11 @@ import type {
   Issue,
   IssueEvent,
   IssueTimeline,
+  NewProjectInput,
   PasskeySummary,
   Project,
   ProjectList,
+  ProjectPatch,
   ReadyQueue,
   Status,
 } from "../domain/types.ts";
@@ -99,11 +101,25 @@ export function createApiClient(): ApiPort {
     },
 
     projects(): Promise<ProjectList> {
-      return request("/api/projects");
+      return request("/api/projects?includeArchived=true");
     },
 
-    createProject(input: { key: string; name: string }): Promise<{ project: Project }> {
+    project(key: string): Promise<{ project: Project }> {
+      return request(`/api/projects/${encodeURIComponent(key)}`);
+    },
+
+    createProject(input: NewProjectInput): Promise<{ project: Project }> {
       return request("/api/projects", { method: "POST", body: input });
+    },
+
+    updateProject(
+      key: string,
+      patch: ProjectPatch,
+    ): Promise<{ project: Project }> {
+      return request(`/api/projects/${encodeURIComponent(key)}`, {
+        method: "PATCH",
+        body: patch,
+      });
     },
 
     issues(project: string): Promise<{ issues: Issue[] }> {

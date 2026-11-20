@@ -1,5 +1,6 @@
 import { ServiceError } from "../../domain/errors.ts";
 import { branchNameForIssue } from "../../domain/keys.ts";
+import type { ProjectWithProgress } from "../../domain/types.ts";
 import { authenticateAgent, createAgent } from "../../application/agents.ts";
 import { blockIssue, unblockIssue } from "../../application/blocking.ts";
 import { commentOnIssue } from "../../application/comments.ts";
@@ -11,7 +12,12 @@ import {
   moveIssue,
 } from "../../application/issues.ts";
 import type { Ports } from "../../application/ports.ts";
-import { createProject, listProjects } from "../../application/projects.ts";
+import {
+  createProject,
+  getProject,
+  listProjects,
+  updateProject,
+} from "../../application/projects.ts";
 import {
   claimNext,
   listReady,
@@ -23,8 +29,14 @@ const USAGE = `Usage: curved <command> [options]
 
 Commands:
   migrate                     Apply pending database migrations
-  project add <KEY> <name>    Create a project
-  project list                List projects ordered by key
+  project add <KEY> <name...> [--summary <text>] [--description <text>] [--status <status>] [--priority <1-4>] [--start <date>] [--target <date>]
+                              Create a project
+  project list [--all]        List active projects (or all with --all), ordered by key
+  project show <KEY>          Show project properties and progress
+  project edit <KEY> [--name <name>] [--summary <text>] [--description <text>] [--status <status>] [--priority <1-4|none>] [--start <date|none>] [--target <date|none>]
+                              Edit a project
+  project archive <KEY>       Archive a project
+  project restore <KEY>       Restore an archived project
   issue add <PROJECT> <title...> [--description <text>] [--priority <1-4>] [--status <status>] [--parent <KEY>]
                               Create an issue
   issue list [PROJECT]        List issues ordered by project and number
@@ -85,6 +97,121 @@ async function withAgent<T>(
   return fn(agent.name);
 }
 
+interface ProjectFlags {
+  name: string | undefined;
+  summary: string | undefined;
+  description: string | undefined;
+  status: string | undefined;
+  priority: string | undefined;
+  start: string | undefined;
+  target: string | undefined;
+  all: boolean;
+}
+
+function parseProjectArgs(rest: readonly string[]): {
+  positionals: string[];
+  flags: ProjectFlags;
+} {
+  const positionals: string[] = [];
+  const flags: ProjectFlags = {
+    name: undefined,
+    summary: undefined,
+    description: undefined,
+    status: undefined,
+    priority: undefined,
+    start: undefined,
+    target: undefined,
+    all: false,
+  };
+
+  for (let index = 0; index < rest.length; index += 1) {
+    const arg = rest[index];
+    if (arg === undefined) {
+      continue;
+    }
+    if (arg === "--all") {
+      flags.all = true;
+      continue;
+    }
+    if (
+      arg === "--name" ||
+      arg === "--summary" ||
+      arg === "--description" ||
+      arg === "--status" ||
+      arg === "--priority" ||
+      arg === "--start" ||
+      arg === "--target"
+    ) {
+      const value = rest[index + 1];
+      if (value === undefined) {
+        throw new UsageError(`${arg} requires a value`);
+      }
+      index += 1;
+      if (arg === "--name") {
+        flags.name = value;
+      } else if (arg === "--summary") {
+        flags.summary = value;
+      } else if (arg === "--description") {
+        flags.description = value;
+      } else if (arg === "--status") {
+        flags.status = value;
+      } else if (arg === "--priority") {
+        flags.priority = value;
+      } else if (arg === "--start") {
+        flags.start = value;
+      } else {
+        flags.target = value;
+      }
+      continue;
+    }
+    if (arg.startsWith("--")) {
+      throw new UsageError(`unknown option "${arg}"`);
+    }
+    positionals.push(arg);
+  }
+
+  return { positionals, flags };
+}
+
+function hasProjectFlags(flags: ProjectFlags): boolean {
+  return (
+    flags.name !== undefined ||
+    flags.summary !== undefined ||
+    flags.description !== undefined ||
+    flags.status !== undefined ||
+    flags.priority !== undefined ||
+    flags.start !== undefined ||
+    flags.target !== undefined ||
+    flags.all
+  );
+}
+
+function formatProjectRow(project: ProjectWithProgress): string {
+  const priority = project.priority === null ? "-" : String(project.priority);
+  const target = project.targetDate === null ? "-" : project.targetDate;
+  const archived = project.archivedAt === null ? "no" : "yes";
+  return `${project.key}\t${project.name}\t${project.status}\t${priority}\t${project.progress.done}/${project.progress.total}\t${target}\t${archived}\n`;
+}
+
+function formatProjectShow(project: ProjectWithProgress): string {
+  const priority = project.priority === null ? "-" : String(project.priority);
+  const start = project.startDate === null ? "-" : project.startDate;
+  const target = project.targetDate === null ? "-" : project.targetDate;
+  const archived = project.archivedAt === null ? "no" : "yes";
+  return [
+    `${project.key}\t${project.name}`,
+    `status\t${project.status}`,
+    `priority\t${priority}`,
+    `start\t${start}`,
+    `target\t${target}`,
+    `progress\t${project.progress.done}/${project.progress.total}`,
+    `archived\t${archived}`,
+    `summary\t${project.summary}`,
+    `description\t${project.description}`,
+    "",
+  ].join("\n");
+}
+
 async function runProjectCommand(
   subcommand: string | undefined,
   rest: readonly string[],
@@ -92,13 +219,32 @@ async function runProjectCommand(
   deps: CliDeps,
 ): Promise<void> {
   if (subcommand === "add") {
-    const [key, ...words] = rest;
+    const { positionals, flags } = parseProjectArgs(rest);
+    if (flags.all) {
+      throw new UsageError("--all is only accepted by project list");
+    }
+    if (flags.name !== undefined) {
+      throw new UsageError(
+        "project add takes the name as positional arguments, not --name",
+      );
+    }
+    const [key, ...words] = positionals;
     if (key === undefined || words.length === 0) {
-      throw new UsageError("project add requires <KEY> <name>");
+      throw new UsageError("project add requires <KEY> <name...>");
     }
     const name = words.join(" ");
     const project = await deps.withPorts((ports) =>
-      createProject(ports, { key, name }),
+      createProject(ports, {
+        key,
+        name,
+        summary: flags.summary,
+        description: flags.description,
+        status: flags.status,
+        priority:
+          flags.priority === undefined ? undefined : Number(flags.priority),
+        startDate: flags.start,
+        targetDate: flags.target,
+      }),
     );
     if (json) {
       printJson(project);
@@ -109,21 +255,112 @@ async function runProjectCommand(
   }
 
   if (subcommand === "list") {
-    const projects = await deps.withPorts((ports) => listProjects(ports));
+    const { positionals, flags } = parseProjectArgs(rest);
+    if (positionals.length > 0) {
+      throw new UsageError("project list accepts no positional arguments");
+    }
+    const projects = await deps.withPorts((ports) =>
+      listProjects(ports, { includeArchived: flags.all }),
+    );
     if (json) {
       printJson(projects);
     } else {
-      process.stdout.write(
-        projects.map((project) => `${project.key}\t${project.name}\n`).join(""),
-      );
+      process.stdout.write(projects.map(formatProjectRow).join(""));
     }
     return;
   }
 
+  if (
+    subcommand === "show" ||
+    subcommand === "archive" ||
+    subcommand === "restore"
+  ) {
+    const { positionals, flags } = parseProjectArgs(rest);
+    if (hasProjectFlags(flags)) {
+      throw new UsageError(`project ${subcommand} accepts no options`);
+    }
+    const [key, ...extra] = positionals;
+    if (key === undefined) {
+      throw new UsageError(`project ${subcommand} requires <KEY>`);
+    }
+    if (extra.length > 0) {
+      throw new UsageError(
+        `project ${subcommand} accepts exactly one KEY argument`,
+      );
+    }
+    const project = await deps.withPorts((ports) =>
+      subcommand === "show"
+        ? getProject(ports, key)
+        : updateProject(ports, {
+            key,
+            archived: subcommand === "archive",
+          }),
+    );
+    if (json) {
+      printJson(project);
+    } else if (subcommand === "show") {
+      process.stdout.write(formatProjectShow(project));
+    } else {
+      const verb = subcommand === "archive" ? "archived" : "restored";
+      process.stdout.write(`${verb} project ${project.key}\n`);
+    }
+    return;
+  }
+
+  if (subcommand === "edit") {
+    const { positionals, flags } = parseProjectArgs(rest);
+    if (flags.all) {
+      throw new UsageError("--all is only accepted by project list");
+    }
+    const [key, ...extra] = positionals;
+    if (key === undefined) {
+      throw new UsageError("project edit requires <KEY>");
+    }
+    if (extra.length > 0) {
+      throw new UsageError(
+        "project edit accepts exactly one KEY argument",
+      );
+    }
+    const project = await deps.withPorts((ports) =>
+      updateProject(ports, {
+        key,
+        name: flags.name,
+        summary: flags.summary,
+        description: flags.description,
+        status: flags.status,
+        priority:
+          flags.priority === undefined
+            ? undefined
+            : flags.priority === "none"
+              ? null
+              : Number(flags.priority),
+        startDate:
+          flags.start === undefined
+            ? undefined
+            : flags.start === "none"
+              ? null
+              : flags.start,
+        targetDate:
+          flags.target === undefined
+            ? undefined
+            : flags.target === "none"
+              ? null
+              : flags.target,
+      }),
+    );
+    if (json) {
+      printJson(project);
+    } else {
+      process.stdout.write(`updated project ${project.key}\n`);
+    }
+    return;
+  }
+
+  const supported = "add, list, show, edit, archive, restore";
   throw new UsageError(
     subcommand === undefined
-      ? "project requires a subcommand (add, list)"
-      : `unknown project subcommand "${subcommand}"`,
+      ? `project requires a subcommand (${supported})`
+      : `unknown project subcommand "${subcommand}" (supported: ${supported})`,
   );
 }
 

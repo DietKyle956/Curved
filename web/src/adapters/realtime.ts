@@ -22,7 +22,7 @@ export function useIssuesChanged({
   }, [onChange]);
 
   useEffect(() => {
-    if (!enabled || projectId === null) {
+    if (!enabled) {
       return;
     }
 
@@ -47,7 +47,10 @@ export function useIssuesChanged({
           return;
         }
         const changed = Number.parseInt(data, 10);
-        if (!Number.isInteger(changed) || changed !== target) {
+        if (!Number.isInteger(changed)) {
+          return;
+        }
+        if (target !== null && changed !== target) {
           return;
         }
         onChangeRef.current(changed);

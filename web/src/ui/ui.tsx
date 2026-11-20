@@ -5,11 +5,13 @@ import { useId } from "react";
 import {
   PRIORITY_LABEL,
   PRIORITY_TONE,
+  PROJECT_STATUS_LABEL,
+  PROJECT_STATUS_TONE,
   STATUS_LABEL,
   STATUS_TONE,
   initials,
 } from "../domain/presentation.ts";
-import type { Priority, Status } from "../domain/types.ts";
+import type { Priority, ProjectStatus, Status } from "../domain/types.ts";
 
 export function LogoMark({ className = "size-6" }: { className?: string }) {
   return (
@@ -140,6 +142,24 @@ export function StatusChip({
     >
       <span className={`size-1 rounded-[1px] ${tone.mark}`} aria-hidden="true" />
       {STATUS_LABEL[status]}
+    </span>
+  );
+}
+
+export function ProjectStatusChip({
+  status,
+  className = "",
+}: {
+  status: ProjectStatus;
+  className?: string;
+}) {
+  const tone = PROJECT_STATUS_TONE[status];
+  return (
+    <span
+      className={`inline-flex items-center gap-1.5 rounded-ui border px-1.5 py-1 font-mono text-[10px] leading-none tracking-[0.06em] uppercase ${tone.bg} ${tone.border} ${tone.text} ${className}`}
+    >
+      <span className={`size-1 rounded-[1px] ${tone.mark}`} aria-hidden="true" />
+      <span>{PROJECT_STATUS_LABEL[status]}</span>
     </span>
   );
 }

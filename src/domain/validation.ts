@@ -1,10 +1,18 @@
 import { ServiceError } from "./errors.ts";
 import { PROJECT_KEY_PATTERN } from "./keys.ts";
-import { STATUSES, isPriority, isStatus } from "./status.ts";
-import type { Priority, Status } from "./status.ts";
+import {
+  PROJECT_STATUSES,
+  STATUSES,
+  isPriority,
+  isProjectStatus,
+  isStatus,
+} from "./status.ts";
+import type { Priority, ProjectStatus, Status } from "./status.ts";
 
 export const TITLE_MAX_LENGTH = 500;
 export const PROJECT_NAME_MAX_LENGTH = 200;
+export const PROJECT_SUMMARY_MAX_LENGTH = 255;
+export const PROJECT_DESCRIPTION_MAX_LENGTH = 20000;
 export const AGENT_NAME_MAX_LENGTH = 100;
 export const LABEL_NAME_MAX_LENGTH = 50;
 export const BLOCKED_REASON_MAX_LENGTH = 2000;
@@ -66,6 +74,86 @@ export function validateProjectName(raw: string): string {
     );
   }
   return name;
+}
+
+/**
+ * Trims a project summary. Empty is allowed; only the length is bounded.
+ */
+export function validateProjectSummary(raw: string): string {
+  const summary = raw.trim();
+  if (summary.length > PROJECT_SUMMARY_MAX_LENGTH) {
+    throw new ServiceError(
+      "validation",
+      `project summary must be at most ${PROJECT_SUMMARY_MAX_LENGTH} characters, got ${summary.length}`,
+    );
+  }
+  return summary;
+}
+
+/**
+ * Project descriptions are plain text, so whitespace is preserved as written;
+ * only the length is bounded.
+ */
+export function validateProjectDescription(raw: string): string {
+  if (raw.length > PROJECT_DESCRIPTION_MAX_LENGTH) {
+    throw new ServiceError(
+      "validation",
+      `project description must be at most ${PROJECT_DESCRIPTION_MAX_LENGTH} characters, got ${raw.length}`,
+    );
+  }
+  return raw;
+}
+
+export function validateProjectStatus(raw: string): ProjectStatus {
+  if (!isProjectStatus(raw)) {
+    throw new ServiceError(
+      "validation",
+      `project status "${raw}" must be one of: ${PROJECT_STATUSES.join(", ")}`,
+    );
+  }
+  return raw;
+}
+
+export function validateProjectPriority(raw: number | null): Priority | null {
+  if (raw === null) {
+    return null;
+  }
+  if (!Number.isInteger(raw) || !isPriority(raw)) {
+    throw new ServiceError(
+      "validation",
+      `project priority must be null or an integer between 1 and 4, got "${raw}"`,
+    );
+  }
+  return raw;
+}
+
+const PROJECT_DATE_PATTERN = /^(\d{4})-(\d{2})-(\d{2})$/;
+
+/**
+ * Accepts only a real calendar date written as `YYYY-MM-DD`, so month/day
+ * overflow such as `2026-02-31` is rejected rather than coerced by JS dates.
+ */
+export function validateProjectDate(
+  raw: string,
+  field: "startDate" | "targetDate",
+): string {
+  const message = `project ${field} must be a valid ISO date (YYYY-MM-DD), got "${raw}"`;
+  const match = typeof raw === "string" ? PROJECT_DATE_PATTERN.exec(raw) : null;
+  if (match === null) {
+    throw new ServiceError("validation", message);
+  }
+  const [, year, month, day] = match;
+  const date = new Date(0);
+  date.setUTCHours(0, 0, 0, 0);
+  date.setUTCFullYear(Number(year), Number(month) - 1, Number(day));
+  if (
+    date.getUTCFullYear() !== Number(year) ||
+    date.getUTCMonth() !== Number(month) - 1 ||
+    date.getUTCDate() !== Number(day)
+  ) {
+    throw new ServiceError("validation", message);
+  }
+  return raw;
 }
 
 export function validateAgentName(raw: string): string {

@@ -9,7 +9,12 @@ import { createEventHub } from "../src/adapters/postgres/event-hub.ts";
 import type { EventHub } from "../src/application/ports.ts";
 import { createAgent } from "../src/application/agents.ts";
 import { createIssue } from "../src/application/issues.ts";
-import type { Issue, IssueEvent } from "../src/domain/types.ts";
+import {
+  emptyProgress,
+  type Issue,
+  type IssueEvent,
+  type ProjectWithProgress,
+} from "../src/domain/types.ts";
 import { createProject } from "../src/application/projects.ts";
 import { openTestDatabase, type TestDatabase } from "./helpers/db.ts";
 
@@ -52,11 +57,11 @@ interface EventResponse {
 }
 
 interface ProjectsResponse {
-  projects: Array<{ id: number; key: string; name: string }>;
+  projects: ProjectWithProgress[];
 }
 
 interface ProjectResponse {
-  project: { id: number; key: string; name: string };
+  project: ProjectWithProgress;
 }
 
 interface ReadyResponse {
@@ -332,6 +337,26 @@ test("projects list, create, human-only rule, and duplicate keys", async () => {
     projects.projects.map((project) => project.key),
     ["TAC"],
   );
+  const listed = projects.projects[0]!;
+  assert.equal(listed.name, "Tactics");
+  assert.equal(listed.summary, "");
+  assert.equal(listed.description, "");
+  assert.equal(listed.status, "planned");
+  assert.equal(listed.priority, null);
+  assert.equal(listed.startDate, null);
+  assert.equal(listed.targetDate, null);
+  assert.equal(listed.archivedAt, null);
+  assert.equal(listed.nextNumber, 1);
+  assert.ok(listed.id > 0);
+  assert.equal(
+    new Date(listed.createdAt).toISOString(),
+    listed.createdAt,
+  );
+  assert.equal(
+    new Date(listed.updatedAt).toISOString(),
+    listed.updatedAt,
+  );
+  assert.deepEqual(listed.progress, emptyProgress());
 
   const created = await request(app, "/api/projects", {
     method: "POST",
@@ -343,6 +368,14 @@ test("projects list, create, human-only rule, and duplicate keys", async () => {
   const project = (await readJson<ProjectResponse>(created)).project;
   assert.equal(project.key, "OPS");
   assert.equal(project.name, "Operations");
+  assert.equal(project.summary, "");
+  assert.equal(project.description, "");
+  assert.equal(project.status, "planned");
+  assert.equal(project.priority, null);
+  assert.equal(project.startDate, null);
+  assert.equal(project.targetDate, null);
+  assert.equal(project.archivedAt, null);
+  assert.deepEqual(project.progress, emptyProgress());
 
   const duplicate = await request(app, "/api/projects", {
     method: "POST",
@@ -364,6 +397,198 @@ test("projects list, create, human-only rule, and duplicate keys", async () => {
   assert.equal(forbidden.status, 403);
   assert.equal(
     (await readJson<ErrorResponse>(forbidden)).error.code,
+    "forbidden_transition",
+  );
+});
+
+test("project detail, PATCH fields, archive filtering, and validation", async () => {
+  await seedProject();
+
+  const detail = await request(app, "/api/projects/TAC", {
+    headers: HUMAN_BEARER,
+  });
+  assert.equal(detail.status, 200);
+  assertJson(detail);
+  const seeded = (await readJson<ProjectResponse>(detail)).project;
+  assert.equal(seeded.key, "TAC");
+  assert.equal(seeded.name, "Tactics");
+  assert.equal(seeded.status, "planned");
+  assert.equal(seeded.archivedAt, null);
+  assert.deepEqual(seeded.progress, emptyProgress());
+
+  const patched = await request(app, "/api/projects/TAC", {
+    method: "PATCH",
+    headers: { ...HUMAN_BEARER, ...JSON_HEADERS },
+    body: JSON.stringify({
+      name: "Tactics updated",
+      summary: "HTTP summary",
+      description: "An HTTP description",
+      status: "in_progress",
+      priority: 2,
+      startDate: "2026-01-01",
+      targetDate: "2026-02-28",
+    }),
+  });
+  assert.equal(patched.status, 200);
+  assertJson(patched);
+  const updated = (await readJson<ProjectResponse>(patched)).project;
+  assert.equal(updated.key, "TAC");
+  assert.equal(updated.name, "Tactics updated");
+  assert.equal(updated.summary, "HTTP summary");
+  assert.equal(updated.description, "An HTTP description");
+  assert.equal(updated.status, "in_progress");
+  assert.equal(updated.priority, 2);
+  assert.equal(updated.startDate, "2026-01-01");
+  assert.equal(updated.targetDate, "2026-02-28");
+  assert.equal(updated.archivedAt, null);
+  assert.deepEqual(updated.progress, emptyProgress());
+
+  const cleared = await request(app, "/api/projects/TAC", {
+    method: "PATCH",
+    headers: { ...HUMAN_BEARER, ...JSON_HEADERS },
+    body: JSON.stringify({
+      priority: null,
+      startDate: null,
+      targetDate: null,
+    }),
+  });
+  assert.equal(cleared.status, 200);
+  const clearedProject = (await readJson<ProjectResponse>(cleared)).project;
+  assert.equal(clearedProject.priority, null);
+  assert.equal(clearedProject.startDate, null);
+  assert.equal(clearedProject.targetDate, null);
+  // Untouched fields survive the clearing patch.
+  assert.equal(clearedProject.name, "Tactics updated");
+  assert.equal(clearedProject.summary, "HTTP summary");
+  assert.equal(clearedProject.status, "in_progress");
+
+  const created = await request(app, "/api/projects", {
+    method: "POST",
+    headers: { ...HUMAN_BEARER, ...JSON_HEADERS },
+    body: JSON.stringify({ key: "OPS", name: "Operations" }),
+  });
+  assert.equal(created.status, 201);
+
+  const archived = await request(app, "/api/projects/OPS", {
+    method: "PATCH",
+    headers: { ...HUMAN_BEARER, ...JSON_HEADERS },
+    body: JSON.stringify({ archived: true }),
+  });
+  assert.equal(archived.status, 200);
+  const archivedProject = (await readJson<ProjectResponse>(archived)).project;
+  assert.equal(archivedProject.key, "OPS");
+  assert.ok(archivedProject.archivedAt !== null);
+  if (archivedProject.archivedAt !== null) {
+    assert.equal(
+      new Date(archivedProject.archivedAt).toISOString(),
+      archivedProject.archivedAt,
+    );
+  }
+
+  const active = await request(app, "/api/projects", {
+    headers: HUMAN_BEARER,
+  });
+  assert.equal(active.status, 200);
+  assert.deepEqual(
+    (await readJson<ProjectsResponse>(active)).projects.map(
+      (project) => project.key,
+    ),
+    ["TAC"],
+  );
+
+  const withArchived = await request(app, "/api/projects?includeArchived=true", {
+    headers: HUMAN_BEARER,
+  });
+  assert.equal(withArchived.status, 200);
+  const allProjects = (await readJson<ProjectsResponse>(withArchived)).projects;
+  assert.deepEqual(
+    allProjects.map((project) => project.key),
+    ["OPS", "TAC"],
+  );
+  assert.match(allProjects[0]?.archivedAt ?? "", /^\d{4}-\d{2}-\d{2}T/);
+  assert.equal(allProjects[1]?.archivedAt, null);
+
+  // Archived projects stay readable.
+  const archivedDetail = await request(app, "/api/projects/OPS", {
+    headers: HUMAN_BEARER,
+  });
+  assert.equal(archivedDetail.status, 200);
+  assertJson(archivedDetail);
+  assert.ok(
+    (await readJson<ProjectResponse>(archivedDetail)).project.archivedAt !== null,
+  );
+
+  const restored = await request(app, "/api/projects/OPS", {
+    method: "PATCH",
+    headers: { ...HUMAN_BEARER, ...JSON_HEADERS },
+    body: JSON.stringify({ archived: false }),
+  });
+  assert.equal(restored.status, 200);
+  assert.equal(
+    (await readJson<ProjectResponse>(restored)).project.archivedAt,
+    null,
+  );
+
+  const activeAgain = await request(app, "/api/projects", {
+    headers: HUMAN_BEARER,
+  });
+  assert.deepEqual(
+    (await readJson<ProjectsResponse>(activeAgain)).projects.map(
+      (project) => project.key,
+    ),
+    ["OPS", "TAC"],
+  );
+
+  const missing = await request(app, "/api/projects/ZZZ", {
+    headers: HUMAN_BEARER,
+  });
+  assert.equal(missing.status, 404);
+  assertJson(missing);
+  assert.equal((await readJson<ErrorResponse>(missing)).error.code, "not_found");
+
+  const emptyPatch = await request(app, "/api/projects/TAC", {
+    method: "PATCH",
+    headers: { ...HUMAN_BEARER, ...JSON_HEADERS },
+    body: JSON.stringify({}),
+  });
+  assert.equal(emptyPatch.status, 400);
+  assertJson(emptyPatch);
+  const emptyPatchBody = await readJson<ErrorResponse>(emptyPatch);
+  assert.equal(emptyPatchBody.error.code, "validation");
+  assert.match(emptyPatchBody.error.message, /at least one project field/);
+
+  const badStatus = await request(app, "/api/projects/TAC", {
+    method: "PATCH",
+    headers: { ...HUMAN_BEARER, ...JSON_HEADERS },
+    body: JSON.stringify({ status: "started" }),
+  });
+  assert.equal(badStatus.status, 400);
+  assertJson(badStatus);
+  const badStatusBody = await readJson<ErrorResponse>(badStatus);
+  assert.equal(badStatusBody.error.code, "validation");
+  assert.match(badStatusBody.error.message, /project status "started"/);
+
+  const keyChange = await request(app, "/api/projects/TAC", {
+    method: "PATCH",
+    headers: { ...HUMAN_BEARER, ...JSON_HEADERS },
+    body: JSON.stringify({ key: "NEW" }),
+  });
+  assert.equal(keyChange.status, 400);
+  assertJson(keyChange);
+  const keyChangeBody = await readJson<ErrorResponse>(keyChange);
+  assert.equal(keyChangeBody.error.code, "validation");
+  assert.match(keyChangeBody.error.message, /a project key cannot change/);
+
+  const agentCreated = await createAgent(testDb.ports, "agent-1");
+  const agentPatch = await request(app, "/api/projects/TAC", {
+    method: "PATCH",
+    headers: { authorization: `Bearer ${agentCreated.token}`, ...JSON_HEADERS },
+    body: JSON.stringify({ name: "Agent edit" }),
+  });
+  assert.equal(agentPatch.status, 403);
+  assertJson(agentPatch);
+  assert.equal(
+    (await readJson<ErrorResponse>(agentPatch)).error.code,
     "forbidden_transition",
   );
 });
@@ -450,6 +675,20 @@ test("PATCH updates an issue for humans and forbids agents", async () => {
   assert.equal(issue.title, "Renamed issue");
   assert.equal(issue.description, "A longer description");
   assert.equal(issue.priority, 1);
+
+  const projectChange = await request(app, "/api/issues/TAC-1", {
+    method: "PATCH",
+    headers: { ...HUMAN_BEARER, ...JSON_HEADERS },
+    body: JSON.stringify({ project: "OPS" }),
+  });
+  assert.equal(projectChange.status, 400);
+  assertJson(projectChange);
+  const projectChangeBody = await readJson<ErrorResponse>(projectChange);
+  assert.equal(projectChangeBody.error.code, "validation");
+  assert.match(
+    projectChangeBody.error.message,
+    /an issue's project cannot change/,
+  );
 
   const created = await createAgent(testDb.ports, "agent-1");
   const forbidden = await request(app, "/api/issues/TAC-1", {

@@ -139,8 +139,8 @@ export function ProjectSetup({
           </form>
 
           <p className="mt-4 text-[11px] leading-relaxed text-fg-muted">
-            You can create more projects later from the CLI. The web client works
-            inside the selected project.
+            Create more projects from the Projects page. You can add a summary,
+            status, dates, and priority after setup.
           </p>
         </div>
       </div>

@@ -1,5 +1,12 @@
-import { STATUSES } from "../../../src/domain/status.ts";
-import type { EventKind, Issue, Priority, Status } from "./types.ts";
+import { PROJECT_STATUSES, STATUSES } from "../../../src/domain/status.ts";
+import type {
+  EventKind,
+  Issue,
+  Priority,
+  ProjectProgress,
+  ProjectStatus,
+  Status,
+} from "./types.ts";
 
 export const STATUS_LABEL: Record<Status, string> = {
   backlog: "Backlog",
@@ -64,6 +71,66 @@ export const PRIORITY_TONE: Record<Priority, string> = {
   3: "text-fg-secondary",
   4: "text-fg-muted",
 };
+
+export const PROJECT_STATUS_ORDER: readonly ProjectStatus[] = PROJECT_STATUSES;
+
+export const PROJECT_STATUS_LABEL: Record<ProjectStatus, string> = {
+  backlog: "Backlog",
+  planned: "Planned",
+  in_progress: "In progress",
+  paused: "Paused",
+  completed: "Completed",
+  canceled: "Canceled",
+};
+
+export const PROJECT_STATUS_TONE: Record<ProjectStatus, Tone> = {
+  backlog: {
+    text: "text-fg-muted",
+    bg: "bg-fg-muted/10",
+    border: "border-fg-muted/25",
+    mark: "bg-fg-muted",
+  },
+  planned: {
+    text: "text-fremen",
+    bg: "bg-fremen/10",
+    border: "border-fremen/30",
+    mark: "bg-fremen",
+  },
+  in_progress: {
+    text: "text-spice",
+    bg: "bg-spice/10",
+    border: "border-spice/30",
+    mark: "bg-spice",
+  },
+  paused: {
+    text: "text-ember",
+    bg: "bg-ember/10",
+    border: "border-ember/30",
+    mark: "bg-ember",
+  },
+  completed: {
+    text: "text-oasis",
+    bg: "bg-oasis/10",
+    border: "border-oasis/30",
+    mark: "bg-oasis",
+  },
+  canceled: {
+    text: "text-fg-muted",
+    bg: "bg-fg-muted/10",
+    border: "border-fg-muted/25",
+    mark: "bg-fg-muted",
+  },
+};
+
+export function projectPriorityLabel(priority: Priority | null): string {
+  return priority === null ? "No priority" : PRIORITY_LABEL[priority];
+}
+
+export function projectProgressPercent(progress: ProjectProgress): number {
+  return progress.total === 0
+    ? 0
+    : Math.round((progress.done / progress.total) * 100);
+}
 
 export const EVENT_LABEL: Record<EventKind, string> = {
   created: "created this issue",

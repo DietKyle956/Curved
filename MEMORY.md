@@ -3,11 +3,14 @@
 - **Last updated:** 2026-11-20
 - **Project:** curved
 - **Phase:** product and infrastructure implemented through `LAS-188` (free-tier
-  keepalive and rebuild runbook), and passkey login is live (migration `0006`,
-  opaque server-side sessions, passkey routes, and the sign-in and management
-  UI). `LAS-188` is still In Review with the console rebuild drill left to the
-  operator. Next unbuilt work is `LAS-189` (agent tunnel and deployed-commit
-  parity), then `LAS-190`; `LAS-177` (template audit) is independent.
+  keepalive and rebuild runbook), the project entity is live (migration `0007`:
+  summary, description, six-value status, nullable priority and dates, archive,
+  and per-status progress across the CLI, HTTP API, and SPA), and passkey login
+  is live (migration `0006`, opaque server-side sessions, passkey routes, and
+  the sign-in and management UI). `LAS-188` is still In Review with the console
+  rebuild drill left to the operator. Next unbuilt work is `LAS-189` (agent
+  tunnel and deployed-commit parity), then `LAS-190`; `LAS-177` (template audit)
+  is independent.
 
 ## Current verified state
 
@@ -28,10 +31,11 @@ git history and the Linear comments.
   `npm run smoke:backup`, `npm run smoke:webhook`, and
   `.github/workflows/verify.yml` on every push to `main` and manual dispatch,
   where the main-only `deploy` job runs after `verify`.
-- Baseline: 205 tests pass (199 behavior, 6 architecture),
-  `architecture: ok (81 files)`, web build green; `npm run acceptance` passes
-  (145 checks, including the browser passkey registration and passkey sign-in
-  lines), `npm run smoke:release` 22 assertions,
+- Baseline: 223 tests pass (217 behavior, 6 architecture),
+  `architecture: ok (84 files)`, web build green; `npm run acceptance` passes
+  (194 checks, including the project CLI show/edit/archive/restore and HTTP
+  detail/`PATCH`/archive legs plus the browser passkey registration and
+  passkey sign-in lines), `npm run smoke:release` 22 assertions,
   `npm run smoke:backup` 19, `npm run smoke:provision` 52,
   `npm run smoke:webhook` 9, and `npm run smoke:compose` includes the real
   backup, Postgres drill, and Caddy restore legs.
@@ -47,7 +51,14 @@ git history and the Linear comments.
   Migrations apply lexicographically under session advisory lock 727274, one
   transaction per file, with a `schema_migrations` ledger.
 - Schema: `projects` (identity id, unique key `^[A-Z][A-Z0-9]{1,9}$`, trimmed
-  name 1..200, `next_number`); `issues` (per-project `number`, unique key
+  name 1..200, `next_number`; migration `0007` adds a trimmed `summary` of at
+  most 255, a `description` of at most 20000, a six-value `status` (`backlog`,
+  `planned`, `in_progress`, `paused`, `completed`, `canceled`; default
+  `planned`), a nullable 1..4 `priority`, nullable `start_date` and
+  `target_date`, `archived_at`, and `updated_at`, with four check constraints
+  and a backfill to `in_progress` when the project already owned issues and
+  `planned` otherwise; there is no project delete, so archive is terminal);
+  `issues` (per-project `number`, unique key
   `^[A-Z][A-Z0-9]{1,9}-[0-9]{1,6}$`, trimmed title 1..500, description, status,
   priority 1..4, optional parent, `blocked_reason`, `claimed_by`, timestamps);
   append-only `issue_events` (UPDATE and DELETE rejected with SQLSTATE 23001);
@@ -76,7 +87,9 @@ git history and the Linear comments.
   `blockIssue`, and `unblockIssue` append `review_submitted`, `release`,
   `blocked`, and `unblocked` events; a block stores a 1..2000 character reason
   and returns the issue to `todo`, and an unblock is human only.
-- CLI (`node src/composition/cli.ts`): `project add|list`,
+- CLI (`node src/composition/cli.ts`):
+  `project add|list|show|edit|archive|restore` (human actor, `--json` prints
+  progress, `--priority`/`--start`/`--target` accept `none` to clear),
   `issue add|list|show|comment|move|block|unblock`, `agent add`,
   `ready [PROJECT] [--human]`, `claim`, `review`, `release`,
   `git-branch <KEY> [--json]`, `migrate`. Agent commands read
@@ -90,7 +103,8 @@ git history and the Linear comments.
   and `DELETE /api/session` deletes the row so logout revokes it. The old
   deterministic `sha256(UI_TOKEN)` cookie is gone, so existing cookies require a
   new sign-in. Routes cover `/api/me`, `/api/session`, the passkey endpoints
-  (see below), projects, issues (list with `project` and `status` filters,
+  (see below), projects (list with `includeArchived`, create, show, human-only
+  `PATCH`), issues (list with `project` and `status` filters,
   create, show, human-only `PATCH`), transition, comments, labels, relations,
   block, unblock, release, `/api/ready`, `/api/claims/next`, cookie-only
   `/api/events`, and `/webhooks/github`. Passkey routes: `GET
@@ -124,10 +138,13 @@ git history and the Linear comments.
 - Web: Vite 8 + React 19 + Tailwind v4 SPA in `web/`; sign-in, first-run setup,
   five-lane board with drag gated by `allowedTransitions`, mobile status list,
   ready queue, issue detail modal, label and relation editing, `Ctrl/Cmd+K`
-  palette, toasts. The sign-in screen leads with a primary "Sign in with
-  passkey" button (Face ID, Touch ID, or a security key) above a "Use a UI
-  token" divider holding the token form. Any signed-in session opens a Passkeys
-  dialog from the topbar, the sidebar footer, or the palette action "Manage
+  palette, toasts. Projects have a `/projects` page, a `/p/<KEY>/overview` page
+  with status chip, dates, and per-status progress, and a create/edit/archive
+  dialog; the sidebar carries Projects and Overview rows and the mobile nav is
+  five cells at 390 px (78 px each). The sign-in screen leads with a primary
+  "Sign in with passkey" button (Face ID, Touch ID, or a security key) above a
+  "Use a UI token" divider holding the token form. Any signed-in session opens a
+  Passkeys dialog from the topbar, the sidebar footer, or the palette action "Manage
   passkeys", where a passkey can be added with a nickname or removed. Fixed
   warm near-black palette, Instrument Sans + JetBrains Mono, self-hosted fonts,
   no light mode, `lg` breakpoint overridden to 900 px.
@@ -686,3 +703,4 @@ on 2026-11-18, and 037 to 039 on 2026-11-19.
 | 040 | `LAS-188` | `deploy/keepalive.sh`, bootstrap-installed `/usr/local/bin/curved-keepalive` plus hourly `curved-keepalive.service`/`.timer`, `verify-host` `keepalive-timer` check (27 PASS), provisioning-smoke unit/script/idempotency/disabled-timer coverage (52 PASS), and the section 18 keepalive plus rebuild-after-reclamation runbook; live bootstrap `--no-stack` installed the units, `verify-host` printed 27 PASS/0 FAIL, and a 62 s `/proc/stat` run measured 53-56% total CPU, p95 55%, average 54.1%. |
 | 041 | Passkey login | Migration `0006` adds `passkey_credentials`, `auth_sessions`, and `webauthn_challenges`; sessions are opaque rows keyed by the SHA-256 of a 32-character base64url nonce in `curved_session` (30-day expiry, token and passkey logins, `DELETE /api/session` deletes the row), replacing the deterministic `sha256(UI_TOKEN)` cookie. `@simplewebauthn/server` 14.1 and `@simplewebauthn/browser` 14.0 back `GET /api/passkeys/available`, `GET`/`POST /api/passkeys`, `POST /api/passkeys/options`, `DELETE /api/passkeys/:id`, and unauthenticated `POST /api/session/passkey/options`/`POST /api/session/passkey`, with human routes accepting the bearer or the cookie. `CURVED_WEBAUTHN_ORIGINS` and `CURVED_WEBAUTHN_RP_ID` override defaults derived from `CURVED_DOMAIN`, which compose now passes. The SPA leads sign-in with a passkey button and manages passkeys from the topbar, sidebar, and palette. The UI-token field opts out of credential-manager autofill (`name="ui-token"`, `autoComplete="off"`, no autocapitalize/correct), so a saved password cannot overwrite a pasted token. Gates: 205 tests (199 behavior, 6 architecture), `architecture: ok (81 files)`, acceptance 145 checks with the two browser passkey lines, and compose smoke green. |
 | 042 | UI token recovery | `.github/workflows/rotate-ui-token.yml` (manual `workflow_dispatch`, concurrency `rotate-ui-token`, contents read only) validates `DEPLOY_SSH_KEY`, `DEPLOY_KNOWN_HOSTS`, `DEPLOY_HOST`, and `CURVED_UI_TOKEN`, writes the key and known_hosts under `$RUNNER_TEMP` mode 600, and pipes the token over stdin, never argv and never a log line. On the host it atomically rewrites the mode-600 `CURVED_UI_TOKEN` line in `/srv/curved/checkout/deploy/.env`, restoring the backup and re-running the release if `./deploy/release.sh` fails, then runs the release and proves `POST https://$CURVED_DOMAIN/api/session` with the new token returns 200 (`login probe ok`). Operator path: `gh secret set CURVED_UI_TOKEN < value`, then `gh workflow run rotate-ui-token.yml`; only the GitHub deploy key can reach the host, so local `ssh deploy@...` is denied. The token is also saved at `~/.curved-ui-token` (mode 600, outside the repo). Verified run 44747923125: `release: public probe ok`, `release: ok 2d1588c`, `login probe ok`; a scan of the full log for the token value returned 0 matches. |
+| 043 | Project entity | Migration `0007_project_details.sql` gives `projects` a trimmed `summary` (<=255), `description` (<=20000), a six-value `status` (`backlog`/`planned`/`in_progress`/`paused`/`completed`/`canceled`, default `planned`), nullable 1..4 `priority`, `start_date`, `target_date`, `archived_at`, and `updated_at`, with a `planned`/`in_progress` backfill and four check constraints; no delete, archive is terminal, and project changes write only `updated_at`. Domain `PROJECT_STATUSES`/`ProjectStatus`/`DEFAULT_PROJECT_STATUS`/`isProjectStatus`, project types with `emptyProgress`, and project validators (summary trims, strict calendar `YYYY-MM-DD` dates); `ProjectRepository` adds `list({includeArchived})`, `findWithProgressByKey`, and a single-statement tri-state `update` with one lateral progress block; `createProject`/`listProjects`/`getProject`/`updateProject` are SQL-free and human-only for edits. HTTP `GET`/`POST /api/projects` and `GET`/`PATCH /api/projects/:key` (`includeArchived`, immutable key, nullable priority and dates, `archived` boolean; issue `PATCH` rejects `project`). CLI `project add|list|show|edit|archive|restore` with `--json` progress and `none` clears. The SPA adds the projects and `/p/<KEY>/overview` routes, `ProjectsPage`, `ProjectOverview`, `ProjectDialog`, `ProjectStatusChip`, five-cell mobile nav at 390 px, palette actions, and project navigation from issue detail, with realtime subscribing to all projects. The second-tab direct load exposed a deep-link race: project resolution could clear the timeline after the issue fetch, so the timeline effect now depends on `projectKeyFromRoute` and refetches. Gates: 223 tests (217 behavior, 6 architecture), `architecture: ok (84 files)`, acceptance 194 checks (five consecutive green runs after the race fix). |

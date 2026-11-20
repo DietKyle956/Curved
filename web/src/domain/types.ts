@@ -2,10 +2,11 @@ import type {
   ActorType,
   EventKind,
   Priority,
+  ProjectStatus,
   Status,
 } from "../../../src/domain/status.ts";
 
-export type { ActorType, EventKind, Priority, Status };
+export type { ActorType, EventKind, Priority, ProjectStatus, Status };
 
 export interface Actor {
   type: ActorType;
@@ -16,8 +17,45 @@ export interface Project {
   id: number;
   key: string;
   name: string;
+  summary: string;
+  description: string;
+  status: ProjectStatus;
+  priority: Priority | null;
+  startDate: string | null;
+  targetDate: string | null;
+  archivedAt: string | null;
   nextNumber: number;
   createdAt: string;
+  updatedAt: string;
+  progress: ProjectProgress;
+}
+
+export interface ProjectProgress {
+  total: number;
+  done: number;
+  byStatus: Record<Status, number>;
+}
+
+export interface NewProjectInput {
+  key: string;
+  name: string;
+  summary?: string;
+  description?: string;
+  status?: ProjectStatus;
+  priority?: Priority | null;
+  startDate?: string | null;
+  targetDate?: string | null;
+}
+
+export interface ProjectPatch {
+  name?: string;
+  summary?: string;
+  description?: string;
+  status?: ProjectStatus;
+  priority?: Priority | null;
+  startDate?: string | null;
+  targetDate?: string | null;
+  archived?: boolean;
 }
 
 export interface Issue {

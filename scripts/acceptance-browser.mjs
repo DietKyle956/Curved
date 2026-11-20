@@ -49,6 +49,22 @@ const SCREENSHOT_PALETTE = path.join(
   tmpdir(),
   `curved-acceptance-${RUN_ID}-palette.png`,
 );
+const SCREENSHOT_PROJECTS = path.join(
+  tmpdir(),
+  `curved-acceptance-${RUN_ID}-projects.png`,
+);
+const SCREENSHOT_PROJECT_OVERVIEW = path.join(
+  tmpdir(),
+  `curved-acceptance-${RUN_ID}-project-overview.png`,
+);
+const SCREENSHOT_PROJECTS_CARD = path.join(
+  tmpdir(),
+  `curved-acceptance-${RUN_ID}-projects-card.png`,
+);
+const SCREENSHOT_PROJECT_DIALOG = path.join(
+  tmpdir(),
+  `curved-acceptance-${RUN_ID}-project-dialog.png`,
+);
 
 const CHROMIUM_CANDIDATES = [
   "chromium",
@@ -80,18 +96,35 @@ const PASSKEYS_OPEN = '[data-testid="open-passkeys"]';
 const PASSKEY_NICKNAME = '[data-testid="passkey-nickname"]';
 const PASSKEY_ADD = '[data-testid="passkey-add"]';
 const PASSKEY_ROW = '[data-testid="passkey-row"]';
+const PASSKEYS_DIALOG = '[role="dialog"][aria-labelledby="dialog-title"]';
+const PASSKEYS_ERROR = '[data-testid="passkeys-error"]';
 const STATUS_TAB = '[data-testid^="status-tab-"]';
 const PALETTE = '[role="dialog"][aria-label="Command palette"]';
 const PALETTE_INPUT = 'input[role="combobox"]';
 const PALETTE_RESULTS = "#palette-results";
 const PALETTE_OPTION = '#palette-results [role="option"]';
 const PALETTE_KEY = '[data-testid="palette-key"]';
+const PALETTE_PROJECTS_OPTION = "#palette-projects";
+const PALETTE_BOARD_OPTION = "#palette-board";
 const NEW_ISSUE_TITLE = '[data-testid="new-issue-title"]';
 const NEW_ISSUE_SUBMIT = '[data-testid="new-issue-submit"]';
 const ISSUE_DETAIL = '[data-testid="issue-detail"]';
 const TIMELINE_EVENT = '[data-testid="timeline-event"]';
 const COMMENT_INPUT = "#issue-comment";
 const COMMENT_SUBMIT = '[data-testid="comment-submit"]';
+const MOBILE_NAV = 'nav[aria-label="Primary"]';
+const PROJECTS_PAGE = '[data-testid="projects-page"]';
+const NEW_PROJECT = '[data-testid="new-project"]';
+const PROJECT_DIALOG = '[data-testid="project-dialog"]';
+const PROJECT_KEY_INPUT = '[data-testid="project-key"]';
+const PROJECT_NAME_INPUT = '[data-testid="project-name"]';
+const PROJECT_SUMMARY_INPUT = '[data-testid="project-summary"]';
+const PROJECT_SAVE = '[data-testid="project-save"]';
+const PROJECT_OVERVIEW = '[data-testid="project-overview"]';
+const PROJECT_CARD = '[data-testid="project-card-WEB"]';
+const PROJECT_CARD_ANY = '[data-testid^="project-card-"]';
+const PROJECT_EDIT = '[data-testid="project-edit"]';
+const PROJECT_PROGRESS = '[data-testid="project-progress"]';
 
 const ENTER_KEY = {
   key: "Enter",
@@ -918,11 +951,15 @@ async function fail(reason) {
   clearTimeout(watchdog);
 
   const lines = [`FAIL browser: ${reason}`, `phase: ${state.phase}`];
+
   if (state.chromePath !== null) {
     lines.push(`chromium: ${state.chromePath}`);
   }
 
-  const bodyLines = [];
+  // Per-tab excerpts, each capped at 20 lines: concatenating every tab and
+  // slicing the front of the result only ever showed tab A, hiding exactly the
+  // tab that failed.
+  const BODY_LINES_PER_TAB = 20;
   for (const tab of state.tabs) {
     try {
       const text = await withTimeout(
@@ -930,17 +967,16 @@ async function fail(reason) {
         1500,
         `tab ${tab.label} body text`,
       );
-      bodyLines.push(`--- tab ${tab.label} body (${String(text).length} chars) ---`);
-      bodyLines.push(...String(text).split(/\r?\n/));
+      const tabLines = String(text).split(/\r?\n/);
+      lines.push(
+        `--- tab ${tab.label} body (first ${BODY_LINES_PER_TAB} of ${tabLines.length} lines, ${String(text).length} chars) ---`,
+      );
+      lines.push(...tabLines.slice(0, BODY_LINES_PER_TAB));
     } catch (error) {
-      bodyLines.push(
+      lines.push(
         `--- tab ${tab.label} body unavailable: ${describeError(error)} ---`,
       );
     }
-  }
-  if (bodyLines.length > 0) {
-    lines.push("page body (first 40 lines):");
-    lines.push(...bodyLines.slice(0, 40));
   }
 
   if (state.palette !== null) {
@@ -989,19 +1025,33 @@ async function success(lines) {
 /* Assertions that poll the page                                              */
 /* -------------------------------------------------------------------------- */
 
-async function waitForBodyContains(tab, needle, timeoutMs) {
+async function waitForBodyMatch(tab, matches, needle, timeoutMs) {
   const started = Date.now();
   let lastLength = 0;
   while (Date.now() - started < timeoutMs) {
     const body = String(await tab.bodyText());
     lastLength = body.length;
-    if (body.includes(needle)) {
+    if (matches(body)) {
       return;
     }
     await sleep(40);
   }
   throw new Error(
     `tab ${tab.label} body never contained ${JSON.stringify(needle)} within ${timeoutMs}ms (body length ${lastLength})`,
+  );
+}
+
+async function waitForBodyContains(tab, needle, timeoutMs) {
+  await waitForBodyMatch(tab, (body) => body.includes(needle), needle, timeoutMs);
+}
+
+async function waitForBodyContainsIgnoringCase(tab, needle, timeoutMs) {
+  const lowered = needle.toLowerCase();
+  await waitForBodyMatch(
+    tab,
+    (body) => body.toLowerCase().includes(lowered),
+    needle,
+    timeoutMs,
   );
 }
 
@@ -1078,6 +1128,111 @@ async function waitForSelectorGone(tab, selector, timeoutMs) {
   throw new Error(
     `tab ${tab.label} still rendered ${JSON.stringify(selector)} after ${timeoutMs}ms`,
   );
+}
+
+function readBox(tab, selector) {
+  return tab.evaluate(
+    `(() => {
+      const element = document.querySelector(${JSON.stringify(selector)});
+      if (element === null) {
+        return null;
+      }
+      const box = element.getBoundingClientRect();
+      return { x: box.x, y: box.y, width: box.width, height: box.height };
+    })()`,
+  );
+}
+
+/**
+ * Waits until `selector` has a non-zero box that stopped moving between polls.
+ * Dialogs slide and scale in after mounting, so a click issued while the panel
+ * is still animating can land on the backdrop instead of the target.
+ */
+async function waitForStableBox(tab, selector, timeoutMs = 3000) {
+  const started = Date.now();
+  let previous = null;
+  let current = null;
+  let stable = 0;
+  while (Date.now() - started < timeoutMs) {
+    current = await readBox(tab, selector);
+    if (
+      current !== null &&
+      current.width > 0 &&
+      current.height > 0 &&
+      previous !== null &&
+      current.x === previous.x &&
+      current.y === previous.y &&
+      current.width === previous.width &&
+      current.height === previous.height
+    ) {
+      stable += 1;
+      if (stable >= 2) {
+        return current;
+      }
+    } else {
+      stable = 0;
+    }
+    previous = current;
+    await sleep(50);
+  }
+  if (current === null || current.width <= 0 || current.height <= 0) {
+    throw new Error(
+      `tab ${tab.label} ${JSON.stringify(selector)} never got a non-zero box within ${timeoutMs}ms (last ${JSON.stringify(current)})`,
+    );
+  }
+  return current;
+}
+
+/**
+ * Snapshot of what the passkeys dialog did after the add click: a registered
+ * row, an inline error, or the dialog closing (backdrop click or sign-out).
+ */
+function readPasskeyAddState(tab) {
+  return tab.evaluate(
+    `(() => {
+      const dialog = document.querySelector(${JSON.stringify(PASSKEYS_DIALOG)});
+      const add = document.querySelector(${JSON.stringify(PASSKEY_ADD)});
+      const row = document.querySelector(${JSON.stringify(PASSKEY_ROW)});
+      const error = document.querySelector(${JSON.stringify(PASSKEYS_ERROR)});
+      const box = add === null ? null : add.getBoundingClientRect();
+      const dialogText = dialog === null ? "" : String(dialog.textContent || "");
+      return {
+        dialog: dialog !== null,
+        row: row !== null,
+        error: error === null ? null : String(error.textContent || "").trim(),
+        addRect:
+          box === null
+            ? null
+            : { x: box.x, y: box.y, width: box.width, height: box.height },
+        path: window.location.pathname,
+        signInForm:
+          document.querySelector(${JSON.stringify(SIGNIN_TOKEN)}) !== null,
+        disabled: add === null ? null : add.disabled,
+        buttonText: add === null ? null : String(add.textContent || "").trim(),
+        loading: dialogText.includes("Loading passkeys"),
+        toasts: Array.from(
+          document.querySelectorAll('[data-testid="toast"]'),
+        ).map((toast) => String(toast.textContent || "").trim()),
+        dialogTail:
+          dialog === null
+            ? null
+            : String(dialog.innerText || "").slice(-240),
+      };
+    })()`,
+  );
+}
+
+async function waitForPasskeyAddOutcome(tab, timeoutMs) {
+  const started = Date.now();
+  let current = await readPasskeyAddState(tab);
+  while (Date.now() - started < timeoutMs) {
+    if (current.row || current.error !== null || !current.dialog) {
+      return current;
+    }
+    await sleep(50);
+    current = await readPasskeyAddState(tab);
+  }
+  return current;
 }
 
 /**
@@ -1187,6 +1342,50 @@ async function waitForPaletteScroll(tab, timeoutMs) {
   return snapshot;
 }
 
+/**
+ * Runs a palette action by typing `query` and clicking the option `optionId`.
+ * The palette closes itself on click, so the exit animation is waited out
+ * before the caller inspects the newly routed page. Navigating through the
+ * palette keeps the run on the app's own pushState navigation instead of a
+ * full document load, which would leave the previous document's EventSource
+ * connections alive in BFCache.
+ */
+async function runPaletteAction(tab, query, optionId) {
+  await tab.pressKey(CTRL_K);
+  await tab.waitFor(PALETTE, 5000);
+  await tab.setValue(PALETTE_INPUT, query);
+  await tab.waitFor(optionId, 5000);
+  await tab.click(optionId);
+  await waitForSelectorGone(tab, PALETTE, 5000);
+}
+
+async function goToProjects(tab) {
+  await runPaletteAction(tab, "projects", PALETTE_PROJECTS_OPTION);
+  await tab.waitFor(PROJECTS_PAGE, 20_000);
+}
+
+/**
+ * Returns to `projectKey`'s board from the projects page. The palette "board"
+ * action targets the workspace's current project, which on /projects falls back
+ * to the first project by key, so the project's own overview is opened first.
+ */
+async function goToBoardFor(tab, projectKey) {
+  await runPaletteAction(
+    tab,
+    projectKey.toLowerCase(),
+    `#palette-project-${projectKey}`,
+  );
+  await tab.waitFor(PROJECT_OVERVIEW, 20_000);
+  await runPaletteAction(tab, "board", PALETTE_BOARD_OPTION);
+  const boardPath = String(await tab.evaluate("window.location.pathname"));
+  const expectedPath = `/p/${encodeURIComponent(projectKey)}`;
+  assert(
+    boardPath === expectedPath,
+    `palette board action routed to ${JSON.stringify(boardPath)}, expected ${JSON.stringify(expectedPath)} for project ${JSON.stringify(projectKey)}`,
+  );
+  await tab.waitFor(STATUS_TAB, 20_000);
+}
+
 /* -------------------------------------------------------------------------- */
 /* Flow                                                                       */
 /* -------------------------------------------------------------------------- */
@@ -1203,11 +1402,11 @@ async function main() {
   state.phase = "connect to CDP";
   state.cdp = await Cdp.connect(webSocketUrl, 15_000);
   state.cdp.onEvent((message) => {
+    const params = message.params ?? {};
     if (message.method !== "Runtime.consoleAPICalled") {
       return;
     }
     const tab = state.tabs.find((item) => item.sessionId === message.sessionId);
-    const params = message.params ?? {};
     const args = Array.isArray(params.args) ? params.args : [];
     const text = args
       .map((arg) =>
@@ -1226,8 +1425,9 @@ async function main() {
   const boardUrl = `${baseUrl}/p/${encodeURIComponent(projectKey)}`;
   const tabA = await openTab(state.cdp, "A", boardUrl);
 
-  // The authenticator belongs to the browser context, so both tabs see it and
-  // the credential registered below outlives signing out.
+  // The authenticator is created once per browser environment and persists
+  // across page loads and navigations; adding a second one is rejected, so the
+  // passkey legs reuse this id and only re-arm focus emulation.
   state.phase = "enable virtual authenticator";
   const authenticatorId = await enableVirtualAuthenticator(tabA);
 
@@ -1271,6 +1471,207 @@ async function main() {
   state.phase = "screenshot board";
   await sleep(150);
   const screenshotBoardBytes = await tabA.screenshot(SCREENSHOT_BOARD);
+
+  // Project entity leg: create a project through the SPA, then edit its status
+  // through the same dialog. The page is exercised at 390px, so the projects
+  // grid and the five-cell mobile nav must both fit without clipping.
+  state.phase = "open projects page";
+  await goToProjects(tabA);
+
+  const projectsLayout = await tabA.evaluate(
+    `(() => {
+      const nav = document.querySelector(${JSON.stringify(MOBILE_NAV)});
+      const grid = nav === null ? null : nav.querySelector(":scope > div");
+      const cells =
+        grid === null
+          ? []
+          : Array.from(grid.children).map((element) => {
+              const box = element.getBoundingClientRect();
+              return {
+                label: String(element.textContent || "").trim(),
+                left: box.left,
+                right: box.right,
+                width: box.width,
+              };
+            });
+      return {
+        scrollWidth: document.documentElement.scrollWidth,
+        innerWidth: window.innerWidth,
+        cells: cells,
+      };
+    })()`,
+  );
+  assert(
+    projectsLayout !== null && typeof projectsLayout === "object",
+    "could not read the projects page layout",
+  );
+  assert(
+    projectsLayout.scrollWidth <= projectsLayout.innerWidth + 1,
+    `projects page overflows horizontally at ${projectsLayout.innerWidth}px: documentElement.scrollWidth ${projectsLayout.scrollWidth}`,
+  );
+  assert(
+    projectsLayout.cells.length === 5,
+    `expected 5 mobile nav cells on the projects page, found ${projectsLayout.cells.length} (${projectsLayout.cells.map((cell) => JSON.stringify(cell.label)).join(", ") || "none"})`,
+  );
+  const navCellOverflow = projectsLayout.cells.filter(
+    (cell) =>
+      cell.left < -1 ||
+      cell.width <= 0 ||
+      cell.right > projectsLayout.innerWidth + 1,
+  );
+  assert(
+    navCellOverflow.length === 0,
+    `mobile nav cells do not fit the ${projectsLayout.innerWidth}px viewport: ${navCellOverflow
+      .map(
+        (cell) =>
+          `${JSON.stringify(cell.label)} ${Math.round(cell.left)}-${Math.round(cell.right)} (${Math.round(cell.width)}px)`,
+      )
+      .join(", ")}; all cells: ${projectsLayout.cells
+      .map(
+        (cell) =>
+          `${JSON.stringify(cell.label)} ${Math.round(cell.left)}-${Math.round(cell.right)} (${Math.round(cell.width)}px)`,
+      )
+      .join(", ")}`,
+  );
+  const navCellsWidth = projectsLayout.cells.reduce(
+    (total, cell) => total + cell.width,
+    0,
+  );
+
+  state.phase = "screenshot projects page";
+  await sleep(150);
+  const screenshotProjectsBytes = await tabA.screenshot(SCREENSHOT_PROJECTS);
+
+  state.phase = "create project";
+  await tabA.click(NEW_PROJECT);
+  await tabA.waitFor(PROJECT_DIALOG, 10_000);
+  await tabA.setValue(PROJECT_KEY_INPUT, "WEB");
+  await tabA.setValue(PROJECT_NAME_INPUT, "Web project");
+  await tabA.setValue(PROJECT_SUMMARY_INPUT, "Created in the browser");
+  await tabA.click(PROJECT_SAVE);
+  await tabA.waitFor(PROJECT_OVERVIEW, 15_000);
+  await waitForBodyContains(tabA, "Web project", 5000);
+
+  const projectOverviewPath = String(
+    await tabA.evaluate("window.location.pathname"),
+  );
+  assert(
+    projectOverviewPath === "/p/WEB/overview",
+    `expected the created project overview at /p/WEB/overview, got ${JSON.stringify(projectOverviewPath)}`,
+  );
+  const projectBodyText = String(await tabA.bodyText());
+  assert(
+    projectBodyText.includes("Web project"),
+    "project overview body does not show the project name \"Web project\"",
+  );
+  const projectProgressText = String(await tabA.text(PROJECT_PROGRESS))
+    .replace(/\s+/g, " ")
+    .trim();
+  assert(
+    projectProgressText.includes("0%"),
+    `project progress read ${JSON.stringify(projectProgressText)}, expected it to contain "0%"`,
+  );
+
+  state.phase = "screenshot project overview";
+  await sleep(150);
+  const screenshotProjectOverviewBytes = await tabA.screenshot(
+    SCREENSHOT_PROJECT_OVERVIEW,
+  );
+
+  state.phase = "edit project status";
+  await tabA.click(PROJECT_EDIT);
+  await tabA.waitFor(PROJECT_DIALOG, 10_000);
+  await tabA.evaluate(`(() => {
+    const el = document.querySelector('[data-testid="project-status"]');
+    el.value = "in_progress";
+    el.dispatchEvent(new Event("change", { bubbles: true }));
+    return el.value;
+  })()`);
+
+  state.phase = "screenshot project dialog";
+  await sleep(150);
+  const screenshotProjectDialogBytes = await tabA.screenshot(
+    SCREENSHOT_PROJECT_DIALOG,
+  );
+
+  await tabA.click(PROJECT_SAVE);
+  await waitForSelectorGone(tabA, PROJECT_DIALOG, 10_000);
+  await tabA.waitFor(PROJECT_OVERVIEW, 10_000);
+  await waitForBodyContainsIgnoringCase(tabA, "In progress", 5000);
+  const projectStatusText = String(await tabA.text(PROJECT_OVERVIEW))
+    .replace(/\s+/g, " ")
+    .trim();
+  assert(
+    /in progress/i.test(projectStatusText),
+    `project overview read ${JSON.stringify(projectStatusText)}, expected the project status chip to read In progress (case-insensitive)`,
+  );
+
+  // The created project must also render as a card on the projects page: the
+  // initial projects screenshot predates creation, so verify the card itself
+  // (geometry inside the 390px viewport, key/name/progress text) before the
+  // board legs resume. The status edit a moment ago does not change 0/0.
+  state.phase = "check project card";
+  await goToProjects(tabA);
+  await tabA.waitFor(PROJECT_CARD, 20_000);
+  const projectCard = await tabA.evaluate(
+    `(() => {
+      const card = document.querySelector(${JSON.stringify(PROJECT_CARD)});
+      if (card === null) {
+        return null;
+      }
+      const box = card.getBoundingClientRect();
+      const cards = document.querySelectorAll(${JSON.stringify(PROJECT_CARD_ANY)});
+      return {
+        left: box.left,
+        right: box.right,
+        width: box.width,
+        height: box.height,
+        innerWidth: window.innerWidth,
+        scrollWidth: document.documentElement.scrollWidth,
+        text: String(card.textContent || "").replace(/\\s+/g, " ").trim(),
+        projectCount: cards.length,
+      };
+    })()`,
+  );
+  assert(
+    projectCard !== null && typeof projectCard === "object",
+    `project card ${PROJECT_CARD} was not found on the projects page`,
+  );
+  assert(
+    projectCard.width > 0 && projectCard.height > 0,
+    `project card is not visible (${Math.round(projectCard.width)}x${Math.round(projectCard.height)})`,
+  );
+  assert(
+    projectCard.left >= -1 &&
+      projectCard.right <= projectCard.innerWidth + 1,
+    `project card spans ${Math.round(projectCard.left)}-${Math.round(projectCard.right)}px in a ${projectCard.innerWidth}px viewport`,
+  );
+  assert(
+    projectCard.scrollWidth <= projectCard.innerWidth + 1,
+    `projects page overflows horizontally at ${projectCard.innerWidth}px: documentElement.scrollWidth ${projectCard.scrollWidth}`,
+  );
+  assert(
+    projectCard.text.includes("WEB"),
+    `project card text does not show the key "WEB": ${JSON.stringify(projectCard.text)}`,
+  );
+  assert(
+    projectCard.text.includes("Web project"),
+    `project card text does not show the project name "Web project": ${JSON.stringify(projectCard.text)}`,
+  );
+  assert(
+    projectCard.text.includes("0/0"),
+    `project card text does not show progress "0/0": ${JSON.stringify(projectCard.text)}`,
+  );
+
+  state.phase = "screenshot project card";
+  await sleep(150);
+  const screenshotProjectsCardBytes = await tabA.screenshot(
+    SCREENSHOT_PROJECTS_CARD,
+  );
+
+  // Return to the board so the palette and issue legs below run unchanged.
+  state.phase = "return to board";
+  await goToBoardFor(tabA, projectKey);
 
   // LAS-154 regression: an issue row must render its key in the palette, and a
   // key search must narrow the list to that one issue. The seeded set holds
@@ -1435,7 +1836,20 @@ async function main() {
     "B",
     `${baseUrl}${issuePath}`,
   );
+  // Creating a target does not make it the focused tab: headless Chromium
+  // leaves focus on the previously active page, so the new tab can stall
+  // hydration and never open its realtime EventSource. Activate the target,
+  // push it to the front, and re-assert focus emulation before asserting.
+  await state.cdp.send("Target.activateTarget", {
+    targetId: tabBSession.targetId,
+  });
+  await state.cdp.send("Page.bringToFront", {}, tabBSession.sessionId);
   await tabBSession.waitFor(ISSUE_DETAIL, 20_000);
+  await state.cdp.send(
+    "Emulation.setFocusEmulationEnabled",
+    { enabled: true },
+    tabBSession.sessionId,
+  );
   await tabBSession.waitFor(TIMELINE_EVENT, 15_000);
   const eventsB = await tabBSession.count(TIMELINE_EVENT);
   assert(
@@ -1479,9 +1893,38 @@ async function main() {
   );
   await tabA.click(PASSKEYS_OPEN);
   await tabA.waitFor(PASSKEY_NICKNAME, 10_000);
+  const addButtonRect = await waitForStableBox(tabA, PASSKEY_ADD);
+  // The virtual authenticator created during setup outlives this navigation,
+  // so the only thing to restore is page focus: headless WebAuthn waits for
+  // the page to be focused before it resolves the ceremony.
+  await state.cdp.send("Page.bringToFront", {}, tabA.sessionId);
+  await state.cdp.send(
+    "Emulation.setFocusEmulationEnabled",
+    { enabled: true },
+    tabA.sessionId,
+  );
   await tabA.setValue(PASSKEY_NICKNAME, passkeyNickname);
   await tabA.click(PASSKEY_ADD);
-  await tabA.waitFor(PASSKEY_ROW, 20_000);
+  const addOutcome = await waitForPasskeyAddOutcome(tabA, 2000);
+  const addRect = addOutcome.addRect ?? addButtonRect;
+  if (!addOutcome.row && addOutcome.error !== null) {
+    throw new Error(
+      `passkey add failed: ${JSON.stringify(addOutcome.error)} (add button rect: ${JSON.stringify(addRect)})`,
+    );
+  }
+  if (!addOutcome.row && !addOutcome.dialog) {
+    throw new Error(
+      `passkeys dialog closed after the add click (likely a backdrop click); add button rect: ${JSON.stringify(addRect)}; page at ${JSON.stringify(addOutcome.path)}${addOutcome.signInForm ? " (sign-in form rendered)" : ""}`,
+    );
+  }
+  try {
+    await tabA.waitFor(PASSKEY_ROW, 20_000);
+  } catch (error) {
+    const late = await readPasskeyAddState(tabA);
+    throw new Error(
+      `passkey row never appeared (${describeError(error)}); dialog ${late.dialog ? "still open" : "closed"}, inline error ${JSON.stringify(late.error)}, page at ${JSON.stringify(late.path)}${late.signInForm ? " (sign-in form rendered)" : ""}; disabled=${JSON.stringify(late.disabled)}, loading=${JSON.stringify(late.loading)}, toasts=${JSON.stringify(late.toasts)}, dialogTail=${JSON.stringify(late.dialogTail)}`,
+    );
+  }
   const passkeyRows = await tabA.count(PASSKEY_ROW);
   const passkeyRowText = await tabA.text(PASSKEY_ROW);
   assert(
@@ -1516,6 +1959,12 @@ async function main() {
     `PASS browser: signed in and loaded ${boardUrl} at ${viewport.width}x${viewport.height}`,
     `PASS browser: 5 status tabs visible (${summary}); tab bar ${Math.round(barRect.width)}x${Math.round(barRect.height)}px`,
     `PASS browser: board screenshot ${SCREENSHOT_BOARD} (${screenshotBoardBytes} bytes)`,
+    `PASS browser: projects page fits ${projectsLayout.innerWidth}px with no horizontal overflow (scrollWidth ${projectsLayout.scrollWidth}); 5 mobile nav cells span ${Math.round(navCellsWidth)}px (${projectsLayout.cells.map((cell) => `${cell.label || "?"} ${Math.round(cell.width)}px`).join(", ")})`,
+    `PASS browser: projects screenshot ${SCREENSHOT_PROJECTS} (${screenshotProjectsBytes} bytes)`,
+    `PASS browser: project created WEB at /p/WEB/overview with "0%" progress (${JSON.stringify(projectProgressText)}) and body showing "Web project"`,
+    `PASS browser: project overview screenshot ${SCREENSHOT_PROJECT_OVERVIEW} (${screenshotProjectOverviewBytes} bytes)`,
+    `PASS browser: project status edit set in_progress; overview shows the In progress chip (rendered uppercase) (dialog screenshot ${SCREENSHOT_PROJECT_DIALOG} (${screenshotProjectDialogBytes} bytes))`,
+    `PASS browser: project card WEB ${Math.round(projectCard.width)}x${Math.round(projectCard.height)}px at ${Math.round(projectCard.left)}-${Math.round(projectCard.right)} inside the ${projectCard.innerWidth}px viewport with "WEB", "Web project" and "0/0" progress; ${projectCard.projectCount} project${projectCard.projectCount === 1 ? "" : "s"} shown (no horizontal overflow, screenshot ${SCREENSHOT_PROJECTS_CARD} (${screenshotProjectsCardBytes} bytes))`,
     `PASS browser: palette key search ${JSON.stringify(keyedFragment)} matched ${keyMatch.issueOptionIds.length} issue option with key ${JSON.stringify(keyMatch.keyText)} (option ${Math.round(keyMatch.optionBox.width)}x${Math.round(keyMatch.optionBox.height)}px, key span ${Math.round(keyMatch.keyBox.width)}x${Math.round(keyMatch.keyBox.height)}px)`,
     `PASS browser: palette ArrowDown x${scrollSnapshot.optionCount - 1} of ${scrollSnapshot.optionCount} options selected ${scrollSnapshot.selectedId} in a ${scrollSnapshot.clientHeight}px listbox holding ${scrollSnapshot.scrollHeight}px, scrollTop ${Math.round(scrollSnapshot.scrollTop)}, row ${Math.round(scrollSnapshot.rowTop)}-${Math.round(scrollSnapshot.rowBottom)} inside ${Math.round(scrollSnapshot.listTop)}-${Math.round(scrollSnapshot.listBottom)} with a ${rowBottomGap.toFixed(1)}px bottom gutter (min ${PALETTE_BOTTOM_GUTTER_PX}px)`,
     `PASS browser: palette screenshot ${SCREENSHOT_PALETTE} (${screenshotPaletteBytes} bytes)`,
