@@ -52,7 +52,9 @@ issues are absent from `ready` and unclaimable. LAS-147 is live: MCP-over-stdio
 agent from `CURVED_AGENT_TOKEN` on every call. LAS-148 is live: an HTTP API and
 auth boundary (`npm start`, `node src/composition/server.ts`) on `PORT` (default
 4747) that requires `CURVED_UI_TOKEN`, authenticates humans by UI bearer or the
-`curved_session` cookie (SHA-256 of the UI token) and agents by `crv_` bearer,
+`curved_session` cookie (an opaque nonce whose SHA-256 is an `auth_sessions`
+row; the cookie carried the SHA-256 of the UI token until passkey login
+shipped) and agents by `crv_` bearer,
 and serves `/api/me`, `/api/session`, projects, issues (list with `project` and
 `status` filters, create, show, human-only `PATCH`), per-issue transition,
 comments, block (agent), unblock (human), release (agent), `/api/ready`, and
@@ -288,6 +290,47 @@ acceptance browser gate keep the default, so no other cookie, auth, SSE, or
 webhook behavior changes. The app-level test sets `cookieSecure: true` and asserts
 both cookies, and the default-off suite is unchanged.
 
+Passkey login is live. Migration `0006_passkeys.sql` adds `passkey_credentials`,
+`auth_sessions`, and `webauthn_challenges`, and `@simplewebauthn/server` 14.1
+plus `@simplewebauthn/browser` 14.0 are dependencies. Browser sessions are now
+opaque server-side rows: the `curved_session` cookie holds a 32-character
+base64url nonce (192 bits), only its SHA-256 is stored in `auth_sessions`, and
+rows expire after 30 days (`SESSION_MAX_AGE_SECONDS=2592000`). Token and passkey
+logins both create a row, and `DELETE /api/session` deletes the row, so logout
+revokes it. The old deterministic `sha256(UI_TOKEN)` cookie is gone, so existing
+cookies require a new sign-in. `src/application/sessions.ts` and
+`src/application/passkeys.ts` own the use cases, with
+`src/adapters/postgres/repositories/` `passkeys.ts`, `auth-sessions.ts`, and
+`passkey-challenges.ts` behind them; `src/adapters/http/auth.ts` resolves the
+cookie through the session row. Routes: `GET /api/passkeys/available` (no auth,
+`{ available }`, `cache-control: no-store`), `GET /api/passkeys`, `POST
+/api/passkeys/options`, `POST /api/passkeys` (201 `{ passkey }`), and `DELETE
+/api/passkeys/:id` (204) are human-only, while `POST
+/api/session/passkey/options` and `POST /api/session/passkey` are
+unauthenticated login options and completion returning the actor plus the
+session cookie. Human-only routes accept the UI bearer or the session cookie.
+`CURVED_WEBAUTHN_ORIGINS` (comma-separated) and `CURVED_WEBAUTHN_RP_ID` are
+optional overrides: origins default to `https://$CURVED_DOMAIN` when
+`CURVED_DOMAIN` is set, else `http://localhost:4747` and
+`http://localhost:5173`, and the RP ID defaults to the hostname of the first
+origin. Explicit origins must be bare http/https origins and must match the RP
+ID or be subdomains of it; compose passes `CURVED_DOMAIN`, so `deploy/.env`
+needs no new key. In the SPA, `SignIn` leads with a primary "Sign in with
+passkey" button (Face ID, Touch ID, or a security key) above a "Use a UI token"
+divider, and any signed-in session opens `PasskeysDialog` from the topbar, the
+sidebar footer, or the palette action "Manage passkeys" to add a nicknamed
+passkey or remove one; `web/src/adapters/passkeys.ts` calls the browser
+credential API. One implicit human identity owns many passkeys, so there is no
+users table and no actor or timeline change; the token bearer stays valid for
+deploy, health, CLI, MCP, and acceptance. `npm run check` now passes 205 tests
+(199 behavior, 6 architecture) with `architecture: ok (81 files)`, including the
+new `test/passkeys.test.ts` and updated HTTP/SSE session tests; `npm run
+acceptance` passes 145 checks including `PASS browser: passkey registered ...`
+and `PASS browser: passkey sign-in reached the board ...` through Chromium's CDP
+virtual authenticator (focus emulation is enabled because headless tabs
+otherwise reject WebAuthn with `NotAllowedError`), and `npm run smoke:compose`
+stays green with the new `CURVED_DOMAIN` env.
+
 LAS-180 is live: a root multi-stage `node:26-slim` `Dockerfile` plus
 `.dockerignore`. The build stage runs `npm ci`, `npm run build:web`, and
 `npm prune --omit=dev`; the runtime stage copies `package.json`, the production
@@ -328,7 +371,9 @@ both handlers proxy `app:4747`, and Caddy's automatic HTTPS redirects port 80 to
 the HTTPS site. `deploy/.env.example`, copied to the gitignored mode-600 `deploy/.env`,
 lists `POSTGRES_USER`, `POSTGRES_PASSWORD`, `POSTGRES_DB`, `CURVED_UI_TOKEN`,
 `GITHUB_WEBHOOK_SECRET`, `CURVED_DOMAIN`, `ACME_EMAIL`, `CURVED_HSTS_MAX_AGE`,
-`COOKIE_SECURE=1`, and the optional host-port and image overrides.
+`COOKIE_SECURE=1`, and the optional host-port and image overrides, plus
+commented `CURVED_WEBAUTHN_ORIGINS` and `CURVED_WEBAUTHN_RP_ID` overrides that
+default from `CURVED_DOMAIN`.
 `npm run smoke:compose` runs `scripts/compose-smoke.sh`, which builds and starts
 the stack under a throwaway project and env on free high ports, extracts Caddy's
 internal root CA, and asserts over HTTPS the SPA shell, the `308` HTTP to HTTPS
@@ -479,7 +524,7 @@ PR #1 (`LIVE-1`) opened -> issue `in_review` with an `actorType git` event body
 `pull request #2 reopened`, merge -> `done` with `pull request #2 closed`. A
 replayed identical signed delivery and an unknown key (`NOPE-999`) both answer
 `200 {"ok":true,"ignored":true}` with the issue unchanged, as do non-PR
-`issues` and `push` deliveries. Gates: `npm run check` 197 tests plus the
+`issues` and `push` deliveries. Gates: `npm run check` 205 tests plus the
 architecture check, compose smoke (HTTP 308, no HSTS by default and HSTS after
 enabling, gzip on the JS asset, SSE `issues_changed` within 5s),
 `npm run smoke:provision` 50 PASS, `npm run smoke:release` 22 PASS,
@@ -507,8 +552,8 @@ as `deploy`), takes one initial nightly set, and `verify-host` adds
 now takes a real nightly set, restores it into a throwaway database containing
 `SMK-1`, and restores Caddy; `smoke:release` asserts the backup ordering and
 failure isolation; `smoke:provision` covers the units, initial set, verifier
-checks, and four negatives. Repository gates after LAS-187: 197 tests,
-`architecture: ok (74 files)`, acceptance 145 checks, `smoke:provision`
+checks, and four negatives. Repository gates now: 205 tests,
+`architecture: ok (81 files)`, acceptance 145 checks, `smoke:provision`
 50 PASS, `smoke:release` 22 PASS, `smoke:backup` 19 PASS, `smoke:compose`
 (including the backup and restore legs) green, and `smoke:webhook` 9 PASS
 unchanged. Live on 2026-11-19: deploy run 44578798179 passed `verify` and the
@@ -544,16 +589,21 @@ with 27 PASS and 0 FAIL, and 12 `/proc/stat` samples during a 62 second run
 read 53-56% total CPU, p95 55%, average 54.1%; the timer's next elapse was
 19:00 UTC. The console reclamation step itself remains operator-executed.
 
-Tests: 197 pass, 0 fail, including `test/http.test.ts`, `test/event-hub.test.ts`,
-`test/sse.test.ts`, the label and relation suites in `test/labels.test.ts` and
-`test/relations.test.ts`, the webhook and branch suite in `test/github.test.ts`,
-the issue filter and human-only edit cases in `test/issues.test.ts`,
-`test/projects.test.ts` for create and list, duplicate and validation, the
-transaction-scoped ports commit and rollback, and repository find by key, plus
-`test/architecture.test.ts`, which proves the real tree passes and five fixtures
-fail (application -> adapter, domain -> `pg`, web ui -> adapter, web application
--> adapter, web domain -> a backend module other than `src/domain/status.ts`).
-Those 197 are the node tests; `npm run smoke:release` is a shell gate, not part
+Tests: 205 pass, 0 fail, including `test/http.test.ts` and `test/sse.test.ts`,
+whose session cases exercise the opaque `auth_sessions` cookie rows,
+`test/passkeys.test.ts` for availability without auth, listing without
+verification material, registration and login option contents, single-use
+challenges, unknown credentials, and nickname validation,
+`test/event-hub.test.ts`, the label and relation suites in `test/labels.test.ts`
+and `test/relations.test.ts`, the webhook and branch suite in
+`test/github.test.ts`, the issue filter and human-only edit cases in
+`test/issues.test.ts`, `test/projects.test.ts` for create and list, duplicate
+and validation, the transaction-scoped ports commit and rollback, and
+repository find by key, plus `test/architecture.test.ts`, which proves the real
+tree passes and five fixtures fail (application -> adapter, domain -> `pg`, web
+ui -> adapter, web application -> adapter, web domain -> a backend module other
+than `src/domain/status.ts`). Those 205 are the node tests (199 behavior and 6
+architecture); `npm run smoke:release` is a shell gate, not part
 of them. `ARCH.md` codifies the layers and the one-way dependency rule; all
 six steps have landed, along with the import-direction gate and the completion
 handoff, so the refactor parent `LAS-167` and `LAS-176` are complete. `LAS-155`
@@ -568,7 +618,12 @@ default `curved` rows are unchanged through per-table digests. The browser leg
 creates an issue through the palette and the new issue dialog, lands on its
 detail route, and checks the palette: a key query shows the issue key on the
 matched row, and ArrowDown through the overflowing list scrolls the selected row
-fully into the listbox.
+fully into the listbox. It also registers a passkey through Chromium's CDP
+virtual authenticator and signs in with it, printing `PASS browser: passkey
+registered ...` and `PASS browser: passkey sign-in reached the board ...`; focus
+emulation is enabled because headless tabs otherwise reject WebAuthn with
+`NotAllowedError`. The gate reports 145 checks in total.
+
 `--skip-browser` skips the seed and browser legs; `--keep` keeps the throwaway
 database. `LAS-151`, `LAS-153`, and `LAS-154` are Done after black-box
 verification: the webhook over HTTP and the CLI branch helper, issue detail and
@@ -601,14 +656,14 @@ carries the same rules as a project-agnostic template.
 | `deploy/webhook.sh` | Creates or updates the GitHub `pull_request` webhook for the deployed host (default `https://$CURVED_DOMAIN/webhooks/github`), always PATCHing an existing same-URL hook so the secret is reapplied; `--repo`, `--url`, `--env-file`, `--dry-run`. |
 | `.github/workflows/verify.yml` | CI gate: push to main plus manual dispatch, Postgres 18 service, typecheck, architecture check, tests, web build; the main-only `deploy` job (`needs: verify`) SSHes with the `DEPLOY_*` secrets and runs `deploy/release.sh`. |
 | `src/domain/` | Pure rules and types: status and transition contract, actor matrix, claim and move policy, validation, key parsing, domain errors, shared record types. |
-| `src/application/` | Ports (`ports.ts`) and the full SQL-free use-case set: `projects.ts`, `issues.ts` with `issue-read-model.ts`, `agents.ts`, `queue.ts`, `blocking.ts`, `comments.ts`, `labels.ts`, `relations.ts`, and `github.ts`. |
-| `src/adapters/` | Adapters. Inbound: `http/` (router, auth, error mapping, request/response transport, webhook), `mcp/`, `cli/`, `github/` (signature and payload), `sse/`, `static/`. Outbound: `postgres/` (`pool.ts`, `migrate.ts`, `event-hub.ts`, `ports.ts` binding the pool and transactions, plus `repositories/`: projects, issues, issue events, issue meta, agents, labels, relations), `token-codec.ts`, `timing-safe.ts`. |
-| `src/composition/` | Composition roots: `config.ts` (`loadConfig`), `server.ts` (HTTP entry, requires `CURVED_UI_TOKEN`, owns the event hub and shutdown), `cli.ts`, `mcp.ts`, `migrate.ts`. |
+| `src/application/` | Ports (`ports.ts`) and the full SQL-free use-case set: `projects.ts`, `issues.ts` with `issue-read-model.ts`, `agents.ts`, `queue.ts`, `blocking.ts`, `comments.ts`, `labels.ts`, `relations.ts`, `github.ts`, `sessions.ts` (opaque session creation and `SESSION_MAX_AGE_SECONDS`), and `passkeys.ts` (availability, listing, registration, and login options). |
+| `src/adapters/` | Adapters. Inbound: `http/` (router, auth, error mapping, request/response transport, webhook), `mcp/`, `cli/`, `github/` (signature and payload), `sse/`, `static/`. Outbound: `postgres/` (`pool.ts`, `migrate.ts`, `event-hub.ts`, `ports.ts` binding the pool and transactions, plus `repositories/`: projects, issues, issue events, issue meta, agents, labels, relations, passkeys, auth sessions, and passkey challenges), `token-codec.ts`, `timing-safe.ts`. |
+| `src/composition/` | Composition roots: `config.ts` (`loadConfig`, including WebAuthn origins and RP ID resolution), `server.ts` (HTTP entry, requires `CURVED_UI_TOKEN`, owns the event hub and shutdown), `cli.ts`, `mcp.ts`, `migrate.ts`. |
 | `web/src/domain/` | Pure client domain: `types.ts` (contract types, `NewIssueInput`, toast types), `presentation.ts` (label/tone maps and formatting helpers), `routes.ts` (`Route`, `parseRoute`, and the path builders). May import only `src/domain/status.ts` from the server. |
-| `web/src/application/` | Client ports and orchestration: `errors.ts` (`ApplicationError` and its guards), `ports.ts` (`ApiPort`, `RealtimePort`, `NavigationPort`), `workspace.ts` (`useWorkspace` and its types). React hooks allowed; no JSX, no `fetch`, no `EventSource`, no history writes. |
-| `web/src/adapters/` | Transport adapters: `api-client.ts` (`createApiClient`), `realtime.ts` (`useIssuesChanged`, `realtime`), `history.ts` (`useHistoryRouter`, `NAVIGATE_EVENT`). |
-| `web/src/ui/` | React and styles only: `AppView.tsx`, `Boot.tsx` and the shell, board, queue, detail, dialog, palette, sign-in, setup, toast, and primitive components plus `styles.css`. No transport imports. |
-| `web/src/main.tsx` | Composition root: creates the API client, calls the history and realtime adapters, injects all three ports into `useWorkspace`, renders `AppView`. |
+| `web/src/application/` | Client ports and orchestration: `errors.ts` (`ApplicationError` and its guards), `ports.ts` (`ApiPort` including passkey availability, listing, registration, login, and removal, `RealtimePort`, `NavigationPort`, `PasskeyPort`), `workspace.ts` (`useWorkspace` and its types, including passkey state). React hooks allowed; no JSX, no `fetch`, no `EventSource`, no history writes, no credential API. |
+| `web/src/adapters/` | Transport adapters: `api-client.ts` (`createApiClient`), `realtime.ts` (`useIssuesChanged`, `realtime`), `history.ts` (`useHistoryRouter`, `NAVIGATE_EVENT`), `passkeys.ts` (`createPasskeysAdapter(): PasskeyPort` over `@simplewebauthn/browser` for support, registration, and authentication). |
+| `web/src/ui/` | React and styles only: `AppView.tsx`, `Boot.tsx`, `PasskeysDialog.tsx`, and the shell, board, queue, detail, dialog, palette, sign-in (passkey button plus the UI-token divider), setup, toast, and primitive components plus `styles.css`. No transport imports. |
+| `web/src/main.tsx` | Composition root: creates the API client and passkey adapter, calls the history and realtime adapters, injects all four ports into `useWorkspace`, renders `AppView`. |
 | `web/` | Vite + React SPA around `web/src/`. `npm run build` writes `web/dist`; `npm start` serves it; `npm run dev` proxies `/api` to 4747. |
 | `scripts/init.sh` | Baseline runner: install, check, build. `--no-install` skips install. |
 | `scripts/check-architecture.mjs` | Import-direction check over `src/**/*.ts` and `web/src/**/*.ts(x)`; exits 1 on any violation. |

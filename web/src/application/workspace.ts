@@ -5,8 +5,13 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 
-import { isUnauthorized, messageOf } from "./errors.ts";
-import type { NavigationPort, RealtimePort, ApiPort } from "./ports.ts";
+import { isUnauthorized, messageOf, passkeyErrorMessage } from "./errors.ts";
+import type {
+  NavigationPort,
+  PasskeyPort,
+  RealtimePort,
+  ApiPort,
+} from "./ports.ts";
 import { STATUS_LABEL } from "../domain/presentation.ts";
 import {
   boardPath,
@@ -20,6 +25,7 @@ import type {
   Issue,
   IssueTimeline,
   NewIssueInput,
+  PasskeySummary,
   Priority,
   Project,
   ReadyQueue,
@@ -34,6 +40,7 @@ export interface WorkspaceDeps {
   api: ApiPort;
   realtime: RealtimePort;
   navigation: NavigationPort;
+  passkeys: PasskeyPort;
 }
 
 export interface Workspace {
@@ -61,11 +68,24 @@ export interface Workspace {
   allLabels: string[];
   issueKeys: string[];
 
+  passkeysSupported: boolean;
+  passkeyAvailable: boolean;
+  passkeys: PasskeySummary[];
+  passkeysOpen: boolean;
+  passkeysLoading: boolean;
+  passkeysError: string | null;
+
   navigate(path: string, options?: { replace?: boolean }): void;
 
   retrySession(): void;
   signIn(token: string): Promise<void>;
   signOut(): void;
+  signInWithPasskey(): Promise<void>;
+
+  openPasskeys(): void;
+  closePasskeys(): void;
+  addPasskey(nickname: string): Promise<boolean>;
+  removePasskey(id: string): Promise<boolean>;
 
   retryProjects(): void;
   createProject(input: { key: string; name: string }): Promise<Project>;
@@ -104,6 +124,7 @@ export function useWorkspace({
   api,
   realtime,
   navigation,
+  passkeys: passkeyCeremony,
 }: WorkspaceDeps): Workspace {
   const { route } = navigation;
 
@@ -138,6 +159,12 @@ export function useWorkspace({
   const [paletteOpen, setPaletteOpen] = useState(false);
   const [newIssueStatus, setNewIssueStatus] = useState<Status>("backlog");
   const [toasts, setToasts] = useState<ToastItem[]>([]);
+
+  const [passkeyAvailable, setPasskeyAvailable] = useState(false);
+  const [passkeys, setPasskeys] = useState<PasskeySummary[]>([]);
+  const [passkeysOpen, setPasskeysOpen] = useState(false);
+  const [passkeysLoading, setPasskeysLoading] = useState(false);
+  const [passkeysError, setPasskeysError] = useState<string | null>(null);
 
   const toastId = useRef(0);
   const loadedProjects = useRef(new Set<string>());
@@ -179,6 +206,23 @@ export function useWorkspace({
   useEffect(() => {
     void checkSession();
   }, [checkSession]);
+
+  useEffect(() => {
+    let alive = true;
+    void api
+      .passkeyAvailable()
+      .then((result) => {
+        if (alive) {
+          setPasskeyAvailable(result.available);
+        }
+      })
+      .catch(() => {
+        // The token form stays available when the probe fails.
+      });
+    return () => {
+      alive = false;
+    };
+  }, [api]);
 
   useEffect(() => {
     if (auth !== "human") {
@@ -554,6 +598,103 @@ export function useWorkspace({
     [api],
   );
 
+  const signInWithPasskey = useCallback(async (): Promise<void> => {
+    const start = await api.startPasskeyLogin();
+    const response = await passkeyCeremony.authenticate(start.options);
+    await api.finishPasskeyLogin({
+      challengeId: start.challengeId,
+      response,
+    });
+    setAuth("human");
+    setPasskeyAvailable(true);
+  }, [api, passkeyCeremony]);
+
+  const loadPasskeys = useCallback(async (): Promise<void> => {
+    setPasskeysLoading(true);
+    setPasskeysError(null);
+    try {
+      const result = await api.passkeys();
+      setPasskeys(result.passkeys);
+    } catch (error) {
+      if (isUnauthorized(error)) {
+        onUnauthorized();
+        return;
+      }
+      setPasskeysError(passkeyErrorMessage(error));
+    } finally {
+      setPasskeysLoading(false);
+    }
+  }, [api, onUnauthorized]);
+
+  const openPasskeys = useCallback((): void => {
+    setPasskeysOpen(true);
+    void loadPasskeys();
+  }, [loadPasskeys]);
+
+  const closePasskeys = useCallback((): void => {
+    setPasskeysOpen(false);
+  }, []);
+
+  const addPasskey = useCallback(
+    async (nickname: string): Promise<boolean> => {
+      if (!passkeyCeremony.supported) {
+        notify("error", "This browser does not support passkeys.");
+        return false;
+      }
+      setPasskeysLoading(true);
+      setPasskeysError(null);
+      try {
+        const start = await api.startPasskeyRegistration();
+        const response = await passkeyCeremony.register(start.options);
+        await api.finishPasskeyRegistration({
+          challengeId: start.challengeId,
+          nickname,
+          response,
+        });
+        setPasskeyAvailable(true);
+        const result = await api.passkeys();
+        setPasskeys(result.passkeys);
+        notify("success", "Passkey added");
+        return true;
+      } catch (error) {
+        if (isUnauthorized(error)) {
+          onUnauthorized();
+          return false;
+        }
+        setPasskeysError(passkeyErrorMessage(error));
+        return false;
+      } finally {
+        setPasskeysLoading(false);
+      }
+    },
+    [api, notify, onUnauthorized, passkeyCeremony],
+  );
+
+  const removePasskey = useCallback(
+    async (id: string): Promise<boolean> => {
+      setPasskeysLoading(true);
+      setPasskeysError(null);
+      try {
+        await api.deletePasskey(id);
+        const result = await api.passkeys();
+        setPasskeys(result.passkeys);
+        setPasskeyAvailable(result.passkeys.length > 0);
+        notify("success", "Passkey removed");
+        return true;
+      } catch (error) {
+        if (isUnauthorized(error)) {
+          onUnauthorized();
+          return false;
+        }
+        setPasskeysError(passkeyErrorMessage(error));
+        return false;
+      } finally {
+        setPasskeysLoading(false);
+      }
+    },
+    [api, notify, onUnauthorized],
+  );
+
   const retrySession = useCallback((): void => {
     void checkSession();
   }, [checkSession]);
@@ -665,11 +806,24 @@ export function useWorkspace({
     allLabels,
     issueKeys,
 
+    passkeysSupported: passkeyCeremony.supported,
+    passkeyAvailable,
+    passkeys,
+    passkeysOpen,
+    passkeysLoading,
+    passkeysError,
+
     navigate,
 
     retrySession,
     signIn,
     signOut,
+    signInWithPasskey,
+
+    openPasskeys,
+    closePasskeys,
+    addPasskey,
+    removePasskey,
 
     retryProjects,
     createProject,

@@ -65,6 +65,15 @@ export interface ProjectList {
   projects: Project[];
 }
 
+export interface PasskeySummary {
+  id: string;
+  nickname: string;
+  deviceType: "singleDevice" | "multiDevice";
+  backedUp: boolean;
+  createdAt: string;
+  lastUsedAt: string | null;
+}
+
 export interface NewIssueInput {
   title: string;
   description: string;

@@ -26,3 +26,31 @@ export function messageOf(error: unknown): string {
     ? error.message
     : "Something went wrong. Try again.";
 }
+
+function errorName(error: unknown): string | null {
+  if (
+    error !== null &&
+    typeof error === "object" &&
+    "name" in error &&
+    typeof error.name === "string"
+  ) {
+    return error.name;
+  }
+  return null;
+}
+
+export function passkeyErrorMessage(error: unknown): string {
+  if (isApplicationError(error)) {
+    return error.message;
+  }
+  switch (errorName(error)) {
+    case "NotAllowedError":
+      return "Passkey request was cancelled or timed out.";
+    case "InvalidStateError":
+      return "This device already has a passkey for Curved.";
+    case "NotSupportedError":
+      return "This browser does not support passkeys.";
+    default:
+      return "Passkey request failed. Try again.";
+  }
+}

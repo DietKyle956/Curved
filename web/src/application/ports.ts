@@ -7,6 +7,7 @@ import type {
   Issue,
   IssueEvent,
   IssueTimeline,
+  PasskeySummary,
   Project,
   ProjectList,
   ReadyQueue,
@@ -44,6 +45,28 @@ export interface ApiPort {
   setLabels(key: string, labels: string[]): Promise<{ issue: Issue }>;
   addRelation(key: string, blocking: string): Promise<{ issue: Issue }>;
   unblock(key: string): Promise<{ issue: Issue }>;
+  passkeyAvailable(): Promise<{ available: boolean }>;
+  startPasskeyRegistration(): Promise<{ challengeId: string; options: unknown }>;
+  finishPasskeyRegistration(input: {
+    challengeId: string;
+    nickname: string;
+    response: unknown;
+  }): Promise<{ passkey: PasskeySummary }>;
+  passkeys(): Promise<{ passkeys: PasskeySummary[] }>;
+  deletePasskey(id: string): Promise<void>;
+  startPasskeyLogin(): Promise<{ challengeId: string; options: unknown }>;
+  finishPasskeyLogin(input: {
+    challengeId: string;
+    response: unknown;
+  }): Promise<{ actor: Actor }>;
+}
+
+// The browser's WebAuthn ceremony. The adapter wraps @simplewebauthn/browser;
+// the application only passes the server's JSON options through.
+export interface PasskeyPort {
+  readonly supported: boolean;
+  register(options: unknown): Promise<unknown>;
+  authenticate(options: unknown): Promise<unknown>;
 }
 
 // The realtime stream is consumed as a hook so it can follow React's effect

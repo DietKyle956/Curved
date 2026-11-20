@@ -7,7 +7,7 @@
 // `curved_acceptance_<pid>_<epoch>`, drops that database again, and fails when
 // any default row changed. `--keep` skips the drop and prints the name.
 import { spawn } from "node:child_process";
-import { createHash, createHmac, randomBytes } from "node:crypto";
+import { createHmac, randomBytes } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
 import { createServer } from "node:net";
 import { dirname, resolve } from "node:path";
@@ -730,6 +730,10 @@ async function startServer(databaseUrl) {
         PORT: String(port),
         CURVED_UI_TOKEN: uiToken,
         GITHUB_WEBHOOK_SECRET: webhookSecret,
+        // The browser leg drives a virtual authenticator from CDP, and WebAuthn
+        // requires the relying-party id to match the page origin's host.
+        CURVED_WEBAUTHN_ORIGINS: `http://localhost:${port}`,
+        CURVED_WEBAUTHN_RP_ID: "localhost",
       },
       stdio: ["ignore", "pipe", "pipe"],
       detached: true,
@@ -787,6 +791,9 @@ async function startServer(databaseUrl) {
     uiToken,
     webhookSecret,
     baseUrl: `http://127.0.0.1:${port}`,
+    // Chromium treats `localhost` as a secure context, which WebAuthn requires;
+    // the server listens on every interface, so both hosts reach it.
+    browserBaseUrl: `http://localhost:${port}`,
   };
 }
 
@@ -943,11 +950,10 @@ async function httpLeg(server, databaseUrl) {
     `POST /api/session set-cookie was ${JSON.stringify(setCookie)}`,
   );
   const cookiePair = setCookie.split(";")[0].trim();
-  const expectedCookie = `curved_session=${createHash("sha256").update(uiToken).digest("hex")}`;
   assert(
     leg,
-    cookiePair === expectedCookie,
-    `session cookie was ${cookiePair}, expected ${expectedCookie}`,
+    /^curved_session=[A-Za-z0-9_-]{32}$/.test(cookiePair),
+    `session cookie was ${cookiePair}, expected an opaque curved_session nonce`,
   );
 
   const stream = await openSseStream(`${baseUrl}/api/events`, { cookie: cookiePair }, leg);
@@ -1223,7 +1229,7 @@ async function browserLeg(server, databaseUrl) {
       env: {
         ...process.env,
         DATABASE_URL: databaseUrl,
-        ACCEPTANCE_BASE_URL: server.baseUrl,
+        ACCEPTANCE_BASE_URL: server.browserBaseUrl,
         ACCEPTANCE_UI_TOKEN: server.uiToken,
         ACCEPTANCE_PROJECT_KEY: PROJECT_KEY,
       },

@@ -12,16 +12,32 @@ import {
 } from "../../application/issues.ts";
 import type { IssueContext } from "../../domain/actors.ts";
 import { setIssueLabels } from "../../application/labels.ts";
+import {
+  deletePasskey,
+  finishPasskeyLogin,
+  finishPasskeyRegistration,
+  listPasskeys,
+  passkeysAvailable,
+  startPasskeyLogin,
+  startPasskeyRegistration,
+} from "../../application/passkeys.ts";
+import type {
+  AuthenticationResponseJSON,
+  RegistrationResponseJSON,
+  WebAuthnConfig,
+} from "../../application/passkeys.ts";
 import type { Ports } from "../../application/ports.ts";
 import { createProject, listProjects } from "../../application/projects.ts";
 import { claimNext, listReady, releaseClaim } from "../../application/queue.ts";
 import { addRelation } from "../../application/relations.ts";
+import { createSession } from "../../application/sessions.ts";
 import {
+  parseCookies,
   resolveActor,
   resolveSessionActor,
+  SESSION_COOKIE_NAME,
   serializeClearedSessionCookie,
   serializeSessionCookie,
-  sessionCookieValue,
 } from "./auth.ts";
 import type { AuthContext } from "./auth.ts";
 import type { EventHub } from "../../application/ports.ts";
@@ -35,10 +51,17 @@ const NOT_FOUND_BODY = {
   error: { code: "not_found", message: "route not found" },
 } as const;
 
+/** Local development origins; composition overrides this in production. */
+const DEFAULT_WEBAUTHN: WebAuthnConfig = {
+  rpID: "localhost",
+  origins: ["http://localhost:4747", "http://localhost:5173"],
+};
+
 export interface CreateAppOptions {
   ports: Ports;
   events: EventHub;
   uiToken: string;
+  webauthn?: WebAuthnConfig;
   webhookSecret?: string;
   webDistDir?: string;
   eventPingIntervalMs?: number;
@@ -88,6 +111,17 @@ function optionalStringField(
     throw new ServiceError("validation", `"${name}" must be a string`);
   }
   return value;
+}
+
+function objectField(
+  body: Record<string, unknown>,
+  name: string,
+): Record<string, unknown> {
+  const value = body[name];
+  if (value === null || typeof value !== "object" || Array.isArray(value)) {
+    throw new ServiceError("validation", `"${name}" must be an object`);
+  }
+  return value as Record<string, unknown>;
 }
 
 function stringArrayField(
@@ -201,6 +235,7 @@ export function createApp(options: CreateAppOptions): App {
   }
 
   const { ports, uiToken, events, cookieSecure = false } = options;
+  const webauthn = options.webauthn ?? DEFAULT_WEBAUTHN;
   const webDistDir = options.webDistDir ?? resolve(process.cwd(), "web/dist");
   const logger =
     options.logger ??
@@ -234,7 +269,7 @@ export function createApp(options: CreateAppOptions): App {
       }
       // EventSource cannot send headers, so the stream only accepts the
       // session cookie; a missing or wrong cookie is a plain 401.
-      resolveSessionActor(request, { uiToken });
+      await resolveSessionActor(request, { ports });
       return createEventStreamResponse({
         request,
         hub: events,
@@ -244,6 +279,35 @@ export function createApp(options: CreateAppOptions): App {
     }
 
     if (resource === "session") {
+      if (key === "passkey") {
+        if (action === "options") {
+          if (method !== "POST") {
+            return json(NOT_FOUND_BODY, 404);
+          }
+          return json(await startPasskeyLogin(ports, webauthn));
+        }
+        if (action === undefined && method === "POST") {
+          const body = await requestBody();
+          const session = await finishPasskeyLogin(ports, webauthn, {
+            challengeId: stringField(body, "challengeId"),
+            response: objectField(
+              body,
+              "response",
+            ) as unknown as AuthenticationResponseJSON,
+          });
+          return json(
+            { actor: { type: "human", name: null } },
+            200,
+            {
+              "set-cookie": serializeSessionCookie(
+                session.cookieValue,
+                cookieSecure,
+              ),
+            },
+          );
+        }
+        return json(NOT_FOUND_BODY, 404);
+      }
       if (key !== undefined) {
         return json(NOT_FOUND_BODY, 404);
       }
@@ -253,12 +317,16 @@ export function createApp(options: CreateAppOptions): App {
         if (token === undefined || !constantTimeEqual(token, uiToken)) {
           throw new ServiceError("not_authenticated", "token is not valid");
         }
+        const session = await createSession(ports, {
+          method: "token",
+          credentialId: null,
+        });
         return json(
           { actor: { type: "human", name: null } },
           200,
           {
             "set-cookie": serializeSessionCookie(
-              sessionCookieValue(uiToken),
+              session.cookieValue,
               cookieSecure,
             ),
           },
@@ -266,12 +334,64 @@ export function createApp(options: CreateAppOptions): App {
       }
       if (method === "DELETE") {
         await auth();
+        const cookie = parseCookies(
+          request.headers.get("cookie"),
+        ).get(SESSION_COOKIE_NAME);
+        if (cookie !== undefined) {
+          await ports.sessions.deleteByTokenHash(ports.tokens.hash(cookie));
+        }
         return new Response(null, {
           status: 204,
           headers: {
             "set-cookie": serializeClearedSessionCookie(cookieSecure),
           },
         });
+      }
+      return json(NOT_FOUND_BODY, 404);
+    }
+
+    if (resource === "passkeys") {
+      if (key === "available") {
+        if (action !== undefined || method !== "GET") {
+          return json(NOT_FOUND_BODY, 404);
+        }
+        return json(
+          { available: await passkeysAvailable(ports) },
+          200,
+          { "cache-control": "no-store" },
+        );
+      }
+      if (key === "options") {
+        if (action !== undefined || method !== "POST") {
+          return json(NOT_FOUND_BODY, 404);
+        }
+        requireHuman(await auth());
+        return json(await startPasskeyRegistration(ports, webauthn));
+      }
+      if (key === undefined) {
+        if (method === "GET") {
+          requireHuman(await auth());
+          return json({ passkeys: await listPasskeys(ports) });
+        }
+        if (method === "POST") {
+          requireHuman(await auth());
+          const body = await requestBody();
+          const passkey = await finishPasskeyRegistration(ports, webauthn, {
+            challengeId: stringField(body, "challengeId"),
+            nickname: optionalStringField(body, "nickname") ?? "Passkey",
+            response: objectField(
+              body,
+              "response",
+            ) as unknown as RegistrationResponseJSON,
+          });
+          return json({ passkey }, 201);
+        }
+        return json(NOT_FOUND_BODY, 404);
+      }
+      if (action === undefined && method === "DELETE") {
+        requireHuman(await auth());
+        await deletePasskey(ports, decodeURIComponent(key));
+        return new Response(null, { status: 204 });
       }
       return json(NOT_FOUND_BODY, 404);
     }

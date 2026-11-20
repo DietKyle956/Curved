@@ -1,5 +1,5 @@
 import type { ActorType, EventKind, Priority, Status } from "../domain/status.ts";
-import type { Agent, IssueEvent, IssueMeta, Project } from "../domain/types.ts";
+import type { Agent, IssueEvent, IssueMeta, PasskeySummary, Project } from "../domain/types.ts";
 
 /**
  * The application boundary. Use cases depend only on these interfaces, so no
@@ -114,6 +114,77 @@ export interface RelationRepository {
 export interface TokenCodec {
   mint(): string;
   hash(token: string): string;
+  /** Unprefixed opaque base64url nonce for cookies and challenge ids. */
+  mintNonce(): string;
+}
+
+/** How a browser session was established. */
+export type SessionMethod = "token" | "passkey";
+
+/** A stored browser session; only the token hash is persisted. */
+export interface AuthSessionRecord {
+  tokenHash: string;
+  method: SessionMethod;
+  credentialId: string | null;
+  createdAt: Date;
+  expiresAt: Date;
+}
+
+export interface AuthSessionRepository {
+  create(input: {
+    tokenHash: string;
+    method: SessionMethod;
+    credentialId: string | null;
+    expiresAt: Date;
+  }): Promise<AuthSessionRecord>;
+  /** Never returns expired rows. */
+  findByTokenHash(tokenHash: string): Promise<AuthSessionRecord | null>;
+  deleteByTokenHash(tokenHash: string): Promise<void>;
+  deleteExpired(now: Date): Promise<void>;
+}
+
+/** The ceremony a stored WebAuthn challenge belongs to. */
+export type WebAuthnChallengeKind = "registration" | "authentication";
+
+export interface WebAuthnChallengeRepository {
+  create(input: {
+    id: string;
+    challenge: string;
+    kind: WebAuthnChallengeKind;
+    expiresAt: Date;
+  }): Promise<void>;
+  /** Atomic delete-and-return: null when the row is unknown, of another kind, or expired. */
+  consume(input: { id: string; kind: WebAuthnChallengeKind; now: Date }): Promise<string | null>;
+  deleteExpired(now: Date): Promise<void>;
+}
+
+/** A stored WebAuthn credential: summary fields plus the verification material. */
+export interface PasskeyRecord extends Omit<PasskeySummary, "createdAt" | "lastUsedAt"> {
+  publicKey: Uint8Array;
+  counter: number;
+  transports: string[];
+  createdAt: Date;
+  lastUsedAt: Date | null;
+}
+
+export interface PasskeyRepository {
+  /** Inserts a credential; a duplicate id becomes a `duplicate` service error. */
+  create(input: {
+    id: string;
+    publicKey: Uint8Array;
+    counter: number;
+    transports: string[];
+    deviceType: "singleDevice" | "multiDevice";
+    backedUp: boolean;
+    nickname: string;
+  }): Promise<PasskeyRecord>;
+  list(): Promise<PasskeyRecord[]>;
+  count(): Promise<number>;
+  findById(id: string): Promise<PasskeyRecord | null>;
+  /** Sets the counter and stamps `lastUsedAt` in one statement. */
+  updateCounter(input: { id: string; counter: number }): Promise<void>;
+  /** True when a row was deleted. */
+  delete(id: string): Promise<boolean>;
 }
 
 /** Fan-out of project changes to in-process subscribers, backed by LISTEN/NOTIFY. */
@@ -145,6 +216,9 @@ export interface TransactionPorts {
   labels: LabelRepository;
   relations: RelationRepository;
   tokens: TokenCodec;
+  passkeys: PasskeyRepository;
+  sessions: AuthSessionRepository;
+  challenges: WebAuthnChallengeRepository;
 }
 
 /**

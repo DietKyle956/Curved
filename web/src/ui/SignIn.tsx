@@ -1,19 +1,42 @@
-import { Eye, EyeSlash } from "@phosphor-icons/react";
+import { Eye, EyeSlash, Fingerprint } from "@phosphor-icons/react";
 import { useState } from "react";
 import type { FormEvent } from "react";
 
-import { isApplicationError } from "../application/errors.ts";
+import { isApplicationError, passkeyErrorMessage } from "../application/errors.ts";
 import { Button, Field, LogoMark } from "./ui.tsx";
 
 export function SignIn({
   onSignIn,
+  passkeysSupported,
+  passkeyAvailable,
+  onPasskeySignIn,
 }: {
   onSignIn: (token: string) => Promise<void>;
+  passkeysSupported: boolean;
+  passkeyAvailable: boolean;
+  onPasskeySignIn: () => Promise<void>;
 }) {
   const [token, setToken] = useState("");
   const [showToken, setShowToken] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [passkeySubmitting, setPasskeySubmitting] = useState(false);
+  const [passkeyError, setPasskeyError] = useState<string | null>(null);
+
+  async function onPasskeySubmit(): Promise<void> {
+    if (!passkeyAvailable) {
+      return;
+    }
+    setPasskeySubmitting(true);
+    setPasskeyError(null);
+    try {
+      await onPasskeySignIn();
+    } catch (caught) {
+      setPasskeyError(passkeyErrorMessage(caught));
+    } finally {
+      setPasskeySubmitting(false);
+    }
+  }
 
   async function onSubmit(event: FormEvent<HTMLFormElement>): Promise<void> {
     event.preventDefault();
@@ -119,9 +142,53 @@ export function SignIn({
               Sign in
             </h2>
             <p className="mt-2 text-[12.5px] leading-relaxed text-fg-secondary">
-              Use the UI token configured on the server. It becomes an HttpOnly
-              session cookie for this browser.
+              Sign in with a passkey on this device, or with the UI token
+              configured on the server.
             </p>
+          </div>
+
+          {passkeysSupported ? (
+            <div className="flex flex-col gap-3">
+              <Button
+                variant="primary"
+                size="lg"
+                className="w-full"
+                icon={<Fingerprint className="size-4" aria-hidden="true" />}
+                loading={passkeySubmitting}
+                disabled={!passkeyAvailable}
+                onClick={() => {
+                  void onPasskeySubmit();
+                }}
+                data-testid="signin-passkey"
+              >
+                {passkeySubmitting
+                  ? "Waiting for passkey"
+                  : "Sign in with passkey"}
+              </Button>
+
+              {passkeyAvailable ? null : (
+                <p className="text-[11px] leading-relaxed text-fg-muted">
+                  No passkey registered yet. Sign in with the token below, then
+                  add one.
+                </p>
+              )}
+
+              {passkeyError === null ? null : (
+                <p
+                  className="rounded-ui border border-storm/35 bg-storm/10 px-3 py-2 text-[11.5px] leading-snug text-storm"
+                >
+                  {passkeyError}
+                </p>
+              )}
+            </div>
+          ) : null}
+
+          <div className="my-6 flex items-center gap-3">
+            <span className="h-px flex-1 bg-line" aria-hidden="true" />
+            <span className="font-mono text-[10px] tracking-[0.06em] text-fg-muted uppercase">
+              Use a UI token
+            </span>
+            <span className="h-px flex-1 bg-line" aria-hidden="true" />
           </div>
 
           <form onSubmit={(event) => void onSubmit(event)} className="flex flex-col gap-4">

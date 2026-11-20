@@ -23,8 +23,9 @@ nobody can say who did what when. Curved moves those rules out of the prompt.
 - **Agent tools**: `list_ready`, `claim_next`, `comment`, `submit_for_review`,
   `mark_blocked`, `release_claim`, plus issue reads and creates.
 - **Human board**: mobile-first SPA with five status lanes, a ready queue, an issue
-  detail view with the full timeline, and a `Cmd/Ctrl+K` palette. Sign-in uses the
-  UI token; the first run creates a project.
+  detail view with the full timeline, and a `Cmd/Ctrl+K` palette. Sign-in uses a
+  passkey (Face ID, Touch ID, or a security key), with the UI token form as the
+  fallback and the way to add the first passkey; the first run creates a project.
 - **Automation**: `POST /webhooks/github`, which moves issues when a pull request
   opens, reopens, or merges, and `node src/composition/cli.ts git-branch <KEY>`,
   which names the branch for an issue.
@@ -80,12 +81,16 @@ The authenticated HTTP boundary is live. `npm start` runs
 `node src/composition/server.ts` on `PORT` (default 4747) and refuses to start
 without `CURVED_UI_TOKEN`. The web client is a Vite + React + Tailwind app in
 `web/`, built into `web/dist` and served by the same process. Requests
-authenticate as a human through the session cookie or the UI bearer token, or as
-an agent through a `crv_` bearer token; failures and service errors share one JSON
-error shape, and there is no CORS. The API covers projects, issues, comments,
-transitions, block/unblock, release, claims, labels, and relations, and serves the
-SPA from `web/dist` for other paths; `POST /webhooks/github` is the one non-`/api`
-route with its own HMAC gate. See "HTTP API" below.
+authenticate as a human through an opaque server-side session cookie, a passkey
+login, or the UI bearer token, or as an agent through a `crv_` bearer token;
+failures and service errors share one JSON error shape, and there is no CORS.
+Passkey login is live: migration `0006` adds `passkey_credentials`,
+`auth_sessions`, and `webauthn_challenges`, and `@simplewebauthn/server` 14.1
+plus `@simplewebauthn/browser` 14.0 implement registration and assertion. The
+API covers projects, issues, comments, transitions, block/unblock, release,
+claims, labels, relations, passkeys, and sessions, and serves the SPA from
+`web/dist` for other paths; `POST /webhooks/github` is the one non-`/api` route
+with its own HMAC gate. See "HTTP API" below.
 
 Realtime is live. Migration `0005` adds `notify_issue_change()`, which fires on
 `after insert` and `after update` of `issues` and on `after insert` of
@@ -234,8 +239,11 @@ automatically: the same file feeds variable interpolation and the containers.
 Fill `POSTGRES_USER`, `POSTGRES_PASSWORD`, `POSTGRES_DB`, `CURVED_UI_TOKEN`,
 `GITHUB_WEBHOOK_SECRET`, `CURVED_DOMAIN`, `ACME_EMAIL`, and
 `CURVED_HSTS_MAX_AGE`, and keep `COOKIE_SECURE=1` for the HTTPS stack. The file
-also carries optional host-port and image overrides. It is gitignored, so
-secrets stay out of the repository.
+also carries optional host-port and image overrides, plus commented
+`CURVED_WEBAUTHN_ORIGINS` and `CURVED_WEBAUTHN_RP_ID` overrides. Passkey origins
+default to `https://$CURVED_DOMAIN` and the RP ID to that hostname, so an
+existing `deploy/.env` needs no new key. The file is gitignored, so secrets stay
+out of the repository.
 
 TLS is local by default. With `CURVED_DOMAIN=localhost` and an empty
 `ACME_EMAIL`, Caddy issues its own certificate from its internal CA, so
@@ -607,7 +615,11 @@ runs every leg against it:
   the replay answers `ignored` without adding a second event.
 - `browser` - `scripts/acceptance-browser.mjs` drives Chromium at 390x844 through
   sign-in, the five status tabs, palette-driven issue creation, a comment, and a
-  second tab that updates in under 1100ms.
+  second tab that updates in under 1100ms. It registers a passkey through
+  Chromium's CDP virtual authenticator and signs in with it, printing `PASS
+  browser: passkey registered ...` and `PASS browser: passkey sign-in reached the
+  board ...`; the driver enables focus emulation because headless tabs otherwise
+  reject WebAuthn with `NotAllowedError`.
 
 Prerequisites: Docker with Postgres from `docker compose up -d`, and Chromium
 found on `PATH` as `chromium`, `chromium-browser`, `google-chrome`, or
@@ -637,9 +649,11 @@ The gate builds on the other two entry points rather than replacing them:
 `./scripts/clean-state.sh` is still the end-of-session gate. This is the only one
 that runs the CLI, MCP server, HTTP server, webhook, and SPA together.
 
-The repository-side gates all pass: `npm run check` passes 197 tests plus the
-architecture check, `npm run smoke:compose` covers the HTTP to HTTPS redirect, the
-HSTS toggle before and after enabling `CURVED_HSTS_MAX_AGE`, gzip on the JS asset,
+The repository-side gates all pass: `npm run check` passes 205 tests (199
+behavior, 6 architecture) with `architecture: ok (81 files)`, and `npm run
+acceptance` passes 145 checks including the two browser passkey lines. `npm run
+smoke:compose` covers the HTTP to HTTPS redirect, the HSTS toggle before and
+after enabling `CURVED_HSTS_MAX_AGE`, gzip on the JS asset,
 an `issues_changed` frame within 5s, and a real nightly backup restored into a
 throwaway database plus a Caddy volume restore, `npm run smoke:provision`
 reports 52 PASS, `npm run smoke:release` 22 PASS, `npm run smoke:backup`
@@ -663,7 +677,13 @@ Prerequisites:
 5. For the GitHub webhook: export `GITHUB_WEBHOOK_SECRET`, the same secret you
    give the repository webhook. `POST /webhooks/github` answers
    `503 webhook_not_configured` until it is set.
-6. Over HTTPS only: export `COOKIE_SECURE=1` so the session and logout cookies
+6. For passkeys, optional overrides: `CURVED_WEBAUTHN_ORIGINS` takes
+   comma-separated origins and `CURVED_WEBAUTHN_RP_ID` takes the relying party
+   ID. Origins default to `https://$CURVED_DOMAIN` when `CURVED_DOMAIN` is set,
+   otherwise `http://localhost:4747` and `http://localhost:5173`; the RP ID
+   defaults to the hostname of the first origin. Each origin must be a bare
+   http/https origin, and its host must equal the RP ID or be a subdomain of it.
+7. Over HTTPS only: export `COOKIE_SECURE=1` so the session and logout cookies
    also carry `Secure`.
 
 `PORT` defaults to 4747. `COOKIE_SECURE` defaults off: the login and logout
@@ -673,21 +693,37 @@ both cookies also carry `Secure`; local HTTP development and the acceptance gate
 leave it unset.
 
 Authentication has two lanes. A human session is either
-`Authorization: Bearer <CURVED_UI_TOKEN>` or the `curved_session` cookie minted by
-`POST /api/session`. The cookie is the lowercase SHA-256 hex of the UI token and is
-`HttpOnly; SameSite=Lax; Path=/; Max-Age=2592000`. Any other bearer is resolved as
-an agent token through the `agents` table. A bearer that is present but invalid is
+`Authorization: Bearer <CURVED_UI_TOKEN>` (kept for deploy, health, CLI, MCP, and
+acceptance) or the `curved_session` cookie minted by `POST /api/session` or a
+passkey login. Sessions are opaque server-side rows: the cookie holds a
+32-character base64url nonce (192 bits), only its SHA-256 is stored in
+`auth_sessions`, and the row expires after 30 days, so the cookie is
+`HttpOnly; SameSite=Lax; Path=/; Max-Age=2592000`. Token and passkey logins both
+create a row, and `DELETE /api/session` deletes the row, so logout revokes the
+session. The old deterministic `sha256(UI_TOKEN)` cookie is gone, so an existing
+cookie requires a new sign-in. Any other bearer is resolved as an agent token
+through the `agents` table. A bearer that is present but invalid is
 `401 not_authenticated`, even alongside a valid cookie, so a stale agent token is
 never silently downgraded.
+
+Passkeys use one implicit human identity: every registered credential belongs to
+that identity, there is no users table, and passkey registration or login does
+not create timeline events or a new actor type. `GET /api/passkeys/available`
+answers `{ available }` without auth and with `cache-control: no-store`, so the
+sign-in screen knows whether to offer the passkey button. The remaining passkey
+routes are human-only and accept either the UI bearer or the session cookie;
+only the login options and completion pair is unauthenticated. Registration and
+assertion challenges are stored in `webauthn_challenges` and are single-use.
 
 `GET /api/events` is the one exception: it authenticates by the `curved_session`
 cookie only and ignores `Authorization`, because `EventSource` cannot set request
 headers. A request with no cookie, including a bearer-only request, is
 `401 not_authenticated` JSON.
 
-`POST /api/session` is the only unauthenticated `/api` route; every other route,
-including `GET /api/projects`, rejects requests without valid credentials with
-`401 not_authenticated`.
+`POST /api/session`, `POST /api/session/passkey/options`, and
+`POST /api/session/passkey` are the unauthenticated `/api` routes; every other
+route, including `GET /api/projects`, rejects requests without valid credentials
+with `401 not_authenticated`.
 
 `POST /webhooks/github` is outside `/api` and takes neither lane. It reads no
 cookie and no bearer header and authenticates only as a GitHub delivery: the
@@ -700,7 +736,14 @@ issue and `{"ok":true,"ignored":true}` otherwise, so GitHub never retries.
 |---|---|---|---|
 | `GET` | `/api/me` | human or agent | `{ actor }` |
 | `POST` | `/api/session` | UI token in the `{ token }` body | Sets the cookie, returns `{ actor }` |
-| `DELETE` | `/api/session` | human or agent | `204`, clears the cookie |
+| `DELETE` | `/api/session` | human or agent | `204`, deletes the session row, clears the cookie |
+| `GET` | `/api/passkeys/available` | none | `{ available }`; `cache-control: no-store` |
+| `GET` | `/api/passkeys` | human only | `{ passkeys }` |
+| `POST` | `/api/passkeys/options` | human only | registration options |
+| `POST` | `/api/passkeys` | human only | `201 { passkey }` |
+| `DELETE` | `/api/passkeys/:id` | human only | `204` |
+| `POST` | `/api/session/passkey/options` | none | login options |
+| `POST` | `/api/session/passkey` | none | `{ actor }` plus the session cookie |
 | `GET` | `/api/projects` | human or agent | `{ projects }` |
 | `POST` | `/api/projects` | human only | `{ project }` |
 | `GET` | `/api/issues` | human or agent | `{ issues }`; optional `project` and `status` filters |
@@ -815,8 +858,11 @@ merge case send `"action":"closed"` at the top level with `"merged":true` inside
 ## Web client
 
 `npm run build` produces `web/dist`, and `npm start` serves it on the same origin
-as the API. Open `http://127.0.0.1:4747`, sign in with `CURVED_UI_TOKEN`, and the
-cookie keeps the session for 30 days. The first run starts with project setup.
+as the API. Open `http://127.0.0.1:4747` and sign in with a passkey, or use the
+UI-token form under the "Use a UI token" divider to sign in and add the first
+passkey (Face ID, Touch ID, or a security key). The session cookie holds an
+opaque server-side session and keeps it for 30 days. The first run starts with
+project setup.
 
 The client covers the core human loop:
 
@@ -826,6 +872,8 @@ The client covers the core human loop:
 - Issue detail with the append-only timeline, comment composer, status moves,
   field edits, label replacement, and blocking relations.
 - Command palette (`Ctrl+K` or `Cmd+K`) for issue search and actions.
+- Passkey management from the topbar, the sidebar footer, or the palette action
+  "Manage passkeys": add a nicknamed passkey or remove one.
 - Loading, empty, error, and reduced-motion states throughout.
 
 The board and an open issue detail refresh from one `EventSource` on

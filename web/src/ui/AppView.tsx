@@ -7,6 +7,7 @@ import { BootError, BootScreen } from "./Boot.tsx";
 import { CommandPalette } from "./CommandPalette.tsx";
 import { IssueDetail } from "./IssueDetail.tsx";
 import { NewIssueDialog } from "./NewIssueDialog.tsx";
+import { PasskeysDialog } from "./PasskeysDialog.tsx";
 import { ProjectSetup } from "./ProjectSetup.tsx";
 import { Queue } from "./Queue.tsx";
 import { MobileNav, Sidebar, Topbar } from "./Shell.tsx";
@@ -29,7 +30,14 @@ export function AppView({ workspace }: { workspace: Workspace }) {
   }
 
   if (workspace.auth === "anonymous") {
-    return <SignIn onSignIn={workspace.signIn} />;
+    return (
+      <SignIn
+        onSignIn={workspace.signIn}
+        passkeysSupported={workspace.passkeysSupported}
+        passkeyAvailable={workspace.passkeyAvailable}
+        onPasskeySignIn={workspace.signInWithPasskey}
+      />
+    );
   }
 
   if (!workspace.projectsLoaded) {
@@ -75,6 +83,7 @@ export function AppView({ workspace }: { workspace: Workspace }) {
           onProjectChange={workspace.selectProject}
           onNavigate={workspace.navigate}
           onSignOut={workspace.signOut}
+          onOpenPasskeys={workspace.openPasskeys}
         />
 
         <div className="flex min-w-0 flex-1 flex-col">
@@ -90,6 +99,7 @@ export function AppView({ workspace }: { workspace: Workspace }) {
             }}
             onRefresh={workspace.refresh}
             refreshing={workspace.refreshing}
+            onOpenPasskeys={workspace.openPasskeys}
           />
 
           <div className="flex min-h-0 min-w-0 flex-1 overflow-hidden">
@@ -204,6 +214,7 @@ export function AppView({ workspace }: { workspace: Workspace }) {
         }}
         onSignOut={workspace.signOut}
         onRefresh={workspace.refresh}
+        onOpenPasskeys={workspace.openPasskeys}
       />
 
       <NewIssueDialog
@@ -213,6 +224,17 @@ export function AppView({ workspace }: { workspace: Workspace }) {
         allLabels={workspace.allLabels}
         onClose={workspace.closeNewIssue}
         onCreate={workspace.createIssue}
+      />
+
+      <PasskeysDialog
+        open={workspace.passkeysOpen}
+        onClose={workspace.closePasskeys}
+        supported={workspace.passkeysSupported}
+        passkeys={workspace.passkeys}
+        loading={workspace.passkeysLoading}
+        error={workspace.passkeysError}
+        onAdd={workspace.addPasskey}
+        onRemove={workspace.removePasskey}
       />
 
       <Toasts items={workspace.toasts} onDismiss={workspace.dismissToast} />

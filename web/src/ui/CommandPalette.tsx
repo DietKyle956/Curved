@@ -2,6 +2,7 @@ import {
   ArrowsClockwise,
   ArrowRight,
   Folder,
+  Key,
   ListChecks,
   MagnifyingGlass,
   Plus,
@@ -38,6 +39,7 @@ interface CommandPaletteProps {
   onOpenIssue: (issue: Issue) => void;
   onNavigate: (path: string) => void;
   onNewIssue: () => void;
+  onOpenPasskeys: () => void;
   onSignOut: () => void;
   onRefresh: () => void;
 }
@@ -51,6 +53,7 @@ export function CommandPalette({
   onOpenIssue,
   onNavigate,
   onNewIssue,
+  onOpenPasskeys,
   onSignOut,
   onRefresh,
 }: CommandPaletteProps) {
@@ -110,6 +113,14 @@ export function CommandPalette({
       hint: "reload",
       icon: <ArrowsClockwise className="size-4" aria-hidden="true" />,
       run: onRefresh,
+    },
+    {
+      id: "passkeys",
+      group: "Actions",
+      label: "Manage passkeys",
+      hint: "security",
+      icon: <Key className="size-4" aria-hidden="true" />,
+      run: onOpenPasskeys,
     },
     {
       id: "sign-out",

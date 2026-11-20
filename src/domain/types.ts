@@ -42,6 +42,15 @@ export interface CreatedAgent {
   token: string;
 }
 
+export interface PasskeySummary {
+  id: string;
+  nickname: string;
+  deviceType: "singleDevice" | "multiDevice";
+  backedUp: boolean;
+  createdAt: string;
+  lastUsedAt: string | null;
+}
+
 export interface IssueEvent {
   id: number;
   issueId: number;

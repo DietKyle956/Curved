@@ -109,7 +109,9 @@ export async function openTestDatabase(): Promise<TestDatabase> {
     databaseUrl,
     ports,
     async reset(): Promise<void> {
-      await db.query("TRUNCATE projects, agents RESTART IDENTITY CASCADE");
+      await db.query(
+        "TRUNCATE projects, agents, auth_sessions, passkey_credentials, webauthn_challenges RESTART IDENTITY CASCADE",
+      );
     },
     async close(): Promise<void> {
       await db.close();

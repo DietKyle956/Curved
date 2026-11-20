@@ -1,12 +1,13 @@
 # MEMORY.md
 
-- **Last updated:** 2026-11-19
+- **Last updated:** 2026-11-20
 - **Project:** curved
 - **Phase:** product and infrastructure implemented through `LAS-188` (free-tier
-  keepalive and rebuild runbook); `LAS-188` is In Review with the console
-  rebuild drill left to the operator. Next unbuilt work is `LAS-189` (agent
-  tunnel and deployed-commit parity), then `LAS-190`; `LAS-177` (template
-  audit) is independent.
+  keepalive and rebuild runbook), and passkey login is live (migration `0006`,
+  opaque server-side sessions, passkey routes, and the sign-in and management
+  UI). `LAS-188` is still In Review with the console rebuild drill left to the
+  operator. Next unbuilt work is `LAS-189` (agent tunnel and deployed-commit
+  parity), then `LAS-190`; `LAS-177` (template audit) is independent.
 
 ## Current verified state
 
@@ -27,9 +28,10 @@ git history and the Linear comments.
   `npm run smoke:backup`, `npm run smoke:webhook`, and
   `.github/workflows/verify.yml` on every push to `main` and manual dispatch,
   where the main-only `deploy` job runs after `verify`.
-- Baseline: 197 tests pass (191 behavior, 6 architecture),
-  `architecture: ok (74 files)`, web build green; `npm run acceptance` passes
-  (145 checks), `npm run smoke:release` 22 assertions,
+- Baseline: 205 tests pass (199 behavior, 6 architecture),
+  `architecture: ok (81 files)`, web build green; `npm run acceptance` passes
+  (145 checks, including the browser passkey registration and passkey sign-in
+  lines), `npm run smoke:release` 22 assertions,
   `npm run smoke:backup` 19, `npm run smoke:provision` 52,
   `npm run smoke:webhook` 9, and `npm run smoke:compose` includes the real
   backup, Postgres drill, and Caddy restore legs.
@@ -51,7 +53,9 @@ git history and the Linear comments.
   append-only `issue_events` (UPDATE and DELETE rejected with SQLSTATE 23001);
   `agents` (unique trimmed name 1..100, unique lowercase SHA-256 `token_hash`);
   migration `0004` adds `labels`, `issue_labels`, `issue_relations`; migration
-  `0005` adds the `pg_notify` triggers. `issues_one_active_claim_per_agent` is
+  `0005` adds the `pg_notify` triggers; migration `0006` adds
+  `passkey_credentials`, `auth_sessions`, and `webauthn_challenges`.
+  `issues_one_active_claim_per_agent` is
   the partial unique claim fence and `issues.claimed_by` references
   `agents(name)`.
 - State machine: `backlog -> todo`, `todo -> in_progress`, `todo -> backlog`,
@@ -79,14 +83,29 @@ git history and the Linear comments.
   `CURVED_AGENT_TOKEN` and never fall back to the human actor; errors print
   `<code>: <message>` and exit 1.
 - HTTP (`npm start`, `PORT` default 4747): requires `CURVED_UI_TOKEN`; humans
-  authenticate by UI bearer or the `curved_session` cookie (SHA-256 of the UI
-  token), agents by `crv_` bearer; routes cover `/api/me`, `/api/session`,
-  projects, issues (list with `project` and `status` filters, create, show,
-  human-only `PATCH`), transition, comments, labels, relations, block, unblock,
-  release, `/api/ready`, `/api/claims/next`, cookie-only `/api/events`, and
-  `/webhooks/github`. Errors are `{ error: { code, message } }` with 400, 401,
-  403, 404, 409, and 500 mapping. Non-`/api` paths serve `web/dist` with
-  no-cache documents and immutable `/assets/*`, or a 503 naming the build.
+  authenticate by UI bearer or the `curved_session` cookie, agents by `crv_`
+  bearer. The cookie holds a 32-character base64url nonce (192 bits) and only
+  its SHA-256 is stored in `auth_sessions`; the row expires after 30 days
+  (`SESSION_MAX_AGE_SECONDS=2592000`), both token and passkey logins create one,
+  and `DELETE /api/session` deletes the row so logout revokes it. The old
+  deterministic `sha256(UI_TOKEN)` cookie is gone, so existing cookies require a
+  new sign-in. Routes cover `/api/me`, `/api/session`, the passkey endpoints
+  (see below), projects, issues (list with `project` and `status` filters,
+  create, show, human-only `PATCH`), transition, comments, labels, relations,
+  block, unblock, release, `/api/ready`, `/api/claims/next`, cookie-only
+  `/api/events`, and `/webhooks/github`. Passkey routes: `GET
+  /api/passkeys/available` (no auth, `{ available }`, `cache-control:
+  no-store`), `GET /api/passkeys`, `POST /api/passkeys/options`, `POST
+  /api/passkeys` (201 `{ passkey }`), and `DELETE /api/passkeys/:id` (204) are
+  human-only, while `POST /api/session/passkey/options` and `POST
+  /api/session/passkey` are unauthenticated login options and completion that
+  returns the actor plus a session cookie. Human-only routes accept either the
+  UI bearer or the session cookie; one implicit human identity owns many
+  passkeys, with no users table and no actor/timeline change, and the token
+  bearer stays valid for deploy, health, CLI, MCP, and acceptance. Errors are
+  `{ error: { code, message } }` with 400, 401, 403, 404, 409, and 500 mapping.
+  Non-`/api` paths serve `web/dist` with no-cache documents and immutable
+  `/assets/*`, or a 503 naming the build.
 - MCP (`npm run mcp`): v2 `@modelcontextprotocol/server` over stdio with exactly
   `claim_next`, `comment`, `create_issue`, `get_issue`, `list_ready`,
   `mark_blocked`, `release_claim`, and `submit_for_review`, thin over the
@@ -105,23 +124,44 @@ git history and the Linear comments.
 - Web: Vite 8 + React 19 + Tailwind v4 SPA in `web/`; sign-in, first-run setup,
   five-lane board with drag gated by `allowedTransitions`, mobile status list,
   ready queue, issue detail modal, label and relation editing, `Ctrl/Cmd+K`
-  palette, toasts. Fixed warm near-black palette, Instrument Sans + JetBrains
-  Mono, self-hosted fonts, no light mode, `lg` breakpoint overridden to 900 px.
+  palette, toasts. The sign-in screen leads with a primary "Sign in with
+  passkey" button (Face ID, Touch ID, or a security key) above a "Use a UI
+  token" divider holding the token form. Any signed-in session opens a Passkeys
+  dialog from the topbar, the sidebar footer, or the palette action "Manage
+  passkeys", where a passkey can be added with a nickname or removed. Fixed
+  warm near-black palette, Instrument Sans + JetBrains Mono, self-hosted fonts,
+  no light mode, `lg` breakpoint overridden to 900 px.
 - Config: `DATABASE_URL`, `TEST_DATABASE_URL`, `CURVED_UI_TOKEN`,
-  `GITHUB_WEBHOOK_SECRET`, `PORT` (4747), `CURVED_HSTS_MAX_AGE` (Caddy sends
-  `Strict-Transport-Security: max-age=<value>` only when non-empty; localhost
-  leaves it empty so HSTS is never pinned), and `COOKIE_SECURE` (opt-in `Secure`
-  on the session cookie; unset, empty, `0`, or `false` is off, `1` or `true` is
-  on, anything else throws naming the variable).
+  `GITHUB_WEBHOOK_SECRET`, `PORT` (4747), `CURVED_DOMAIN`,
+  `CURVED_WEBAUTHN_ORIGINS` (comma-separated origins), `CURVED_WEBAUTHN_RP_ID`,
+  `CURVED_HSTS_MAX_AGE` (Caddy sends `Strict-Transport-Security:
+  max-age=<value>` only when non-empty; localhost leaves it empty so HSTS is
+  never pinned), and `COOKIE_SECURE` (opt-in `Secure` on the session cookie;
+  unset, empty, `0`, or `false` is off, `1` or `true` is on, anything else
+  throws naming the variable). WebAuthn origins default to
+  `https://$CURVED_DOMAIN` when `CURVED_DOMAIN` is set, else
+  `http://localhost:4747` and `http://localhost:5173`; the RP ID defaults to
+  the hostname of the first origin. Explicit origins must be bare http/https
+  origins and must match the RP ID or be subdomains of it. Compose passes
+  `CURVED_DOMAIN`, so an existing `deploy/.env` needs no new key.
 - Tests: isolated database from `TEST_DATABASE_URL` (name must start with
   `curved_test`), created and migrated by `test/helpers/db.ts` and truncated
   between tests; the development database is never touched.
+  `test/passkeys.test.ts` covers availability without auth, listing without
+  verification material,
+  registration and login option contents, single-use challenges, unknown
+  credentials, and nickname validation; the HTTP and SSE session suites exercise
+  the opaque cookie rows.
 - Acceptance (`npm run acceptance`): CLI lifecycle, the eight-tool MCP
   handshake, HTTP plus SSE, a signed webhook with replay, a 24-issue palette
   seed, and a Chromium/CDP browser leg at 390x844, all against one throwaway
   `curved_acceptance_<pid>_<epoch>` database that is dropped afterward. It fails
-  if a per-table digest of the default `curved` database changes. Flags
-  `--skip-browser` and `--keep`.
+  if a per-table digest of the default `curved` database changes. The browser
+  leg registers a passkey and signs in with it through Chromium's CDP virtual
+  authenticator, printing `PASS browser: passkey registered ...` and `PASS
+  browser: passkey sign-in reached the board ...`; the driver enables focus
+  emulation because headless tabs otherwise reject WebAuthn with
+  `NotAllowedError`. Flags `--skip-browser` and `--keep`.
 - Deploy: root `Dockerfile` (multi-stage `node:26-slim`, build then prune,
   runtime as `USER node`) and `deploy/` (compose project `curved-prod`: `db` on
   `127.0.0.1:55432`, `app` running migrations then the server with no host port,
@@ -368,7 +408,9 @@ git history and the Linear comments.
   Chromium passes are the coverage. Verification ran at 1440, 1024, and 390 px.
 - Session cookies carry `HttpOnly; SameSite=Lax; Path=/; Max-Age=2592000` and add
   `Secure` only under `COOKIE_SECURE`, so local HTTP development keeps its
-  default while production compose sets `COOKIE_SECURE=1`.
+  default while production compose sets `COOKIE_SECURE=1`. The value is an
+  opaque 32-character base64url nonce whose SHA-256 is the `auth_sessions` row
+  key; the token bearer stays a separate, non-revocable credential.
 - The production compose `app` runs the idempotent migration command before the
   server so one `up` reaches a healthy schema; the release script also runs the
   migration command separately, before it recreates the app. Local TLS uses
@@ -642,3 +684,4 @@ on 2026-11-18, and 037 to 039 on 2026-11-19.
 | 038 | `LAS-186` | public Let's Encrypt TLS at `158.101.127.247.sslip.io`, HTTP 308, conditional HSTS, gzip/zstd except unbuffered SSE, edge verifier checks, HSTS-aware release probe, `deploy/webhook.sh` and its gate, live GitHub opened/reopened/merged PR flow plus replay/unknown/non-PR ignores, compose/provision/release/webhook smokes, docs and MEMORY. |
 | 039 | `LAS-187` | `deploy/backup.sh` (atomic Postgres dump plus Caddy archives, manifest, checksums, flock, retention), `deploy/restore.sh` (checksum-gated production and drill Postgres restore, Caddy restore), mandatory pre-deploy backup in `release.sh`, bootstrap backup directory and daily timer with one initial set, four `verify-host` checks, `npm run smoke:backup`, real compose backup and restore legs, release ordering isolation, provisioning/README docs; `./scripts/init.sh`, 197 tests, acceptance 145 checks, compose/provision/backup/release/webhook smokes green; live deploy run 44578798179 with the pre-deploy set `tag=curved:ec6666d`, timer installed, first nightly set verified, `verify-host` 26 PASS, and a live Postgres drill restored 1 project/3 issues with `LIVE-1` at `done` while the app stayed 200. |
 | 040 | `LAS-188` | `deploy/keepalive.sh`, bootstrap-installed `/usr/local/bin/curved-keepalive` plus hourly `curved-keepalive.service`/`.timer`, `verify-host` `keepalive-timer` check (27 PASS), provisioning-smoke unit/script/idempotency/disabled-timer coverage (52 PASS), and the section 18 keepalive plus rebuild-after-reclamation runbook; live bootstrap `--no-stack` installed the units, `verify-host` printed 27 PASS/0 FAIL, and a 62 s `/proc/stat` run measured 53-56% total CPU, p95 55%, average 54.1%. |
+| 041 | Passkey login | Migration `0006` adds `passkey_credentials`, `auth_sessions`, and `webauthn_challenges`; sessions are opaque rows keyed by the SHA-256 of a 32-character base64url nonce in `curved_session` (30-day expiry, token and passkey logins, `DELETE /api/session` deletes the row), replacing the deterministic `sha256(UI_TOKEN)` cookie. `@simplewebauthn/server` 14.1 and `@simplewebauthn/browser` 14.0 back `GET /api/passkeys/available`, `GET`/`POST /api/passkeys`, `POST /api/passkeys/options`, `DELETE /api/passkeys/:id`, and unauthenticated `POST /api/session/passkey/options`/`POST /api/session/passkey`, with human routes accepting the bearer or the cookie. `CURVED_WEBAUTHN_ORIGINS` and `CURVED_WEBAUTHN_RP_ID` override defaults derived from `CURVED_DOMAIN`, which compose now passes. The SPA leads sign-in with a passkey button and manages passkeys from the topbar, sidebar, and palette. Gates: 205 tests (199 behavior, 6 architecture), `architecture: ok (81 files)`, acceptance 145 checks with the two browser passkey lines, and compose smoke green. |

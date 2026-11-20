@@ -2,6 +2,7 @@ import {
   ArrowsClockwise,
   CaretDown,
   Kanban,
+  Key,
   ListChecks,
   MagnifyingGlass,
   Plus,
@@ -102,6 +103,7 @@ export function Sidebar({
   onLabelFilter,
   onProjectChange,
   onNavigate,
+  onOpenPasskeys,
   onSignOut,
 }: {
   projects: Project[];
@@ -113,6 +115,7 @@ export function Sidebar({
   onLabelFilter: (label: string | null) => void;
   onProjectChange: (key: string) => void;
   onNavigate: (path: string) => void;
+  onOpenPasskeys: () => void;
   onSignOut: () => void;
 }) {
   const labels = new Map<string, number>();
@@ -275,6 +278,11 @@ export function Sidebar({
             </p>
           </div>
           <IconButton
+            label="Passkeys"
+            onClick={onOpenPasskeys}
+            icon={<Key className="size-4" />}
+          />
+          <IconButton
             label="Sign out"
             onClick={onSignOut}
             icon={<SignOut className="size-4" />}
@@ -293,6 +301,7 @@ export function Topbar({
   onQueryChange,
   onProjectChange,
   onNewIssue,
+  onOpenPasskeys,
   onRefresh,
   refreshing,
 }: {
@@ -303,6 +312,7 @@ export function Topbar({
   onQueryChange: (value: string) => void;
   onProjectChange: (key: string) => void;
   onNewIssue: () => void;
+  onOpenPasskeys: () => void;
   onRefresh: () => void;
   refreshing: boolean;
 }) {
@@ -326,6 +336,12 @@ export function Topbar({
       </div>
 
       <div className="ml-auto flex items-center gap-1.5 sm:gap-2">
+        <IconButton
+          label="Passkeys"
+          data-testid="open-passkeys"
+          onClick={onOpenPasskeys}
+          icon={<Key className="size-4" />}
+        />
         <div className="relative hidden w-[15rem] md:block xl:w-[20rem]">
           <MagnifyingGlass
             className="pointer-events-none absolute top-1/2 left-2.5 size-3.5 -translate-y-1/2 text-fg-muted"

@@ -38,6 +38,7 @@ services:
       CURVED_UI_TOKEN: ${CURVED_UI_TOKEN:?CURVED_UI_TOKEN is required}
       GITHUB_WEBHOOK_SECRET: ${GITHUB_WEBHOOK_SECRET:?GITHUB_WEBHOOK_SECRET is required}
       COOKIE_SECURE: ${COOKIE_SECURE:-1}
+      CURVED_DOMAIN: ${CURVED_DOMAIN:-localhost}
     # Migrations are idempotent and must finish before the server accepts
     # traffic, otherwise requests can hit an unmigrated schema.
     command:

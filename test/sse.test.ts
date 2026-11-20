@@ -1,6 +1,5 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { createHash } from "node:crypto";
 import { resolve } from "node:path";
 import { after, afterEach, before, beforeEach, test } from "node:test";
 import { createApp, type App } from "../src/adapters/http/app.ts";
@@ -14,10 +13,6 @@ import { openTestDatabase, type TestDatabase } from "./helpers/db.ts";
 
 const REPO_ROOT = resolve(import.meta.dirname, "..");
 const UI_TOKEN = "test-ui-token";
-const SESSION_COOKIE_VALUE = createHash("sha256")
-  .update(UI_TOKEN, "utf8")
-  .digest("hex");
-const COOKIE_HEADER = `curved_session=${SESSION_COOKIE_VALUE}`;
 const PING_INTERVAL_MS = 50;
 const FRAME_TIMEOUT_MS = 2000;
 
@@ -159,6 +154,7 @@ let testDb: TestDatabase;
 let hub: EventHub;
 let app: App;
 let readers: EventStreamReader[] = [];
+let cookieHeader: string;
 
 before(async () => {
   testDb = await openTestDatabase();
@@ -178,6 +174,19 @@ beforeEach(async () => {
     eventPingIntervalMs: PING_INTERVAL_MS,
     logger: () => {},
   });
+  const login = await app.handle(
+    new Request(new URL("/api/session", "http://localhost"), {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ token: UI_TOKEN }),
+    }),
+  );
+  assert.equal(login.status, 200);
+  const setCookie = login.headers.get("set-cookie");
+  assert.ok(setCookie);
+  const pair = setCookie.split(";")[0];
+  assert.ok(pair !== undefined && pair.length > 0);
+  cookieHeader = pair;
 });
 
 afterEach(async () => {
@@ -203,7 +212,7 @@ function requestEventStream(
 }
 
 async function openStream(): Promise<EventStreamReader> {
-  const response = await requestEventStream({ cookie: COOKIE_HEADER });
+  const response = await requestEventStream({ cookie: cookieHeader });
   assert.equal(response.status, 200);
   const body = response.body;
   assert.ok(body, "event stream response has no body");
@@ -256,7 +265,7 @@ test("the event stream requires the session cookie and ignores bearer tokens", a
     "not_authenticated",
   );
 
-  const response = await requestEventStream({ cookie: COOKIE_HEADER });
+  const response = await requestEventStream({ cookie: cookieHeader });
   assert.equal(response.status, 200);
   assert.match(
     response.headers.get("content-type") ?? "",
@@ -357,7 +366,7 @@ test("a client disconnect through the Node transport cancels the subscription", 
     const controller = new AbortController();
     const response = await fetch(
       new URL("/api/events", `http://127.0.0.1:${address.port}`),
-      { headers: { cookie: COOKIE_HEADER }, signal: controller.signal },
+      { headers: { cookie: cookieHeader }, signal: controller.signal },
     );
     assert.equal(response.status, 200);
     const body = response.body;

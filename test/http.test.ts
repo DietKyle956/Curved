@@ -14,13 +14,8 @@ import { createProject } from "../src/application/projects.ts";
 import { openTestDatabase, type TestDatabase } from "./helpers/db.ts";
 
 const UI_TOKEN = "test-ui-token";
-const SESSION_COOKIE_VALUE = createHash("sha256")
-  .update(UI_TOKEN, "utf8")
-  .digest("hex");
-const HUMAN_COOKIE = `curved_session=${SESSION_COOKIE_VALUE}`;
 const JSON_HEADERS = { "content-type": "application/json" };
 const HUMAN_BEARER = { authorization: `Bearer ${UI_TOKEN}` };
-const COOKIE_HEADER = { cookie: HUMAN_COOKIE };
 
 interface HttpApp {
   handle(request: Request): Promise<Response>;
@@ -72,6 +67,7 @@ interface ReadyResponse {
 let testDb: TestDatabase;
 let hub: EventHub;
 let app: HttpApp;
+let cookieHeader: string;
 
 before(async () => {
   testDb = await openTestDatabase();
@@ -89,6 +85,7 @@ beforeEach(async () => {
     uiToken: UI_TOKEN,
     logger: () => {},
   });
+  cookieHeader = await signIn(app);
 });
 
 afterEach(async () => {
@@ -105,6 +102,21 @@ function request(
   init?: RequestInit,
 ): Promise<Response> {
   return target.handle(new Request(new URL(path, "http://localhost"), init));
+}
+
+/** Signs in with the UI token and returns the session cookie pair. */
+async function signIn(target: HttpApp): Promise<string> {
+  const response = await request(target, "/api/session", {
+    method: "POST",
+    headers: JSON_HEADERS,
+    body: JSON.stringify({ token: UI_TOKEN }),
+  });
+  assert.equal(response.status, 200);
+  const setCookie = response.headers.get("set-cookie");
+  assert.ok(setCookie);
+  const pair = setCookie.split(";")[0];
+  assert.ok(pair !== undefined && pair.length > 0);
+  return pair;
 }
 
 async function readJson<T>(response: Response): Promise<T> {
@@ -161,7 +173,7 @@ test("unauthenticated API reads return 401 not_authenticated", async () => {
   );
 });
 
-test("session login sets the expected cookie and logout clears it", async () => {
+test("session login sets an opaque cookie and logout revokes it", async () => {
   const wrong = await request(app, "/api/session", {
     method: "POST",
     headers: JSON_HEADERS,
@@ -184,14 +196,24 @@ test("session login sets the expected cookie and logout clears it", async () => 
 
   const setCookie = login.headers.get("set-cookie");
   assert.ok(setCookie);
-  assert.match(setCookie, new RegExp(`curved_session=${SESSION_COOKIE_VALUE}`));
+  const cookiePair = setCookie.split(";")[0];
+  assert.ok(cookiePair !== undefined);
+  assert.match(cookiePair, /^curved_session=[A-Za-z0-9_-]{32}$/);
+  // The cookie is a server-generated nonce, not a hash of the UI token.
+  const cookieValue = cookiePair.slice(cookiePair.indexOf("=") + 1);
+  assert.notEqual(
+    cookieValue,
+    createHash("sha256").update(UI_TOKEN, "utf8").digest("hex"),
+  );
   assert.match(setCookie, /HttpOnly/i);
   assert.match(setCookie, /SameSite=Lax/i);
   assert.match(setCookie, /Path=\//);
   assert.match(setCookie, /Max-Age=2592000/);
   assert.doesNotMatch(setCookie, /(?:^|; )Secure(?:;|$)/i);
 
-  const me = await request(app, "/api/me", { headers: COOKIE_HEADER });
+  const me = await request(app, "/api/me", {
+    headers: { cookie: cookiePair },
+  });
   assert.equal(me.status, 200);
   assert.deepEqual((await readJson<MeResponse>(me)).actor, {
     type: "human",
@@ -200,7 +222,7 @@ test("session login sets the expected cookie and logout clears it", async () => 
 
   const logout = await request(app, "/api/session", {
     method: "DELETE",
-    headers: COOKIE_HEADER,
+    headers: { cookie: cookiePair },
   });
   assert.equal(logout.status, 204);
   const clearCookie = logout.headers.get("set-cookie");
@@ -209,13 +231,31 @@ test("session login sets the expected cookie and logout clears it", async () => 
   assert.match(clearCookie, /Max-Age=0/i);
   assert.doesNotMatch(clearCookie, /(?:^|; )Secure(?:;|$)/i);
 
-  // The cookie is stateless, so "after logout" means the cleared cookie is gone.
-  const afterLogout = await request(app, "/api/me");
+  // Logout deletes the session row, so the same cookie no longer authenticates.
+  const afterLogout = await request(app, "/api/me", {
+    headers: { cookie: cookiePair },
+  });
   assert.equal(afterLogout.status, 401);
   assert.equal(
     (await readJson<ErrorResponse>(afterLogout)).error.code,
     "not_authenticated",
   );
+});
+
+test("an expired session cookie is rejected", async () => {
+  const cookieValue = "expired-session";
+  await testDb.db.query(
+    `insert into auth_sessions (token_hash, method, credential_id, created_at, expires_at)
+     values ($1, 'token', null, now() - interval '31 days', now() - interval '1 day')`,
+    [createHash("sha256").update(cookieValue, "utf8").digest("hex")],
+  );
+
+  const me = await request(app, "/api/me", {
+    headers: { cookie: `curved_session=${cookieValue}` },
+  });
+  assert.equal(me.status, 401);
+  assertJson(me);
+  assert.equal((await readJson<ErrorResponse>(me)).error.code, "not_authenticated");
 });
 
 test("cookieSecure marks login and logout cookies Secure", async () => {
@@ -243,7 +283,7 @@ test("cookieSecure marks login and logout cookies Secure", async () => {
 
   const logout = await request(secureApp, "/api/session", {
     method: "DELETE",
-    headers: COOKIE_HEADER,
+    headers: { cookie: cookieHeader },
   });
   assert.equal(logout.status, 204);
   const clearCookie = logout.headers.get("set-cookie");
@@ -271,7 +311,7 @@ test("bearer tokens resolve humans and agents, and an invalid bearer wins over a
   });
 
   const invalid = await request(app, "/api/me", {
-    headers: { ...COOKIE_HEADER, authorization: "Bearer not-a-real-token" },
+    headers: { cookie: cookieHeader, authorization: "Bearer not-a-real-token" },
   });
   assert.equal(invalid.status, 401);
   assertJson(invalid);
@@ -839,7 +879,9 @@ test("the ready queue and claims skip a todo issue with an open blocker", async 
 });
 
 test("responses never carry CORS headers", async () => {
-  const get = await request(app, "/api/me", { headers: COOKIE_HEADER });
+  const get = await request(app, "/api/me", {
+    headers: { cookie: cookieHeader },
+  });
   assert.equal(get.headers.get("access-control-allow-origin"), null);
 
   const options = await request(app, "/api/me", { method: "OPTIONS" });

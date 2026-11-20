@@ -7,7 +7,8 @@
 // realtime channel without a reload.
 //
 // Environment (set by scripts/acceptance.mjs):
-//   ACCEPTANCE_BASE_URL     e.g. http://127.0.0.1:12345
+//   ACCEPTANCE_BASE_URL     e.g. http://localhost:12345 (a secure context, so
+//                           WebAuthn ceremonies work)
 //   ACCEPTANCE_UI_TOKEN     UI token used to sign in
 //   ACCEPTANCE_PROJECT_KEY  existing project key, e.g. TAC
 //
@@ -55,7 +56,7 @@ const CHROMIUM_CANDIDATES = [
   "google-chrome",
   "google-chrome-stable",
 ];
-const HARD_TIMEOUT_MS = 120_000;
+const HARD_TIMEOUT_MS = 180_000;
 const COMMENT_LATENCY_LIMIT_MS = 1100;
 // The active palette row must keep a visible gutter above the listbox bottom;
 // a row flush against the edge reads as a clipped row.
@@ -74,6 +75,11 @@ const STATUSES = ["backlog", "todo", "in_progress", "in_review", "done"];
 
 const SIGNIN_TOKEN = '[data-testid="signin-token"]';
 const SIGNIN_SUBMIT = '[data-testid="signin-submit"]';
+const SIGNIN_PASSKEY = '[data-testid="signin-passkey"]';
+const PASSKEYS_OPEN = '[data-testid="open-passkeys"]';
+const PASSKEY_NICKNAME = '[data-testid="passkey-nickname"]';
+const PASSKEY_ADD = '[data-testid="passkey-add"]';
+const PASSKEY_ROW = '[data-testid="passkey-row"]';
 const STATUS_TAB = '[data-testid^="status-tab-"]';
 const PALETTE = '[role="dialog"][aria-label="Command palette"]';
 const PALETTE_INPUT = 'input[role="combobox"]';
@@ -696,8 +702,45 @@ async function openTab(cdp, label, url) {
   await cdp.send("Page.enable", {}, tab.sessionId);
   await cdp.send("Runtime.enable", {}, tab.sessionId);
   await cdp.send("Emulation.setDeviceMetricsOverride", METRICS, tab.sessionId);
+  // Headless tabs are not focused by default, which makes WebAuthn reject the
+  // ceremony with NotAllowedError ("the page does not have focus").
+  await cdp.send(
+    "Emulation.setFocusEmulationEnabled",
+    { enabled: true },
+    tab.sessionId,
+  );
   await tab.navigate(url);
   return tab;
+}
+
+/**
+ * Gives Chromium a software authenticator so the passkey legs can register a
+ * credential and assert with it without a human or real hardware. Commands are
+ * sent on the page session, which is where the WebAuthn domain lives.
+ */
+async function enableVirtualAuthenticator(tab) {
+  await state.cdp.send("WebAuthn.enable", {}, tab.sessionId);
+  const added = await state.cdp.send(
+    "WebAuthn.addVirtualAuthenticator",
+    {
+      options: {
+        protocol: "ctap2",
+        transport: "internal",
+        hasResidentKey: true,
+        hasUserVerification: true,
+        isUserVerified: true,
+        automaticPresenceSimulation: true,
+      },
+    },
+    tab.sessionId,
+  );
+  const authenticatorId = added?.authenticatorId;
+  if (typeof authenticatorId !== "string" || authenticatorId.length === 0) {
+    throw new Error(
+      `WebAuthn.addVirtualAuthenticator returned no authenticatorId: ${JSON.stringify(added)}`,
+    );
+  }
+  return authenticatorId;
 }
 
 /* -------------------------------------------------------------------------- */
@@ -1183,6 +1226,11 @@ async function main() {
   const boardUrl = `${baseUrl}/p/${encodeURIComponent(projectKey)}`;
   const tabA = await openTab(state.cdp, "A", boardUrl);
 
+  // The authenticator belongs to the browser context, so both tabs see it and
+  // the credential registered below outlives signing out.
+  state.phase = "enable virtual authenticator";
+  const authenticatorId = await enableVirtualAuthenticator(tabA);
+
   state.phase = "sign in";
   await tabA.waitFor(SIGNIN_TOKEN, 20_000);
   await tabA.setValue(SIGNIN_TOKEN, uiToken);
@@ -1417,6 +1465,50 @@ async function main() {
   await sleep(150);
   const screenshotBBytes = await tabBSession.screenshot(SCREENSHOT_SECOND_TAB);
 
+  // Passkey leg: register a credential through the CDP virtual authenticator,
+  // sign out, then sign back in without the UI token. The board is reloaded
+  // first so the path asserted after sign-in is the board itself.
+  state.phase = "register passkey";
+  const passkeyNickname = "Acceptance passkey";
+  await tabA.navigate(boardUrl);
+  await tabA.waitFor(STATUS_TAB, 20_000);
+  await state.cdp.send(
+    "Page.bringToFront",
+    {},
+    tabA.sessionId,
+  );
+  await tabA.click(PASSKEYS_OPEN);
+  await tabA.waitFor(PASSKEY_NICKNAME, 10_000);
+  await tabA.setValue(PASSKEY_NICKNAME, passkeyNickname);
+  await tabA.click(PASSKEY_ADD);
+  await tabA.waitFor(PASSKEY_ROW, 20_000);
+  const passkeyRows = await tabA.count(PASSKEY_ROW);
+  const passkeyRowText = await tabA.text(PASSKEY_ROW);
+  assert(
+    passkeyRowText.includes(passkeyNickname),
+    `passkey row read ${JSON.stringify(passkeyRowText)}, expected it to name ${JSON.stringify(passkeyNickname)}`,
+  );
+  await tabA.pressKey(ESCAPE_KEY);
+  await waitForSelectorGone(tabA, PASSKEY_ROW, 5000);
+
+  state.phase = "sign out";
+  await tabA.pressKey(CTRL_K);
+  await tabA.waitFor(PALETTE, 5000);
+  await tabA.setValue(PALETTE_INPUT, "sign out");
+  await tabA.waitFor("#palette-sign-out", 5000);
+  await tabA.pressKey(ENTER_KEY);
+  await tabA.waitFor(SIGNIN_PASSKEY, 15_000);
+
+  state.phase = "passkey sign-in";
+  await tabA.click(SIGNIN_PASSKEY);
+  await tabA.waitFor(STATUS_TAB, 20_000);
+  const passkeyPath = String(await tabA.evaluate("window.location.pathname"));
+  const boardPath = `/p/${encodeURIComponent(projectKey)}`;
+  assert(
+    passkeyPath === boardPath,
+    `after passkey sign-in the page was at ${JSON.stringify(passkeyPath)}, expected the board at ${JSON.stringify(boardPath)}`,
+  );
+
   const summary = STATUSES.map((status) => `${status}=${counts.get(status)}`).join(
     " ",
   );
@@ -1432,6 +1524,8 @@ async function main() {
     `PASS browser: second tab opened ${issuePath} with ${eventsB} timeline event(s)`,
     `PASS browser: comment propagated tab A -> tab B in ${elapsedMs}ms (< ${COMMENT_LATENCY_LIMIT_MS}ms; marker ${JSON.stringify(marker)}; tab A timeline events ${eventsA})`,
     `PASS browser: second-tab screenshot ${SCREENSHOT_SECOND_TAB} (${screenshotBBytes} bytes)`,
+    `PASS browser: passkey registered as ${JSON.stringify(passkeyNickname)} through virtual authenticator ${authenticatorId} (${passkeyRows} passkey row(s) in the dialog)`,
+    `PASS browser: passkey sign-in reached the board at ${passkeyPath}`,
   ];
   await success(lines);
 }

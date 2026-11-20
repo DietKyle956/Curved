@@ -1,5 +1,6 @@
 import { existsSync } from "node:fs";
 import { resolve } from "node:path";
+import type { WebAuthnConfig } from "../application/passkeys.ts";
 
 export interface Config {
   databaseUrl: string;
@@ -9,12 +10,18 @@ export interface Config {
   webhookSecret: string;
   agentToken: string;
   cookieSecure: boolean;
+  webauthn: WebAuthnConfig;
 }
 
 const DEFAULT_DATABASE_URL = "postgres://curved:curved@127.0.0.1:55432/curved";
 const DEFAULT_TEST_DATABASE_URL =
   "postgres://curved:curved@127.0.0.1:55432/curved_test";
 const DEFAULT_PORT = 4747;
+
+const DEFAULT_WEBAUTHN_ORIGINS = [
+  "http://localhost:4747",
+  "http://localhost:5173",
+] as const;
 
 function readPort(raw: string | undefined): number {
   if (raw === undefined || raw === "") {
@@ -43,6 +50,72 @@ function readCookieSecure(raw: string | undefined): boolean {
   );
 }
 
+function readWebAuthnOrigins(env: NodeJS.ProcessEnv): string[] {
+  const raw = env.CURVED_WEBAUTHN_ORIGINS ?? "";
+  if (raw.trim() !== "") {
+    return raw
+      .split(",")
+      .map((entry) => entry.trim())
+      .filter((entry) => entry !== "");
+  }
+  const domain = (env.CURVED_DOMAIN ?? "").trim();
+  if (domain !== "") {
+    return [`https://${domain}`];
+  }
+  return [...DEFAULT_WEBAUTHN_ORIGINS];
+}
+
+function parseWebAuthnOrigin(raw: string): URL {
+  let url: URL;
+  try {
+    url = new URL(raw);
+  } catch {
+    throw new Error(
+      `CURVED_WEBAUTHN_ORIGINS entry "${raw}" is not a valid URL`,
+    );
+  }
+  if (url.protocol !== "http:" && url.protocol !== "https:") {
+    throw new Error(
+      `CURVED_WEBAUTHN_ORIGINS entry "${raw}" must use http or https`,
+    );
+  }
+  const withoutTrailingSlash = raw.endsWith("/") ? raw.slice(0, -1) : raw;
+  if (url.origin !== withoutTrailingSlash) {
+    throw new Error(
+      `CURVED_WEBAUTHN_ORIGINS entry "${raw}" must be an origin such as "https://example.com", without a path or query`,
+    );
+  }
+  return url;
+}
+
+function readWebAuthn(env: NodeJS.ProcessEnv): WebAuthnConfig {
+  const origins = readWebAuthnOrigins(env);
+  if (origins.length === 0) {
+    throw new Error(
+      "CURVED_WEBAUTHN_ORIGINS must list at least one http or https origin",
+    );
+  }
+  const urls = origins.map(parseWebAuthnOrigin);
+  const configuredRpId = (env.CURVED_WEBAUTHN_RP_ID ?? "").trim();
+  const [firstOrigin] = urls;
+  if (firstOrigin === undefined) {
+    throw new Error(
+      "CURVED_WEBAUTHN_ORIGINS must list at least one http or https origin",
+    );
+  }
+  const rpID = configuredRpId !== "" ? configuredRpId : firstOrigin.hostname;
+  const normalizedRpId = rpID.toLowerCase();
+  for (const url of urls) {
+    const host = url.hostname.toLowerCase();
+    if (host !== normalizedRpId && !host.endsWith(`.${normalizedRpId}`)) {
+      throw new Error(
+        `CURVED_WEBAUTHN_RP_ID "${rpID}" does not cover origin "${url.origin}"; the host must equal the RP ID or be a subdomain of it`,
+      );
+    }
+  }
+  return { rpID, origins };
+}
+
 /**
  * Reads configuration from the environment. A `.env` file in the working
  * directory is loaded when present, without overriding variables that are
@@ -62,5 +135,6 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     webhookSecret: env.GITHUB_WEBHOOK_SECRET ?? "",
     agentToken: env.CURVED_AGENT_TOKEN ?? "",
     cookieSecure: readCookieSecure(env.COOKIE_SECURE),
+    webauthn: readWebAuthn(env),
   };
 }

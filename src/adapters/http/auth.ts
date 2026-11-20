@@ -1,12 +1,11 @@
-import { createHash } from "node:crypto";
 import { ServiceError } from "../../domain/errors.ts";
 import type { ActorType } from "../../domain/status.ts";
 import { authenticateAgent } from "../../application/agents.ts";
-import type { Ports } from "../../application/ports.ts";
+import type { Ports, TransactionPorts } from "../../application/ports.ts";
+import { SESSION_MAX_AGE_SECONDS } from "../../application/sessions.ts";
 import { constantTimeEqual } from "../timing-safe.ts";
 
 export const SESSION_COOKIE_NAME = "curved_session";
-export const SESSION_MAX_AGE_SECONDS = 2592000;
 
 /** The public identity attached to every authenticated HTTP request. */
 export interface Actor {
@@ -25,15 +24,11 @@ export interface AuthContext {
   agentName: string | null;
 }
 
-/** Lowercase SHA-256 hex digest, the stored form of every secret. */
-export function sha256Hex(value: string): string {
-  return createHash("sha256").update(value, "utf8").digest("hex");
-}
-
-/** The session cookie value for a UI token. */
-export function sessionCookieValue(uiToken: string): string {
-  return sha256Hex(uiToken);
-}
+const HUMAN_AUTH: AuthContext = {
+  actor: { type: "human", name: null },
+  serviceActor: "human",
+  agentName: null,
+};
 
 export function serializeSessionCookie(value: string, secure = false): string {
   const attributes = [
@@ -91,25 +86,37 @@ export function parseCookies(header: string | null): Map<string, string> {
 }
 
 /**
+ * Looks the request's session cookie up in the session table. Only a stored,
+ * unexpired row authenticates; the cookie itself carries nothing else.
+ */
+async function cookieAuthContext(
+  request: Request,
+  ports: TransactionPorts,
+): Promise<AuthContext | null> {
+  const cookie = parseCookies(request.headers.get("cookie")).get(
+    SESSION_COOKIE_NAME,
+  );
+  if (cookie === undefined) {
+    return null;
+  }
+  const session = await ports.sessions.findByTokenHash(
+    ports.tokens.hash(cookie),
+  );
+  return session === null ? null : HUMAN_AUTH;
+}
+
+/**
  * Resolves a UI session from the session cookie alone. EventSource cannot send
  * an Authorization header, so this path never consults one: a bearer-only
  * request is unauthenticated even when its token is valid.
  */
-export function resolveSessionActor(
+export async function resolveSessionActor(
   request: Request,
-  options: { uiToken: string },
-): AuthContext {
-  const cookies = parseCookies(request.headers.get("cookie"));
-  const cookie = cookies.get(SESSION_COOKIE_NAME);
-  if (
-    cookie !== undefined &&
-    constantTimeEqual(cookie, sessionCookieValue(options.uiToken))
-  ) {
-    return {
-      actor: { type: "human", name: null },
-      serviceActor: "human",
-      agentName: null,
-    };
+  options: { ports: TransactionPorts },
+): Promise<AuthContext> {
+  const context = await cookieAuthContext(request, options.ports);
+  if (context !== null) {
+    return context;
   }
   throw new ServiceError("not_authenticated", "authentication required");
 }
@@ -131,7 +138,7 @@ export async function resolveActor(
     }
     const token = match[1] ?? "";
     if (token.length > 0 && constantTimeEqual(token, options.uiToken)) {
-      return { actor: { type: "human", name: null }, serviceActor: "human", agentName: null };
+      return HUMAN_AUTH;
     }
     const agent = await authenticateAgent(options.ports, token);
     return {
@@ -141,10 +148,9 @@ export async function resolveActor(
     };
   }
 
-  const cookies = parseCookies(request.headers.get("cookie"));
-  const cookie = cookies.get(SESSION_COOKIE_NAME);
-  if (cookie !== undefined && constantTimeEqual(cookie, sessionCookieValue(options.uiToken))) {
-    return { actor: { type: "human", name: null }, serviceActor: "human", agentName: null };
+  const context = await cookieAuthContext(request, options.ports);
+  if (context !== null) {
+    return context;
   }
 
   throw new ServiceError("not_authenticated", "authentication required");

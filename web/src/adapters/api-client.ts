@@ -8,6 +8,7 @@ import type {
   Issue,
   IssueEvent,
   IssueTimeline,
+  PasskeySummary,
   Project,
   ProjectList,
   ReadyQueue,
@@ -168,6 +169,43 @@ export function createApiClient(): ApiPort {
 
     unblock(key: string): Promise<{ issue: Issue }> {
       return request(`${issuePath(key)}/unblock`, { method: "POST" });
+    },
+
+    passkeyAvailable(): Promise<{ available: boolean }> {
+      return request("/api/passkeys/available");
+    },
+
+    startPasskeyRegistration(): Promise<{ challengeId: string; options: unknown }> {
+      return request("/api/passkeys/options", { method: "POST" });
+    },
+
+    finishPasskeyRegistration(input: {
+      challengeId: string;
+      nickname: string;
+      response: unknown;
+    }): Promise<{ passkey: PasskeySummary }> {
+      return request("/api/passkeys", { method: "POST", body: input });
+    },
+
+    passkeys(): Promise<{ passkeys: PasskeySummary[] }> {
+      return request("/api/passkeys");
+    },
+
+    deletePasskey(id: string): Promise<void> {
+      return request(`/api/passkeys/${encodeURIComponent(id)}`, {
+        method: "DELETE",
+      });
+    },
+
+    startPasskeyLogin(): Promise<{ challengeId: string; options: unknown }> {
+      return request("/api/session/passkey/options", { method: "POST" });
+    },
+
+    finishPasskeyLogin(input: {
+      challengeId: string;
+      response: unknown;
+    }): Promise<{ actor: Actor }> {
+      return request("/api/session/passkey", { method: "POST", body: input });
     },
   };
 }

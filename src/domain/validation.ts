@@ -8,6 +8,7 @@ export const PROJECT_NAME_MAX_LENGTH = 200;
 export const AGENT_NAME_MAX_LENGTH = 100;
 export const LABEL_NAME_MAX_LENGTH = 50;
 export const BLOCKED_REASON_MAX_LENGTH = 2000;
+export const PASSKEY_NICKNAME_MAX_LENGTH = 60;
 
 export function validateProjectKey(raw: string): string {
   if (!PROJECT_KEY_PATTERN.test(raw)) {
@@ -141,4 +142,18 @@ export function validateReviewSummary(summary: string): string {
     throw new ServiceError("validation", "review summary must not be empty");
   }
   return trimmed;
+}
+
+export function validatePasskeyNickname(raw: string): string {
+  const nickname = raw.trim();
+  if (nickname.length === 0) {
+    throw new ServiceError("validation", "passkey nickname must not be empty");
+  }
+  if (nickname.length > PASSKEY_NICKNAME_MAX_LENGTH) {
+    throw new ServiceError(
+      "validation",
+      `passkey nickname must be at most ${PASSKEY_NICKNAME_MAX_LENGTH} characters`,
+    );
+  }
+  return nickname;
 }
