@@ -1,0 +1,108 @@
+name: Rotate UI token
+
+# Operator-only recovery path: applies the UI token stored in the
+# CURVED_UI_TOKEN repository secret to the deployed host and releases it.
+# The token travels over stdin, never in an argv or a log line, and a login
+# probe with the new value must return 200 before the run succeeds.
+
+on:
+  workflow_dispatch:
+
+concurrency:
+  group: rotate-ui-token
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  rotate:
+    name: Rotate
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+
+    steps:
+      - name: Validate secrets
+        env:
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_KNOWN_HOSTS: ${{ secrets.DEPLOY_KNOWN_HOSTS }}
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          CURVED_UI_TOKEN: ${{ secrets.CURVED_UI_TOKEN }}
+        run: |
+          set -euo pipefail
+          missing=0
+          for name in DEPLOY_SSH_KEY DEPLOY_KNOWN_HOSTS DEPLOY_HOST CURVED_UI_TOKEN; do
+            if [ -z "${!name:-}" ]; then
+              echo "::error::Repository secret $name is empty or unset."
+              missing=1
+            fi
+          done
+          exit "$missing"
+
+      - name: Write SSH credentials
+        env:
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_KNOWN_HOSTS: ${{ secrets.DEPLOY_KNOWN_HOSTS }}
+        run: |
+          set -euo pipefail
+          umask 077
+          printf '%s\n' "$DEPLOY_SSH_KEY" > "$RUNNER_TEMP/deploy_key"
+          printf '%s\n' "$DEPLOY_KNOWN_HOSTS" > "$RUNNER_TEMP/known_hosts"
+          chmod 600 "$RUNNER_TEMP/deploy_key" "$RUNNER_TEMP/known_hosts"
+
+      - name: Apply the token and release
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          CURVED_UI_TOKEN: ${{ secrets.CURVED_UI_TOKEN }}
+        run: |
+          set -euo pipefail
+          remote=$(cat <<'REMOTE'
+          read -r NEWTOKEN
+          set -euo pipefail
+          cd /srv/curved/checkout
+          umask 077
+          backup=$(mktemp)
+          tmp=$(mktemp deploy/.env.XXXXXX)
+          trap 'rm -f "$backup" "$tmp"' EXIT
+          cp -p deploy/.env "$backup"
+          grep -v '^CURVED_UI_TOKEN=' deploy/.env > "$tmp" || true
+          printf 'CURVED_UI_TOKEN=%s\n' "$NEWTOKEN" >> "$tmp"
+          chmod 600 "$tmp"
+          mv "$tmp" deploy/.env
+          trap 'rm -f "$backup"' EXIT
+          if ! ./deploy/release.sh; then
+            echo "release failed; restoring the previous token" >&2
+            mv "$backup" deploy/.env
+            ./deploy/release.sh --skip-public-probe || true
+            exit 1
+          fi
+          rm -f "$backup"
+          trap - EXIT
+          body=$(mktemp)
+          trap 'rm -f "$body"' EXIT
+          printf '{"token":"%s"}' "$NEWTOKEN" > "$body"
+          chmod 600 "$body"
+          DOMAIN=$(sed -n 's/^CURVED_DOMAIN=//p' deploy/.env | head -n 1)
+          code=$(curl -s -o /dev/null -w '%{http_code}' \
+            -H 'content-type: application/json' \
+            --data-binary "@$body" \
+            "https://${DOMAIN:-localhost}/api/session")
+          rm -f "$body"
+          trap - EXIT
+          if [ "$code" != "200" ]; then
+            echo "login probe with the new token returned $code" >&2
+            exit 1
+          fi
+          echo "login probe ok"
+          REMOTE
+          )
+          printf '%s\n' "$CURVED_UI_TOKEN" | ssh -i "$RUNNER_TEMP/deploy_key" \
+            -o BatchMode=yes \
+            -o IdentitiesOnly=yes \
+            -o StrictHostKeyChecking=yes \
+            -o UserKnownHostsFile="$RUNNER_TEMP/known_hosts" \
+            "deploy@$DEPLOY_HOST" "$remote"
+
+      - name: Remove SSH credentials
+        if: always()
+        run: rm -f "$RUNNER_TEMP/deploy_key" "$RUNNER_TEMP/known_hosts"
