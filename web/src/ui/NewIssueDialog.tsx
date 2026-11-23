@@ -1,14 +1,20 @@
 import { useEffect, useState } from "react";
 import type { FormEvent } from "react";
 
-import { PRIORITY_LABEL, STATUS_LABEL } from "../domain/presentation.ts";
+import {
+  PRIORITY_LABEL,
+  relationCandidates,
+  STATUS_LABEL,
+} from "../domain/presentation.ts";
 import type {
+  Issue,
   NewIssueInput,
   Priority,
   Project,
   Status,
 } from "../domain/types.ts";
 import { Dialog } from "./Dialog.tsx";
+import { RelationSelect } from "./RelationSelect.tsx";
 import { Button, Field } from "./ui.tsx";
 
 export function NewIssueDialog({
@@ -16,6 +22,7 @@ export function NewIssueDialog({
   project,
   defaultStatus,
   allLabels,
+  issues,
   onClose,
   onCreate,
 }: {
@@ -23,6 +30,7 @@ export function NewIssueDialog({
   project: Project;
   defaultStatus: Status;
   allLabels: string[];
+  issues: Issue[];
   onClose: () => void;
   onCreate: (input: NewIssueInput) => Promise<boolean>;
 }) {
@@ -31,8 +39,11 @@ export function NewIssueDialog({
   const [priority, setPriority] = useState<Priority>(3);
   const [status, setStatus] = useState<Status>("backlog");
   const [labels, setLabels] = useState("");
+  const [blocks, setBlocks] = useState<string[]>([]);
+  const [blockedBy, setBlockedBy] = useState<string[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
+  const candidates = relationCandidates(issues);
 
   useEffect(() => {
     if (!open) {
@@ -43,6 +54,8 @@ export function NewIssueDialog({
     setPriority(3);
     setStatus(defaultStatus === "todo" ? "todo" : "backlog");
     setLabels("");
+    setBlocks([]);
+    setBlockedBy([]);
     setError(null);
     setSubmitting(false);
   }, [open, defaultStatus]);
@@ -64,6 +77,8 @@ export function NewIssueDialog({
         .split(",")
         .map((label) => label.trim())
         .filter((label) => label.length > 0),
+      blocks,
+      blockedBy,
     });
     setSubmitting(false);
     if (ok) {
@@ -184,6 +199,23 @@ export function NewIssueDialog({
             </>
           )}
         </Field>
+
+        <RelationSelect
+          label="Blocked by"
+          hint="These issues must reach Done before this one is claimable."
+          candidates={candidates}
+          value={blockedBy}
+          onChange={setBlockedBy}
+          testId="new-issue-blocked-by"
+        />
+        <RelationSelect
+          label="Blocks"
+          hint="This issue must reach Done before these issues are claimable."
+          candidates={candidates}
+          value={blocks}
+          onChange={setBlocks}
+          testId="new-issue-blocks"
+        />
 
         <div className="mt-1 flex items-center justify-between gap-3 border-t border-line pt-3.5">
           <span className="font-mono text-[9.5px] text-fg-muted">

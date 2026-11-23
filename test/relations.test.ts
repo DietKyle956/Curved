@@ -10,7 +10,7 @@ import {
 import type { Issue, IssueEvent } from "../src/domain/types.ts";
 import { createProject } from "../src/application/projects.ts";
 import { claimNext, listReady } from "../src/application/queue.ts";
-import { addRelation } from "../src/application/relations.ts";
+import { addRelation, removeRelation } from "../src/application/relations.ts";
 import { openTestDatabase, type TestDatabase } from "./helpers/db.ts";
 
 let testDb: TestDatabase;
@@ -175,6 +175,98 @@ test("addRelation validates the edge and rejects unknown issues and agent actors
     blocks: [],
     blockedBy: [],
   });
+});
+
+test("removeRelation deletes both directions and records one removal event", async () => {
+  await seedProject();
+  const blocker = await seedIssue("TAC", "Blocker", "backlog");
+  const blocked = await seedIssue("TAC", "Blocked", "todo");
+
+  await addRelation(testDb.ports, {
+    blocked: blocked.key,
+    blocking: blocker.key,
+  });
+  const result = await removeRelation(testDb.ports, {
+    blocked: blocked.key,
+    blocking: blocker.key,
+  });
+  assert.equal(result.key, blocked.key);
+  assert.deepEqual(result.relations, { blocks: [], blockedBy: [] });
+  assert.deepEqual((await getIssue(testDb.ports, blocker.key)).relations, {
+    blocks: [],
+    blockedBy: [],
+  });
+
+  const blockedEvents = withKind(
+    await testDb.ports.events.list(blocked.id),
+    "relation",
+  );
+  assert.equal(blockedEvents.length, 2);
+  const removal = blockedEvents[1];
+  assert.ok(removal, "expected a removal relation event");
+  assert.equal(removal.actorType, "human");
+  assert.equal(removal.fromStatus, null);
+  assert.equal(removal.toStatus, null);
+  assert.equal(
+    removal.body,
+    JSON.stringify({
+      blocking: blocker.key,
+      blocked: blocked.key,
+      removed: true,
+    }),
+  );
+});
+
+test("removing an absent relation is idempotent and writes no event", async () => {
+  await seedProject();
+  const blocker = await seedIssue("TAC", "Blocker", "backlog");
+  const blocked = await seedIssue("TAC", "Blocked", "todo");
+
+  const first = await removeRelation(testDb.ports, {
+    blocked: blocked.key,
+    blocking: blocker.key,
+  });
+  const second = await removeRelation(testDb.ports, {
+    blocked: blocked.key,
+    blocking: blocker.key,
+  });
+  assert.deepEqual(first.relations, { blocks: [], blockedBy: [] });
+  assert.deepEqual(second.relations, { blocks: [], blockedBy: [] });
+  assert.equal(
+    withKind(await testDb.ports.events.list(blocked.id), "relation").length,
+    0,
+  );
+});
+
+test("removeRelation rejects self, unknown issues, and agent actors", async () => {
+  await seedProject();
+  const blocker = await seedIssue("TAC", "Blocker", "backlog");
+  const blocked = await seedIssue("TAC", "Blocked", "todo");
+
+  await assert.rejects(
+    removeRelation(testDb.ports, {
+      blocked: blocker.key,
+      blocking: blocker.key,
+    }),
+    rejectsWithServiceCode("validation"),
+  );
+  await assert.rejects(
+    removeRelation(testDb.ports, { blocked: "TAC-99", blocking: blocker.key }),
+    rejectsWithServiceCode("not_found"),
+  );
+  await assert.rejects(
+    removeRelation(testDb.ports, { blocked: blocked.key, blocking: "TAC-99" }),
+    rejectsWithServiceCode("not_found"),
+  );
+  await assert.rejects(
+    removeRelation(testDb.ports, {
+      blocked: blocked.key,
+      blocking: blocker.key,
+      actor: "agent",
+      agent: "alpha",
+    }),
+    rejectsWithServiceCode("forbidden_transition"),
+  );
 });
 
 // --- Ready queue gating ---------------------------------------------------

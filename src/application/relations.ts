@@ -65,3 +65,68 @@ export async function addRelation(
     return hydrateIssue(tx, blocked.id, context);
   });
 }
+
+export interface RemoveRelationInput {
+  blocked: string;
+  blocking: string;
+  actor?: string;
+  agent?: string;
+}
+
+/**
+ * Removes a blocking relation. Only a human may remove a relation. The edge
+ * removal is idempotent: a missing edge writes no event.
+ */
+export async function removeRelation(
+  ports: Ports,
+  input: RemoveRelationInput,
+): Promise<Issue> {
+  const context = resolveContext({ actor: input.actor, agent: input.agent });
+  if (context.actor !== "human") {
+    throw new ServiceError(
+      "forbidden_transition",
+      `actor "${context.actor}" may not remove a relation from issue "${input.blocked}"`,
+    );
+  }
+
+  const blockedKey = parseIssueKey(input.blocked).key;
+  const blockingKey = parseIssueKey(input.blocking).key;
+  if (blockedKey === blockingKey) {
+    throw new ServiceError(
+      "validation",
+      `issue "${blockedKey}" cannot block itself`,
+    );
+  }
+
+  const blocked = await ports.issues.findByKey(blockedKey);
+  if (blocked === null) {
+    throw new ServiceError("not_found", `issue "${blockedKey}" not found`);
+  }
+  const blocking = await ports.issues.findByKey(blockingKey);
+  if (blocking === null) {
+    throw new ServiceError("not_found", `issue "${blockingKey}" not found`);
+  }
+
+  return ports.transaction(async (tx) => {
+    const removed = await tx.relations.remove({
+      blockingIssueId: blocking.id,
+      blockedIssueId: blocked.id,
+    });
+    if (removed) {
+      await tx.events.append({
+        issueId: blocked.id,
+        kind: "relation",
+        actorType: "human",
+        fromStatus: null,
+        toStatus: null,
+        body: JSON.stringify({
+          blocking: blockingKey,
+          blocked: blockedKey,
+          removed: true,
+        }),
+      });
+    }
+
+    return hydrateIssue(tx, blocked.id, context);
+  });
+}

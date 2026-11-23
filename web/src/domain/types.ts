@@ -120,6 +120,8 @@ export interface NewIssueInput {
   priority: Priority;
   status: Status;
   labels: string[];
+  blocks: string[];
+  blockedBy: string[];
 }
 
 export type ToastKind = "success" | "error" | "info";

@@ -48,6 +48,7 @@ export interface ApiPort {
   comment(key: string, body: string): Promise<{ event: IssueEvent }>;
   setLabels(key: string, labels: string[]): Promise<{ issue: Issue }>;
   addRelation(key: string, blocking: string): Promise<{ issue: Issue }>;
+  removeRelation(key: string, blocking: string): Promise<{ issue: Issue }>;
   unblock(key: string): Promise<{ issue: Issue }>;
   passkeyAvailable(): Promise<{ available: boolean; otherDomain: number }>;
   startPasskeyRegistration(): Promise<{ challengeId: string; options: unknown }>;

@@ -222,7 +222,7 @@ export function AppView({ workspace }: { workspace: Workspace }) {
                 loading={workspace.detailLoading}
                 error={workspace.detailError}
                 allLabels={workspace.allLabels}
-                issueKeys={workspace.issueKeys}
+                issues={workspace.issues}
                 onClose={() => {
                   workspace.navigate(boardPath(project.key));
                 }}
@@ -235,7 +235,7 @@ export function AppView({ workspace }: { workspace: Workspace }) {
                 onComment={workspace.comment}
                 onUpdate={workspace.updateIssue}
                 onSetLabels={workspace.setLabels}
-                onAddRelation={workspace.addRelation}
+                onSaveRelations={workspace.setRelations}
                 onUnblock={workspace.unblock}
               />
             ) : null}
@@ -276,6 +276,7 @@ export function AppView({ workspace }: { workspace: Workspace }) {
         project={project}
         defaultStatus={workspace.newIssueStatus}
         allLabels={workspace.allLabels}
+        issues={workspace.issues}
         onClose={workspace.closeNewIssue}
         onCreate={workspace.createIssue}
       />

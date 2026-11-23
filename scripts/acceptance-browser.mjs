@@ -112,7 +112,15 @@ const PALETTE_PROJECTS_OPTION = "#palette-projects";
 const PALETTE_BOARD_OPTION = "#palette-board";
 const NEW_ISSUE_TITLE = '[data-testid="new-issue-title"]';
 const NEW_ISSUE_SUBMIT = '[data-testid="new-issue-submit"]';
+const NEW_ISSUE_BLOCKED_BY = '[data-testid="new-issue-blocked-by"]';
 const ISSUE_DETAIL = '[data-testid="issue-detail"]';
+const EDIT_RELATIONS = '[data-testid="edit-relations"]';
+const RELATION_DIALOG = '[data-testid="relation-dialog"]';
+const RELATION_BLOCKS = '[data-testid="relation-blocks"]';
+const RELATION_BLOCKED_BY = '[data-testid="relation-blocked-by"]';
+const RELATION_SAVE = '[data-testid="relation-save"]';
+const RELATION_BLOCKED_BY_ROW = '[data-testid="relation-blocked-by-row"]';
+const RELATION_BLOCKS_ROW = '[data-testid="relation-blocks-row"]';
 const TIMELINE_EVENT = '[data-testid="timeline-event"]';
 const COMMENT_INPUT = "#issue-comment";
 const COMMENT_SUBMIT = '[data-testid="comment-submit"]';
@@ -1874,9 +1882,36 @@ async function main() {
 
   state.phase = "create issue";
   await tabA.setValue(NEW_ISSUE_TITLE, "Browser acceptance task");
+  await tabA.waitFor(NEW_ISSUE_BLOCKED_BY, 10_000);
+  const creationBlockerKey = String(
+    await tabA.evaluate(
+      `(() => {
+        const select = document.querySelector(${JSON.stringify(NEW_ISSUE_BLOCKED_BY)});
+        if (select === null || select.options.length === 0) {
+          return "";
+        }
+        const value = select.options[0].value;
+        select.value = value;
+        select.dispatchEvent(new Event("change", { bubbles: true }));
+        return value;
+      })()`,
+    ),
+  );
+  assert(
+    creationBlockerKey.length > 0,
+    "new issue dialog offers no blocked-by candidate; the seeded backlog fillers are missing",
+  );
   await tabA.click(NEW_ISSUE_SUBMIT);
   await tabA.waitFor('[data-testid="toast"]', 5000);
   await tabA.waitFor(ISSUE_DETAIL, 15_000);
+  await tabA.waitFor(RELATION_BLOCKED_BY_ROW, 10_000);
+  const createdBlockedByText = String(
+    await tabA.text(RELATION_BLOCKED_BY_ROW),
+  );
+  assert(
+    createdBlockedByText.includes(creationBlockerKey),
+    `create-time blocked-by row ${JSON.stringify(createdBlockedByText)} omits ${creationBlockerKey}`,
+  );
 
   const issuePath = String(await tabA.evaluate("window.location.pathname"));
   const issueMatch = /^\/p\/([^/]+)\/i\/([^/]+)\/?$/.exec(issuePath);
@@ -1890,6 +1925,82 @@ async function main() {
     routeProject === projectKey,
     `created issue route is for project ${routeProject}, expected ${projectKey}`,
   );
+
+  state.phase = "add block through relations dialog";
+  await tabA.click(EDIT_RELATIONS);
+  await tabA.waitFor(RELATION_DIALOG, 10_000);
+  const addedBlockKey = String(
+    await tabA.evaluate(
+      `(() => {
+        const select = document.querySelector(${JSON.stringify(RELATION_BLOCKS)});
+        if (select === null) {
+          return "";
+        }
+        const option = Array.from(select.options).find(
+          (candidate) =>
+            candidate.value.length > 0 &&
+            candidate.value !== ${JSON.stringify(creationBlockerKey)} &&
+            candidate.value !== ${JSON.stringify(issueKey)},
+        );
+        if (option === undefined) {
+          return "";
+        }
+        select.value = option.value;
+        select.dispatchEvent(new Event("change", { bubbles: true }));
+        return option.value;
+      })()`,
+    ),
+  );
+  assert(
+    addedBlockKey.length > 0,
+    `relations dialog offers no block candidate besides ${creationBlockerKey} and ${issueKey}`,
+  );
+  await tabA.click(RELATION_SAVE);
+  await waitForSelectorGone(tabA, RELATION_DIALOG, 10_000);
+  await tabA.waitFor(RELATION_BLOCKS_ROW, 10_000);
+  const blocksRowText = String(await tabA.text(RELATION_BLOCKS_ROW));
+  assert(
+    blocksRowText.includes(addedBlockKey),
+    `blocks row ${JSON.stringify(blocksRowText)} omits added block ${addedBlockKey}`,
+  );
+
+  state.phase = "remove blocker through relations dialog";
+  await tabA.click(EDIT_RELATIONS);
+  await tabA.waitFor(RELATION_DIALOG, 10_000);
+  await tabA.evaluate(
+    `(() => {
+      const select = document.querySelector(${JSON.stringify(RELATION_BLOCKED_BY)});
+      if (select === null) {
+        return false;
+      }
+      for (const option of select.options) {
+        option.selected = false;
+      }
+      select.dispatchEvent(new Event("change", { bubbles: true }));
+      return true;
+    })()`,
+  );
+  await tabA.click(RELATION_SAVE);
+  await waitForSelectorGone(tabA, RELATION_DIALOG, 10_000);
+  // The row unmounts when the last blocker goes away, so an absent row is the
+  // expected shape; poll until either the row is gone or its text no longer
+  // names the removed key so a stale render cannot pass the assertion.
+  const removalDeadline = Date.now() + 10_000;
+  let remainingBlockedBy = "";
+  for (;;) {
+    remainingBlockedBy =
+      (await tabA.count(RELATION_BLOCKED_BY_ROW)) === 0
+        ? ""
+        : String(await tabA.text(RELATION_BLOCKED_BY_ROW));
+    if (!remainingBlockedBy.includes(creationBlockerKey)) {
+      break;
+    }
+    assert(
+      Date.now() < removalDeadline,
+      `blocked-by row still names ${creationBlockerKey} after saving the emptied selection (${JSON.stringify(remainingBlockedBy)})`,
+    );
+    await sleep(50);
+  }
 
   state.phase = "screenshot issue detail";
   await sleep(200);
@@ -2034,6 +2145,9 @@ async function main() {
     `PASS browser: palette ArrowDown x${scrollSnapshot.optionCount - 1} of ${scrollSnapshot.optionCount} options selected ${scrollSnapshot.selectedId} in a ${scrollSnapshot.clientHeight}px listbox holding ${scrollSnapshot.scrollHeight}px, scrollTop ${Math.round(scrollSnapshot.scrollTop)}, row ${Math.round(scrollSnapshot.rowTop)}-${Math.round(scrollSnapshot.rowBottom)} inside ${Math.round(scrollSnapshot.listTop)}-${Math.round(scrollSnapshot.listBottom)} with a ${rowBottomGap.toFixed(1)}px bottom gutter (min ${PALETTE_BOTTOM_GUTTER_PX}px)`,
     `PASS browser: palette screenshot ${SCREENSHOT_PALETTE} (${screenshotPaletteBytes} bytes)`,
     `PASS browser: command palette + new issue dialog created ${issueKey} at ${issuePath} (toast shown)`,
+    `PASS browser: create modal relation ${creationBlockerKey} rendered on ${issueKey}`,
+    `PASS browser: relations modal added ${addedBlockKey} as a block`,
+    `PASS browser: relations modal removed ${creationBlockerKey}`,
     `PASS browser: detail screenshot ${SCREENSHOT_DETAIL} (${screenshotDetailBytes} bytes)`,
     `PASS browser: second tab opened ${issuePath} with ${eventsB} timeline event(s)`,
     `PASS browser: comment propagated tab A -> tab B in ${elapsedMs}ms (< ${COMMENT_LATENCY_LIMIT_MS}ms; marker ${JSON.stringify(marker)}; tab A timeline events ${eventsA})`,

@@ -7,7 +7,6 @@ import {
   LinkSimple,
   PaperPlaneTilt,
   PencilSimple,
-  Plus,
   Sparkle,
   Tag,
   WarningOctagon,
@@ -27,6 +26,7 @@ import {
 } from "../domain/presentation.ts";
 import type {
   EventKind,
+  Issue,
   IssueEvent,
   IssueTimeline,
   Priority,
@@ -42,6 +42,7 @@ import {
   StatusChip,
 } from "./ui.tsx";
 import { Modal } from "./Modal.tsx";
+import { RelationsDialog } from "./RelationsDialog.tsx";
 
 function EventIcon({ kind }: { kind: EventKind }) {
   const className = `size-3 ${EVENT_TONE[kind]}`;
@@ -151,7 +152,7 @@ interface IssueDetailProps {
   loading: boolean;
   error: string | null;
   allLabels: string[];
-  issueKeys: string[];
+  issues: Issue[];
   onClose: () => void;
   onOpenIssueKey: (key: string) => void;
   onOpenProject?: (key: string) => void;
@@ -163,7 +164,10 @@ interface IssueDetailProps {
     fields: { title?: string; description?: string; priority?: Priority },
   ) => Promise<boolean>;
   onSetLabels: (key: string, labels: string[]) => Promise<boolean>;
-  onAddRelation: (key: string, blocking: string) => Promise<boolean>;
+  onSaveRelations: (
+    key: string,
+    relations: { blocks: string[]; blockedBy: string[] },
+  ) => Promise<boolean>;
   onUnblock: (key: string) => Promise<boolean>;
 }
 
@@ -173,7 +177,7 @@ export function IssueDetail({
   loading,
   error,
   allLabels,
-  issueKeys,
+  issues,
   onClose,
   onOpenIssueKey,
   onOpenProject,
@@ -182,7 +186,7 @@ export function IssueDetail({
   onComment,
   onUpdate,
   onSetLabels,
-  onAddRelation,
+  onSaveRelations,
   onUnblock,
 }: IssueDetailProps) {
   const reduce = useReducedMotion();
@@ -199,8 +203,7 @@ export function IssueDetail({
   const [editingLabels, setEditingLabels] = useState(false);
   const [labelsDraft, setLabelsDraft] = useState("");
   const [savingLabels, setSavingLabels] = useState(false);
-  const [relationDraft, setRelationDraft] = useState("");
-  const [addingRelation, setAddingRelation] = useState(false);
+  const [editingRelations, setEditingRelations] = useState(false);
   const [unblocking, setUnblocking] = useState(false);
 
   const issue = timeline?.issue ?? null;
@@ -208,8 +211,8 @@ export function IssueDetail({
   useEffect(() => {
     setEditing(false);
     setEditingLabels(false);
+    setEditingRelations(false);
     setComment("");
-    setRelationDraft("");
     setMoving(null);
     scrollRef.current?.scrollTo({ top: 0 });
   }, [issueKey]);
@@ -274,19 +277,6 @@ export function IssueDetail({
     setSavingLabels(false);
     if (ok) {
       setEditingLabels(false);
-    }
-  }
-
-  async function submitRelation(event: FormEvent<HTMLFormElement>): Promise<void> {
-    event.preventDefault();
-    if (issue === null || relationDraft.trim().length === 0) {
-      return;
-    }
-    setAddingRelation(true);
-    const ok = await onAddRelation(issue.key, relationDraft.trim().toUpperCase());
-    setAddingRelation(false);
-    if (ok) {
-      setRelationDraft("");
     }
   }
 
@@ -606,64 +596,42 @@ export function IssueDetail({
                 </section>
 
                 <section className="mt-4 border-t border-line pt-3">
-                  <h2 className="text-[11px] font-medium text-fg">Relations</h2>
+                  <div className="flex items-center justify-between">
+                    <h2 className="text-[11px] font-medium text-fg">Relations</h2>
+                    {!editingRelations ? (
+                      <button
+                        type="button"
+                        data-testid="edit-relations"
+                        onClick={() => setEditingRelations(true)}
+                        className="font-mono text-[9.5px] text-fg-muted transition-colors hover:text-spice"
+                      >
+                        edit
+                      </button>
+                    ) : null}
+                  </div>
                   <div className="mt-2 grid gap-2">
                     <RelationRow
                       label="Blocks"
+                      testId="relation-blocks-row"
                       keys={issue.relations.blocks}
                       onOpen={onOpenIssueKey}
                     />
                     <RelationRow
                       label="Blocked by"
+                      testId="relation-blocked-by-row"
                       keys={issue.relations.blockedBy}
                       onOpen={onOpenIssueKey}
                       tone="storm"
                     />
                   </div>
-                  <form
-                    onSubmit={(event) => void submitRelation(event)}
-                    className="mt-3 flex flex-col gap-1.5"
-                  >
-                    <label
-                      htmlFor="blocking-issue-key"
-                      className="text-[10px] text-fg-muted"
-                    >
-                      Blocking issue
-                    </label>
-                    <div className="flex items-center gap-1.5">
-                    <input
-                      id="blocking-issue-key"
-                      value={relationDraft}
-                      onChange={(event) => {
-                        setRelationDraft(event.target.value.toUpperCase());
-                      }}
-                      list="project-issues"
-                      className="field-input h-8 py-0 font-mono text-[10.5px]"
-                      placeholder="CRV-14"
+                  {editingRelations ? (
+                    <RelationsDialog
+                      issue={issue}
+                      issues={issues}
+                      onClose={() => setEditingRelations(false)}
+                      onSave={onSaveRelations}
                     />
-                    <datalist id="project-issues">
-                      {issueKeys
-                        .filter((key) => key !== issue.key)
-                        .map((key) => (
-                          <option key={key} value={key} />
-                        ))}
-                    </datalist>
-                    <Button
-                      type="submit"
-                      variant="secondary"
-                      size="sm"
-                      loading={addingRelation}
-                      disabled={relationDraft.trim().length === 0}
-                      icon={<Plus className="size-3" aria-hidden="true" />}
-                    >
-                      Add
-                    </Button>
-                    </div>
-                  </form>
-                  <p className="mt-1 text-[10px] leading-snug text-fg-muted">
-                    Adds a blocker. The issue leaves the ready queue until that
-                    blocker is Done.
-                  </p>
+                  ) : null}
                 </section>
 
                 <section className="mt-4 border-t border-line pt-3">
@@ -740,17 +708,19 @@ export function IssueDetail({
 
 function RelationRow({
   label,
+  testId,
   keys,
   onOpen,
   tone = "default",
 }: {
   label: string;
+  testId: string;
   keys: string[];
   onOpen: (key: string) => void;
   tone?: "default" | "storm";
 }) {
   return (
-    <div className="flex items-start gap-3">
+    <div className="flex items-start gap-3" data-testid={testId}>
       <span className="w-20 shrink-0 pt-0.5 font-mono text-[9.5px] text-fg-muted">
         {label}
       </span>

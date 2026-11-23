@@ -21,5 +21,17 @@ export function createRelationRepository(db: Db): RelationRepository {
       );
       return row !== null;
     },
+    async remove(input: {
+      blockingIssueId: number;
+      blockedIssueId: number;
+    }): Promise<boolean> {
+      const row = await db.one<InsertedRelationRow>(
+        `delete from issue_relations
+         where blocking_issue_id = $1 and blocked_issue_id = $2
+         returning blocking_issue_id`,
+        [input.blockingIssueId, input.blockedIssueId],
+      );
+      return row !== null;
+    },
   };
 }

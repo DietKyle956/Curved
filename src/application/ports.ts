@@ -146,6 +146,8 @@ export interface LabelRepository {
 export interface RelationRepository {
   /** Inserts the edge idempotently; true when a row was created. */
   add(input: { blockingIssueId: number; blockedIssueId: number }): Promise<boolean>;
+  /** Deletes the edge; true when a row was removed. */
+  remove(input: { blockingIssueId: number; blockedIssueId: number }): Promise<boolean>;
 }
 
 /** Mints a fresh agent token and hashes a presented one for lookup. */

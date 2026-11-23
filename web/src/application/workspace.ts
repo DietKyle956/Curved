@@ -70,7 +70,6 @@ export interface Workspace {
   route: Route;
   issueKey: string | null;
   allLabels: string[];
-  issueKeys: string[];
 
   passkeysSupported: boolean;
   passkeyAvailable: boolean;
@@ -131,7 +130,10 @@ export interface Workspace {
     fields: { title?: string; description?: string; priority?: Priority },
   ): Promise<boolean>;
   setLabels(key: string, labels: string[]): Promise<boolean>;
-  addRelation(key: string, blocking: string): Promise<boolean>;
+  setRelations(
+    key: string,
+    relations: { blocks: string[]; blockedBy: string[] },
+  ): Promise<boolean>;
 
   dismissToast(id: number): void;
 }
@@ -559,7 +561,28 @@ export function useWorkspace({
             );
           }
         }
+        const relationErrors: string[] = [];
+        for (const blocking of input.blockedBy) {
+          try {
+            await api.addRelation(result.issue.key, blocking);
+          } catch (error) {
+            relationErrors.push(`${blocking}: ${messageOf(error)}`);
+          }
+        }
+        for (const blocked of input.blocks) {
+          try {
+            await api.addRelation(blocked, result.issue.key);
+          } catch (error) {
+            relationErrors.push(`${blocked}: ${messageOf(error)}`);
+          }
+        }
         notify("success", `Created ${result.issue.key}`);
+        if (relationErrors.length > 0) {
+          notify(
+            "error",
+            `${result.issue.key} was created, but relations failed: ${relationErrors.join("; ")}`,
+          );
+        }
         refresh();
         setDetailTick((current) => current + 1);
         navigate(issuePath(project.key, result.issue.key));
@@ -914,13 +937,54 @@ export function useWorkspace({
     [api, run],
   );
 
-  const addRelation = useCallback(
-    (key: string, blocking: string): Promise<boolean> =>
-      run(
-        () => api.addRelation(key, blocking),
-        `Added ${blocking} as a blocker`,
-      ),
-    [api, run],
+  const setRelations = useCallback(
+    async (
+      key: string,
+      next: { blocks: string[]; blockedBy: string[] },
+    ): Promise<boolean> => {
+      const current =
+        timeline?.issue.key === key
+          ? timeline.issue
+          : issues.find((issue) => issue.key === key);
+      if (current === undefined) {
+        notify("error", `Issue ${key} is not loaded.`);
+        return false;
+      }
+      try {
+        for (const other of next.blockedBy.filter(
+          (candidate) => !current.relations.blockedBy.includes(candidate),
+        )) {
+          await api.addRelation(key, other);
+        }
+        for (const other of current.relations.blockedBy.filter(
+          (candidate) => !next.blockedBy.includes(candidate),
+        )) {
+          await api.removeRelation(key, other);
+        }
+        for (const other of next.blocks.filter(
+          (candidate) => !current.relations.blocks.includes(candidate),
+        )) {
+          await api.addRelation(other, key);
+        }
+        for (const other of current.relations.blocks.filter(
+          (candidate) => !next.blocks.includes(candidate),
+        )) {
+          await api.removeRelation(other, key);
+        }
+        notify("success", "Relations updated");
+        refresh();
+        setDetailTick((currentTick) => currentTick + 1);
+        return true;
+      } catch (error) {
+        if (isUnauthorized(error)) {
+          onUnauthorized();
+          return false;
+        }
+        notify("error", messageOf(error));
+        return false;
+      }
+    },
+    [api, issues, notify, onUnauthorized, refresh, timeline],
   );
 
   const dismissToast = useCallback((id: number): void => {
@@ -930,7 +994,6 @@ export function useWorkspace({
   const allLabels = [...new Set(issues.flatMap((issue) => issue.labels))].sort(
     (left, right) => left.localeCompare(right),
   );
-  const issueKeys = issues.map((issue) => issue.key);
 
   return {
     auth,
@@ -955,7 +1018,6 @@ export function useWorkspace({
     route,
     issueKey,
     allLabels,
-    issueKeys,
 
     passkeysSupported: passkeyCeremony.supported,
     passkeyAvailable,
@@ -1010,7 +1072,7 @@ export function useWorkspace({
     comment,
     updateIssue,
     setLabels,
-    addRelation,
+    setRelations,
 
     dismissToast,
   };

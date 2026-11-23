@@ -1002,6 +1002,71 @@ test("issue relations are human-only, expose both directions, and ignore duplica
     1,
   );
 
+  const removed = await request(app, "/api/issues/TAC-1/relations/TAC-2", {
+    method: "DELETE",
+    headers: HUMAN_BEARER,
+  });
+  assert.equal(removed.status, 200);
+  assertJson(removed);
+  const removedIssue = (await readJson<IssueResponse>(removed)).issue;
+  assert.deepEqual(removedIssue.relations.blockedBy, []);
+  const afterRemove = await readJson<IssueTimelineResponse>(
+    await request(app, "/api/issues/TAC-1", { headers: HUMAN_BEARER }),
+  );
+  const removalEvents = afterRemove.events.filter(
+    (event) => event.kind === "relation",
+  );
+  assert.equal(removalEvents.length, 2);
+  assert.deepEqual(JSON.parse(removalEvents[1]?.body ?? ""), {
+    blocking: "TAC-2",
+    blocked: "TAC-1",
+    removed: true,
+  });
+
+  const repeatRemove = await request(app, "/api/issues/TAC-1/relations/TAC-2", {
+    method: "DELETE",
+    headers: HUMAN_BEARER,
+  });
+  assert.equal(repeatRemove.status, 200);
+  const afterRepeatRemove = await readJson<IssueTimelineResponse>(
+    await request(app, "/api/issues/TAC-1", { headers: HUMAN_BEARER }),
+  );
+  assert.equal(
+    afterRepeatRemove.events.filter((event) => event.kind === "relation").length,
+    2,
+  );
+
+  const selfRemove = await request(app, "/api/issues/TAC-1/relations/TAC-1", {
+    method: "DELETE",
+    headers: HUMAN_BEARER,
+  });
+  assert.equal(selfRemove.status, 400);
+  assert.equal(
+    (await readJson<ErrorResponse>(selfRemove)).error.code,
+    "validation",
+  );
+
+  const missingRemove = await request(app, "/api/issues/TAC-1/relations/ZZZ-9", {
+    method: "DELETE",
+    headers: HUMAN_BEARER,
+  });
+  assert.equal(missingRemove.status, 404);
+  assert.equal(
+    (await readJson<ErrorResponse>(missingRemove)).error.code,
+    "not_found",
+  );
+
+  const removeAgent = await createAgent(testDb.ports, "agent-2");
+  const agentRemove = await request(app, "/api/issues/TAC-1/relations/TAC-2", {
+    method: "DELETE",
+    headers: { authorization: `Bearer ${removeAgent.token}` },
+  });
+  assert.equal(agentRemove.status, 403);
+  assert.equal(
+    (await readJson<ErrorResponse>(agentRemove)).error.code,
+    "forbidden_transition",
+  );
+
   const selfRelation = await request(app, "/api/issues/TAC-1/relations", {
     method: "POST",
     headers: { ...HUMAN_BEARER, ...JSON_HEADERS },

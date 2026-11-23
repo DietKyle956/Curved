@@ -183,6 +183,13 @@ export function createApiClient(): ApiPort {
       });
     },
 
+    removeRelation(key: string, blocking: string): Promise<{ issue: Issue }> {
+      return request(
+        `${issuePath(key)}/relations/${encodeURIComponent(blocking)}`,
+        { method: "DELETE" },
+      );
+    },
+
     unblock(key: string): Promise<{ issue: Issue }> {
       return request(`${issuePath(key)}/unblock`, { method: "POST" });
     },

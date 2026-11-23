@@ -34,7 +34,7 @@ import {
   updateProject,
 } from "../../application/projects.ts";
 import { claimNext, listReady, releaseClaim } from "../../application/queue.ts";
-import { addRelation } from "../../application/relations.ts";
+import { addRelation, removeRelation } from "../../application/relations.ts";
 import { createSession } from "../../application/sessions.ts";
 import {
   parseCookies,
@@ -622,6 +622,21 @@ export function createApp(options: CreateAppOptions): App {
         const issue = await addRelation(ports, {
           blocked: key,
           blocking: stringField(body, "blocking"),
+          actor: "human",
+        });
+        return json({ issue });
+      }
+
+      if (
+        action === "relations" &&
+        segments[3] !== undefined &&
+        segments[4] === undefined &&
+        method === "DELETE"
+      ) {
+        requireHuman(await auth());
+        const issue = await removeRelation(ports, {
+          blocked: key,
+          blocking: decodeURIComponent(segments[3]),
           actor: "human",
         });
         return json({ issue });

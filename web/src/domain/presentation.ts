@@ -206,6 +206,32 @@ export function countByStatus(issues: Issue[]): Record<Status, number> {
   return counts;
 }
 
+export interface RelationCandidate {
+  key: string;
+  title: string;
+}
+
+export function relationCandidates(
+  issues: readonly Issue[],
+  options: { excludeKey?: string; includeKeys?: readonly string[] } = {},
+): RelationCandidate[] {
+  const titles = new Map(issues.map((issue) => [issue.key, issue.title]));
+  const selected = new Set<string>();
+  for (const issue of issues) {
+    if (issue.status !== "done" && issue.key !== options.excludeKey) {
+      selected.add(issue.key);
+    }
+  }
+  for (const key of options.includeKeys ?? []) {
+    if (key !== options.excludeKey) {
+      selected.add(key);
+    }
+  }
+  return [...selected]
+    .sort((left, right) => left.localeCompare(right, undefined, { numeric: true }))
+    .map((key) => ({ key, title: titles.get(key) ?? "" }));
+}
+
 const relative = new Intl.RelativeTimeFormat("en", { numeric: "auto" });
 const absolute = new Intl.DateTimeFormat("en", {
   dateStyle: "medium",
@@ -297,10 +323,13 @@ function relationSummary(body: string): string {
   try {
     const parsed: unknown = JSON.parse(body);
     if (parsed !== null && typeof parsed === "object") {
+      const removed = (parsed as { removed?: unknown }).removed === true;
       const blocking = (parsed as { blocking?: unknown }).blocking;
       const blocked = (parsed as { blocked?: unknown }).blocked;
       if (typeof blocking === "string" && typeof blocked === "string") {
-        return `${blocking} now blocks ${blocked}`;
+        return removed
+          ? `${blocking} no longer blocks ${blocked}`
+          : `${blocking} now blocks ${blocked}`;
       }
     }
   } catch {
