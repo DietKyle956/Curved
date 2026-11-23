@@ -1,5 +1,10 @@
 # Oracle Cloud host provisioning (LAS-183, LAS-184, LAS-185, LAS-186, LAS-187, LAS-188)
 
+> **Live reference (2026-11-23):** `https://curv3d.duckdns.org` on the reserved
+> public IP `129.213.209.162`. The original `158.101.127.247.sslip.io` address
+> was ephemeral and cannot survive a rebuild; section 18.2 has the correction,
+> and section 18.3 has the rebuild drill evidence.
+
 This runbook creates the production host for Curved on Oracle Cloud Infrastructure
 (OCI) and leaves it running the production Compose stack from `deploy/`. Follow it
 top to bottom. Every console label is quoted as it appears in the OCI console.
@@ -14,14 +19,16 @@ export IP=203.0.113.10
 
 Prose uses `<domain>` and `<ip>` for those same two values. A new SSH session is
 a new shell, so export the variables again after logging in to the server. The
-reference deployment uses `DOMAIN=158.101.127.247.sslip.io` and
-`IP=158.101.127.247`; section 6 explains why.
+earlier reference deployment used `DOMAIN=158.101.127.247.sslip.io` and
+`IP=158.101.127.247`; that address was ephemeral. The current reference is
+`DOMAIN=curv3d.duckdns.org` and `IP=129.213.209.162`; section 6 explains the
+DNS choice and section 18.2 the correction.
 
 Before you start you need an OCI tenancy in its home region, an Ed25519 key
 pair, and `ssh`, `scp`, `curl`, `dig`, and `nc` on the operator workstation. A
 public hostname is required for the Let's Encrypt certificate: either a
-Cloudflare-managed domain as described in section 6, or the free `sslip.io`
-wildcard that the reference deployment uses.
+DNS-only domain as described in section 6, or a free dynamic-DNS name such as
+DuckDNS; the reference deployment uses DuckDNS.
 
 ## 1. Scope and ownership
 
@@ -2130,6 +2137,16 @@ hourly OnCalendar schedule and an executable keepalive script`.
 
 ### 18.2 Rebuild after reclamation
 
+**2026-11-23 correction.** The original reference instance's public address
+`158.101.127.247` was *ephemeral*, not reserved. OCI cannot convert an
+ephemeral public IP to a reserved one, and it cannot move it to another private
+IP; terminating the instance releases the address. The drill therefore created
+a reserved public IP (`129.213.209.162`), pointed the DuckDNS name
+`curv3d.duckdns.org` at it with a DNS-only A record, and retired the old
+`sslip.io` name. Reserve the public IP before the rebuild and never assume the
+live address is reserved. The old instance `curved` is stopped, not terminated,
+and its boot volume and original `curved-data` volume remain as rollback.
+
 If the instance is stopped for idleness, its boot disk, the reserved IPv4, and
 the block volume still exist (or the volume can be reattached). Treat the work
 as a restore, not a new deployment: the data volume carries the database and the
@@ -2143,9 +2160,13 @@ Console:
 2. Attach the existing 100 GB block volume to the new instance. Do not format
    it: its ext4 filesystem already holds `/srv/curved`. If the volume was lost,
    create a fresh 100 GB volume instead and continue to the host steps; the
-   data comes from the off-host dump.
+   data comes from the off-host dump. When restoring a volume from a backup,
+   wait for `is-hydrated: true` before mounting it; the volume can report
+   `AVAILABLE` while reads still return zeros.
 3. Reassign the reserved public IPv4 (section 4) to the new instance's private
-   IP, so the public name and the certificate keep working.
+   IP, so the public name and the certificate keep working. The bootstrap also
+   removes `rpcbind` when the image ships it, so 111/tcp and 111/udp stay
+   closed.
 
 Host, as `ubuntu` after SSH:
 
@@ -2212,12 +2233,29 @@ produced 12 samples of 53-56% total CPU, p95 55%, average 54.1% on the 2-vCPU
 shape. `verify-host` exited 0 with 27 PASS lines including `keepalive-timer`.
 The host-side half of the rebuild is rehearsed by `npm run smoke:provision`
 (fresh container bootstrap plus an idempotent reinstall) and by
-`npm run smoke:backup` plus a compose restore. The console reclamation step
-itself is operator-executed; fill in AC2-AC4 when it is performed.
+`npm run smoke:backup` plus a compose restore.
+
+The rebuild-after-reclamation drill ran on 2026-11-23 against a parallel fresh
+instance, because the original address was ephemeral. It created
+`curved-rebuild` (A1, 2 OCPU/12 GB, Ubuntu 24.04 aarch64, AD-1, 50 GB boot) and
+a fresh 100 GB `curved-data-rebuild`. An online FULL backup of `curved-data`
+(`unique-size-in-gbs` 3) was restored to `curved-restore-raw`, and the restored
+volume was not mounted until `is-hydrated` was true. The host copied
+`deploy/.env` and the newest nightly set off the restored volume, verified
+`SHA256SUMS`, and produced a current `pg_dump` (31 KB, 73 TOC entries). The
+bootstrap then formatted the fresh volume, installed the units, and restored
+with `deploy/restore.sh postgres`; the database came back with 2 projects and 8
+issues (`CRV-1` to `CRV-5`, `LIVE-1` to `LIVE-3`). The release
+`curved:d002ccd` passed `--require-public-probe` (`release: public probe ok`,
+`release: ok d002ccd`) and recorded
+`tag=curved:d002ccd sha=d002ccd at=2026-11-23T14:07:23Z`. `verify-host` printed
+27 PASS and 0 FAIL after `rpcbind` was removed from 111/tcp and 111/udp. The old
+`curved` instance is STOPPED, not terminated; its boot volume and original
+`curved-data` volume remain as rollback.
 
 | AC | Criterion | Evidence | Date |
 |---|---|---|---|
 | AC1 | The keepalive keeps the instance out of Oracle's idle classification. | 12 `/proc/stat` samples during a 62-second run: 53-56% total CPU, p95 55%, average 54.1%, against the 20% threshold; `curved-keepalive.timer` enabled and active, next elapse 19:00 UTC. | 2026-11-19 |
-| AC2 | A reclaimed instance is rebuilt from a fresh VM plus the newest off-host dump. | Section 18.2 transcript, ending in `verify-host: ok`. | TBD |
-| AC3 | The reserved public IPv4 and the deploy known-hosts are re-established. | OCI address reassignment plus `gh secret set DEPLOY_KNOWN_HOSTS` and a successful deploy run. | TBD |
-| AC4 | Reclamation is treated as a restore. | Volume attached unformatted (or `restore.sh postgres` from the dump), never `down -v`, then sign-in, SSE, and webhook checks. | TBD |
+| AC2 | A reclaimed instance is rebuilt from a fresh VM plus the newest off-host dump. | Fresh `curved-rebuild` A1 plus fresh 100 GB `curved-data-rebuild`; online FULL backup of `curved-data` restored to `curved-restore-raw` (`is-hydrated: true`); `deploy/.env` and nightly `20261123T032302Z` copied off-host with `SHA256SUMS` verified; current `pg_dump` (31 KB, 73 TOC entries) restored with `restore.sh postgres`; 2 projects and 8 issues served; `verify-host: ok` (27 PASS, 0 FAIL). | 2026-11-23 |
+| AC3 | The reserved public IPv4 and the deploy known-hosts are re-established. | Reserved public IP `129.213.209.162` assigned; DuckDNS A record `curv3d.duckdns.org`; `ssh-keyscan` refreshed `DEPLOY_KNOWN_HOSTS`, `DEPLOY_HOST=129.213.209.162`, and `DEPLOY_SSH_KEY` was rotated to a new Ed25519 key; manual dispatch run 45191364607 passed Verify (59s) and Deploy (12s, Release step success). | 2026-11-23 |
+| AC4 | Reclamation is treated as a restore. | No `down -v`; fresh volume plus dump restore; UI sign-in at `https://curv3d.duckdns.org` reached `/p/CRV` with 5 issues; SSE `ready` and `issues_changed` (`data: 2`) after a comment; signed webhook ping 200 and unsigned 401; GitHub hook 715784553 ping delivered 200 and old hook 714067501 deleted. | 2026-11-23 |

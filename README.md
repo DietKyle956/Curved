@@ -284,15 +284,16 @@ the release probe and the compose gate both check that toggle. Caddy compresses
 responses with zstd or gzip except on `/api/events`, which is proxied with
 `flush_interval -1` so SSE frames reach the browser immediately.
 
-The live host runs this way at `https://158.101.127.247.sslip.io`. The name comes
-from sslip.io wildcard DNS, which resolves `158.101.127.247.sslip.io` to the
-reserved IPv4 `158.101.127.247`; the record is DNS only, so the ACME HTTP and
-TLS-ALPN challenges reach Caddy directly. Its certificate is issued by Let's
-Encrypt for `158.101.127.247.sslip.io` (issuer `YE2`, valid to Feb 17 2027), and
-the container sees `ACME_EMAIL=admin@sslip.io`, `CURVED_DOMAIN` set to that
-hostname, and `CURVED_HSTS_MAX_AGE=31536000`. Through the public edge the SPA and
-JS assets, the authenticated API, and the SSE stream answer over verified TLS,
-and the API's unauthenticated `GET /api/projects` stays a 401.
+The live host runs this way at `https://curv3d.duckdns.org`. The name is a
+DNS-only DuckDNS A record for the reserved IPv4 `129.213.209.162`, so the ACME
+HTTP and TLS-ALPN challenges reach Caddy directly. Its certificate is issued by
+Let's Encrypt for `curv3d.duckdns.org` (issuer `YE2`, valid to Feb 21 2027), and
+the container sees `ACME_EMAIL=admin@sslip.io`,
+`CURVED_DOMAIN=curv3d.duckdns.org`, and `CURVED_HSTS_MAX_AGE=31536000`. Through
+the public edge the SPA and JS assets, the authenticated API, and the SSE stream
+answer over verified TLS, and the API's unauthenticated `GET /api/projects`
+stays a 401. The original `158.101.127.247.sslip.io` address was an ephemeral
+IP and is retired; the old instance is stopped as rollback.
 
 Operations:
 
@@ -339,13 +340,13 @@ VCN to the acceptance evidence. The summary:
 
 One Always Free `VM.Standard.A1.Flex` instance with 2 OCPU and 12 GB of memory
 runs Ubuntu 24.04 aarch64 in the tenancy's home region. It has a 50 GB boot
-volume, a 100 GB block volume, and one reserved public IPv4. The live name comes
-from sslip.io wildcard DNS; with your own domain, use a DNS-only (never proxied)
-`A` record so the origin stays directly reachable. The host serves the public
-HTTPS stack: Caddy obtains a Let's Encrypt
-certificate for `158.101.127.247.sslip.io` through ACME, redirects HTTP to HTTPS,
-sends HSTS for a year, compresses responses outside the SSE route, and flushes
-`/api/events` without buffering. The sslip.io wildcard name resolves straight to
+volume, a 100 GB block volume, and one reserved public IPv4. The live name is a
+DNS-only DuckDNS A record for that reserved IP (`curv3d.duckdns.org`); with your
+own domain, use a DNS-only (never proxied) `A` record so the origin stays
+directly reachable. The host serves the public HTTPS stack: Caddy obtains a
+Let's Encrypt certificate for `curv3d.duckdns.org` through ACME, redirects HTTP
+to HTTPS, sends HSTS for a year, compresses responses outside the SSE route, and
+flushes `/api/events` without buffering. The DuckDNS record resolves straight to
 the reserved IPv4, so the ACME challenge reaches port 80 on the host.
 
 The network boundary is four ingress rules and nothing else:
@@ -847,7 +848,7 @@ by `GITHUB_WEBHOOK_SECRET`. The raw body is read and checked before anything is
 parsed, and it is rejected above 1 MiB.
 
 The live repository hook posts to
-`https://158.101.127.247.sslip.io/webhooks/github` (hook id 714067501, event
+`https://curv3d.duckdns.org/webhooks/github` (hook id 715784553, event
 `pull_request`, content type `application/json`). Configure it with
 `deploy/webhook.sh`: it derives the repository from `origin`, reads
 `GITHUB_WEBHOOK_SECRET` and `CURVED_DOMAIN` from `deploy/.env`, and either

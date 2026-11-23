@@ -1,14 +1,16 @@
 # MEMORY.md
 
-- **Last updated:** 2026-11-20
+- **Last updated:** 2026-11-23
 - **Project:** curved
 - **Phase:** product and infrastructure implemented through `LAS-188` (free-tier
   keepalive and rebuild runbook), the project entity is live (migration `0007`:
   summary, description, six-value status, nullable priority and dates, archive,
   and per-status progress across the CLI, HTTP API, and SPA), and passkey login
   is live (migration `0006`, opaque server-side sessions, passkey routes, and
-  the sign-in and management UI). `LAS-188` is still In Review with the console
-  rebuild drill left to the operator. Next unbuilt work is `LAS-189` (agent
+  the sign-in and management UI). `LAS-188` is Done: the rebuild drill ran on
+  2026-11-23 on a fresh instance, restored from a dump, and cut over to the
+  reserved `129.213.209.162` behind `https://curv3d.duckdns.org`; the old
+  sslip instance is stopped as rollback. Next unbuilt work is `LAS-189` (agent
   tunnel and deployed-commit parity), then `LAS-190`; `LAS-177` (template audit)
   is independent.
 
@@ -207,10 +209,10 @@ git history and the Linear comments.
   the same probe policy, updates state, and warns that a non-backward-compatible
   migration requires a database restore instead of an image rollback. The
   release path never runs `down` or `down -v`.
-- Public edge (`LAS-186`): the live host serves
-  `https://158.101.127.247.sslip.io` from sslip.io wildcard DNS with a Let's
-  Encrypt certificate (issuer `YE2`, subject the same name, valid to
-  2027-02-17), `CURVED_DOMAIN=158.101.127.247.sslip.io`,
+- Public edge: the live host serves `https://curv3d.duckdns.org` from a
+  DNS-only DuckDNS A record at the reserved public IP `129.213.209.162`, with a
+  Let's Encrypt certificate (issuer `YE2`, subject `CN=curv3d.duckdns.org`,
+  valid to 2027-02-21), `CURVED_DOMAIN=curv3d.duckdns.org`,
   `ACME_EMAIL=admin@sslip.io`, `CURVED_HSTS_MAX_AGE=31536000`, and
   `COOKIE_SECURE=1`. Caddy redirects port 80 with `308`, sends
   `Strict-Transport-Security: max-age=31536000`, compresses with zstd/gzip
@@ -219,19 +221,16 @@ git history and the Linear comments.
   `acme-v02.api.letsencrypt.org-directory` over tls-alpn-01. The public edge
   serves the SPA, authenticated API, and SSE (`ready`, then `issues_changed`)
   over verified TLS; the unauthenticated `/api/projects` stays 401.
-  `verify-host` exited 0 with 22 PASS lines at LAS-186 (27 after LAS-188),
-  adding `tls-certificate`,
+  `verify-host` exits 0 with 27 PASS lines, including `tls-certificate`,
   `http-redirect`, `hsts`, `compression`, and `caddy-issuance`. The release
-  probe requires HSTS under ACME and matches `CURVED_HSTS_MAX_AGE`; deploy run
-  44551897724 logged `release: public probe ok` and `release: ok c711540`, and
-  the documentation release, run 44553776782, logged the same probe and
-  `release: ok 8d74a62`.
-  `deploy/webhook.sh` created hook `714067501` (`pull_request`, JSON) at the
-  public URL; live PRs #1 and #2 moved `LIVE-1`/`LIVE-3` to In Review on open
-  and reopen and Done on merge, all as `actorType git` with
-  `pull request #<n> <action>` bodies; a GitHub redelivery, a replayed signed
-  delivery, an unknown key, and non-PR `issues`/`push` deliveries all answered
-  `200 {"ok":true,"ignored":true}` with state unchanged.
+  probe requires HSTS under ACME and matches `CURVED_HSTS_MAX_AGE`; LAS-188's
+  manual dispatch run 45191364607 passed Verify and Deploy, and the live
+  release printed `release: public probe ok` and `release: ok d002ccd`.
+  LAS-186's original `158.101.127.247.sslip.io` address was an ephemeral public
+  IP, not reserved; it is retired. The live webhook is `715784553` at
+  `https://curv3d.duckdns.org/webhooks/github` (old `714067501` deleted); a
+  signed ping returns 200, the unsigned request 401, and the GitHub ping
+  delivery returned 200.
 - Backups (`LAS-187`): `deploy/backup.sh` writes private sets under
   `/srv/curved/backups` (mode 0700, files 0600) at
   `<kind>/<UTC 20261119T031700Z>/` with `postgres.dump` (`pg_dump -Fc -Z 9
@@ -311,17 +310,20 @@ git history and the Linear comments.
   `docker-mount-dependency`, and `docker-prune-timer`, and
   `provision-smoke` proves the migration, config, mount gate, timer, container
   recreation, rerun idempotency, and two verifier negatives.
-- Live host: OCI instance `curved`, public `158.101.127.247`, us-ashburn-1,
-  AD-1, Ubuntu 24.04.5 aarch64, 2 OCPU / 11 GB, 50 GB boot plus 100 GB data,
-  root compartment, private IP `10.0.0.165/24`. Access is the OCI key
-  `ssh-key-2026-11-18 (3).key` in `~/Downloads` as `ubuntu`; bootstrap installed
-  it for `deploy`. On 2026-11-18 bootstrap, `verify-host: ok`, reboot, and
-  `verify-host: ok` again passed; 5432 and 4747 are filtered externally. On
-  2026-11-19 the host switched to public HTTPS at
-  `https://158.101.127.247.sslip.io` (Let's Encrypt, HSTS), and `verify-host`
-  exits 0 with 27 PASS lines including the edge, backup, and keepalive checks;
-  the SPA and authenticated API answer over the public name and unauthenticated
-  `/api/projects` is 401.
+- Live host: OCI instance `curved-rebuild`, reserved public `129.213.209.162`,
+  us-ashburn-1, AD-1, Ubuntu 24.04 aarch64, 2 OCPU / 12 GB, 50 GB boot plus a
+  fresh 100 GB `curved-data-rebuild` data volume, root compartment, private IP
+  `10.0.0.23/24`. Access is the operator's OCI CLI profile `~/.oci/config`
+  (`~/bin/oci`) and the `ubuntu` key injected at launch (`~/.ssh/id_ed25519`,
+  comment `timeledger-deploy`); bootstrap installed the same key for `deploy`.
+  Deploy secrets target the new host: `DEPLOY_HOST=129.213.209.162`, fresh
+  `DEPLOY_KNOWN_HOSTS`, and a rotated `DEPLOY_SSH_KEY`. The original `curved`
+  instance is STOPPED with its boot volume and original `curved-data` volume
+  kept as rollback; its ephemeral `158.101.127.247` address and `sslip.io` URL
+  are retired. `verify-host` exits 0 with 27 PASS lines including the edge,
+  backup, and keepalive checks; the SPA, authenticated API, SSE, and webhook
+  answer over `https://curv3d.duckdns.org` and unauthenticated `/api/projects`
+  is 401.
 - CI: `.github/workflows/verify.yml`, one global concurrency group `verify` with
   `cancel-in-progress: false`, a Postgres 18 service on 55432, then `npm ci`,
   `typecheck`, `check:arch`, `test`, and `build:web`. The `deploy` job declares
@@ -524,9 +526,11 @@ git history and the Linear comments.
 - `keepalive-timer` checks the units and the enabled/active timer, not a recent
   run; the first trigger lands at the next top of the hour. A run that exits
   non-zero is only visible in `journalctl -u curved-keepalive.service`.
-- The rebuild runbook's fresh-instance console step is not exercised live from
-  this repository: the smoke gate stubs the host and the OCI console steps are
-  operator-executed.
+- The LAS-188 drill exercised the fresh-instance rebuild live on 2026-11-23
+  (see the session log and `deploy/provisioning.md` 18.3). The smoke gate still
+  stubs the host, and future OCI console steps remain operator-executed; the
+  original live address was ephemeral, so the drill corrected the runbook to
+  use a reserved IP and the DuckDNS name.
 - Palette traits recorded, not changed: the active palette status label is about
   3.5:1 contrast, the muted pill about 4.04:1, and the mobile toast overlays the
   comment composer for its 5 second lifetime.
@@ -566,9 +570,11 @@ git history and the Linear comments.
 - The backup timer and the release script can overlap on the `flock`; a timer
   run that loses the lock fails that run but retries the next day, so the
   operator sees it in `journalctl -u curved-backup.service`.
-- The public name depends on sslip.io wildcard DNS, a shared third-party
-  service; if it stops resolving or is blocked by a resolver, ACME renewal and
-  webhook delivery fail. An owned DNS-only name removes that dependency.
+- The public name is DuckDNS `curv3d.duckdns.org`, a DNS-only A record at the
+  reserved IP; DuckDNS is still a shared third-party service, so if it stops
+  resolving or is blocked by a resolver, ACME renewal and webhook delivery
+  fail. An owned DNS-only name removes that dependency. The old
+  `158.101.127.247.sslip.io` name is retired.
 - Let's Encrypt rate limits apply per registered domain, so repeated failed
   issuances can pause new certificates. HSTS is a one-year pin: after a TLS
   break a browser refuses the site until the edge serves `max-age=0` over a
@@ -599,12 +605,12 @@ git history and the Linear comments.
   volume enumerated as `/dev/sda` and the 50 GB boot volume as `/dev/sdb`. The
   fstab UUID mount and the mount-based verifier handle it; never reuse the
   bootstrap `/dev/sdb` path after a reboot.
-- The fresh OCI Ubuntu image ran `rpcbind` on 111/tcp and 111/udp and shipped an
-  iptables INPUT that only allowed 22, so 80/443 timed out even with the
-  security list correct. Both were fixed on the live host: rpcbind disabled and
-  masked, and 80/tcp, 443/tcp, 443/udp ACCEPT rules persisted with
-  `netfilter-persistent`. Bootstrap does not manage either; `deploy/provisioning.md`
-  section 15 documents the checks and commands.
+- The fresh OCI Ubuntu image can run `rpcbind` on 111/tcp and 111/udp and can
+  ship an iptables INPUT that only allows 22, so 80/443 time out even with the
+  security list correct. Bootstrap now removes `rpcbind` when the image
+  provides it; the iptables ACCEPT rules remain a manual step, documented with
+  the checks in `deploy/provisioning.md` section 15. The LAS-188 host verified
+  27 PASS after the rpcbind removal.
 - The `/var/lib/docker` migration is a `cp -a` copy, so it needs free space for
   a second copy on the data volume and leaves the old tree on the 50 GB boot
   volume until an operator removes it after `verify-host` passes.
@@ -619,15 +625,15 @@ git history and the Linear comments.
 
 ## Next best step
 
-`LAS-188` (keepalive and rebuild runbook) is implemented, live-installed, and
-proven for the keepalive: `verify-host` prints 27 PASS, `smoke:provision` 52
-PASS, and the live CPU sample read a p95 of 55%. Its console rebuild step
-remains operator-executed. The next unbuilt child is `LAS-189` (agent tunnel
-and deployed-commit parity), then `LAS-190` (first-run seed and public product
-acceptance). `LAS-177` (template audit) is independent. The host serves
-`https://158.101.127.247.sslip.io` with a
-Let's Encrypt certificate, HSTS, the HTTP redirect, compressed responses,
-unbuffered SSE, and the configured GitHub `pull_request` webhook. A push to
+`LAS-188` (keepalive and rebuild runbook) is Done. The drill completed on
+2026-11-23 on a fresh `curved-rebuild` instance with a fresh data volume and a
+restored dump; `verify-host` prints 27 PASS/0 FAIL, and the app serves
+`https://curv3d.duckdns.org` from reserved `129.213.209.162` with HSTS, the
+HTTP redirect, compressed responses, unbuffered SSE, and the GitHub
+`pull_request` webhook. The original `curved` instance is stopped as rollback.
+The next unbuilt child is `LAS-189` (agent tunnel and deployed-commit parity),
+then `LAS-190` (first-run seed and public product acceptance). `LAS-177`
+(template audit) is independent. A push to
 `main` runs `verify`, then the main-only `deploy` job, which resets
 `/srv/curved/checkout` and runs `./deploy/release.sh`; the release now takes a
 pre-deploy backup before the build and migration, and the public probe requires
@@ -646,11 +652,10 @@ Docker data root at `/srv/curved/docker`, and backups at
 - Spec `LAS-140` is still Todo (High) in Linear although its 15 sub-issues
   `LAS-141` through `LAS-155` are Done.
 - Refactor `LAS-167` with `LAS-168` through `LAS-176`, all Done.
-- Infra and deploy: `LAS-179` through `LAS-187` Done (184 and 187 closed on
-  2026-11-19); parent `LAS-178` is Backlog. `LAS-188` is In Review: the
-  keepalive is live and proven, and the console rebuild drill is the remaining
-  operator step. `LAS-189` and `190` are Todo. `LAS-177` (template audit) is
-  Todo (Medium).
+- Infra and deploy: `LAS-179` through `LAS-188` Done; parent `LAS-178` is
+  Backlog. The live endpoint is `https://curv3d.duckdns.org` on reserved
+  `129.213.209.162`; the old `curved` instance is stopped as rollback.
+  `LAS-189` and `190` are Todo. `LAS-177` (template audit) is Todo (Medium).
 
 ## Session log
 
@@ -704,3 +709,4 @@ on 2026-11-18, and 037 to 039 on 2026-11-19.
 | 041 | Passkey login | Migration `0006` adds `passkey_credentials`, `auth_sessions`, and `webauthn_challenges`; sessions are opaque rows keyed by the SHA-256 of a 32-character base64url nonce in `curved_session` (30-day expiry, token and passkey logins, `DELETE /api/session` deletes the row), replacing the deterministic `sha256(UI_TOKEN)` cookie. `@simplewebauthn/server` 14.1 and `@simplewebauthn/browser` 14.0 back `GET /api/passkeys/available`, `GET`/`POST /api/passkeys`, `POST /api/passkeys/options`, `DELETE /api/passkeys/:id`, and unauthenticated `POST /api/session/passkey/options`/`POST /api/session/passkey`, with human routes accepting the bearer or the cookie. `CURVED_WEBAUTHN_ORIGINS` and `CURVED_WEBAUTHN_RP_ID` override defaults derived from `CURVED_DOMAIN`, which compose now passes. The SPA leads sign-in with a passkey button and manages passkeys from the topbar, sidebar, and palette. The UI-token field opts out of credential-manager autofill (`name="ui-token"`, `autoComplete="off"`, no autocapitalize/correct), so a saved password cannot overwrite a pasted token. Gates: 205 tests (199 behavior, 6 architecture), `architecture: ok (81 files)`, acceptance 145 checks with the two browser passkey lines, and compose smoke green. |
 | 042 | UI token recovery | `.github/workflows/rotate-ui-token.yml` (manual `workflow_dispatch`, concurrency `rotate-ui-token`, contents read only) validates `DEPLOY_SSH_KEY`, `DEPLOY_KNOWN_HOSTS`, `DEPLOY_HOST`, and `CURVED_UI_TOKEN`, writes the key and known_hosts under `$RUNNER_TEMP` mode 600, and pipes the token over stdin, never argv and never a log line. On the host it atomically rewrites the mode-600 `CURVED_UI_TOKEN` line in `/srv/curved/checkout/deploy/.env`, restoring the backup and re-running the release if `./deploy/release.sh` fails, then runs the release and proves `POST https://$CURVED_DOMAIN/api/session` with the new token returns 200 (`login probe ok`). Operator path: `gh secret set CURVED_UI_TOKEN < value`, then `gh workflow run rotate-ui-token.yml`; only the GitHub deploy key can reach the host, so local `ssh deploy@...` is denied. The token is also saved at `~/.curved-ui-token` (mode 600, outside the repo). Verified run 44747923125: `release: public probe ok`, `release: ok 2d1588c`, `login probe ok`; a scan of the full log for the token value returned 0 matches. |
 | 043 | Project entity | Migration `0007_project_details.sql` gives `projects` a trimmed `summary` (<=255), `description` (<=20000), a six-value `status` (`backlog`/`planned`/`in_progress`/`paused`/`completed`/`canceled`, default `planned`), nullable 1..4 `priority`, `start_date`, `target_date`, `archived_at`, and `updated_at`, with a `planned`/`in_progress` backfill and four check constraints; no delete, archive is terminal, and project changes write only `updated_at`. Domain `PROJECT_STATUSES`/`ProjectStatus`/`DEFAULT_PROJECT_STATUS`/`isProjectStatus`, project types with `emptyProgress`, and project validators (summary trims, strict calendar `YYYY-MM-DD` dates); `ProjectRepository` adds `list({includeArchived})`, `findWithProgressByKey`, and a single-statement tri-state `update` with one lateral progress block; `createProject`/`listProjects`/`getProject`/`updateProject` are SQL-free and human-only for edits. HTTP `GET`/`POST /api/projects` and `GET`/`PATCH /api/projects/:key` (`includeArchived`, immutable key, nullable priority and dates, `archived` boolean; issue `PATCH` rejects `project`). CLI `project add|list|show|edit|archive|restore` with `--json` progress and `none` clears. The SPA adds the projects and `/p/<KEY>/overview` routes, `ProjectsPage`, `ProjectOverview`, `ProjectDialog`, `ProjectStatusChip`, five-cell mobile nav at 390 px, palette actions, and project navigation from issue detail, with realtime subscribing to all projects. The second-tab direct load exposed a deep-link race: project resolution could clear the timeline after the issue fetch, so the timeline effect now depends on `projectKeyFromRoute` and refetches. Gates: 223 tests (217 behavior, 6 architecture), `architecture: ok (84 files)`, acceptance 194 checks (five consecutive green runs after the race fix). |
+| 044 | `LAS-188` completion | The live `158.101.127.247` was found to be an ephemeral public IP, not reserved, so the drill moved to reserved `129.213.209.162` and `https://curv3d.duckdns.org` (DNS-only DuckDNS A record). A fresh `curved-rebuild` A1 (2 OCPU/12 GB, AD-1, 50 GB boot) got a fresh 100 GB `curved-data-rebuild`; an online FULL backup of `curved-data` restored to `curved-restore-raw` (`is-hydrated: true`), `deploy/.env` and nightly `20261123T032302Z` were copied off-host with `SHA256SUMS` verified, and a current `pg_dump` (31 KB, 73 TOC entries) restored 2 projects/8 issues. `release.sh --require-public-probe` printed `release: public probe ok` and `release: ok d002ccd`; `verify-host` 27 PASS/0 FAIL after bootstrap now removes rpcbind 111/tcp+udp; UI sign-in reached `/p/CRV`, SSE `issues_changed` arrived, signed webhook ping returned 200 and unsigned 401; GitHub hook 715784553 replaced 714067501. Deploy secrets rotated (`DEPLOY_HOST`, `DEPLOY_KNOWN_HOSTS`, `DEPLOY_SSH_KEY`); manual dispatch run 45191364607 passed Verify and Deploy. Old `curved` instance stopped with boot and `curved-data` volumes kept. |

@@ -271,6 +271,15 @@ require_command sshd openssh-server
 
 pass "packages (docker, compose, base tools)"
 
+# Ubuntu's cloud image can ship rpcbind for NFS and expose 111/tcp and 111/udp
+# publicly. The stack never uses NFS and verify-host rejects those listeners,
+# so remove the package when the image provides it.
+if command -v rpcbind >/dev/null 2>&1; then
+  systemctl disable --now rpcbind.socket rpcbind.service >/dev/null 2>&1 || true
+  apt-get purge -y rpcbind >/dev/null 2>&1 || true
+fi
+pass "rpcbind (absent or removed)"
+
 size_min=$((90 * 1024 * 1024 * 1024))
 size_max=$((110 * 1024 * 1024 * 1024))
 

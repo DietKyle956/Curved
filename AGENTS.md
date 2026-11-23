@@ -509,7 +509,8 @@ LAS-186 is live: the public HTTPS edge. The host serves
 `https://158.101.127.247.sslip.io` with a Let's Encrypt certificate (issuer
 `YE2`, subject `CN=158.101.127.247.sslip.io`, valid to Feb 17 2027), with
 `CURVED_DOMAIN=158.101.127.247.sslip.io`. The name is sslip.io wildcard DNS,
-which resolves to the reserved IPv4 `158.101.127.247`; the record is DNS-only,
+which resolves to `158.101.127.247` (later found to be ephemeral; see LAS-188);
+the record is DNS-only,
 so the ACME challenge reaches the host directly. `deploy/.env` carries
 `ACME_EMAIL=admin@sslip.io`, `CURVED_HSTS_MAX_AGE=31536000`, and
 `COOKIE_SECURE=1`: Caddy obtained the certificate over ACME (the log records
@@ -531,7 +532,9 @@ requires HSTS under ACME, and deploy run 44551897724 logged
 `deploy/webhook.sh` creates or updates the repository `pull_request` hook
 (id 714067501, `config.content_type: json`) at
 `https://158.101.127.247.sslip.io/webhooks/github`, always PATCHing an existing
-hook with the same URL so the secret is reapplied. The live pull request flow:
+hook with the same URL so the secret is reapplied. LAS-188 moved the live hook
+to id 715784553 at `https://curv3d.duckdns.org/webhooks/github` and deleted the
+old hook. The live pull request flow:
 PR #1 (`LIVE-1`) opened -> issue `in_review` with an `actorType git` event body
 `pull request #1 opened`, merge -> `done` with `pull request #1 closed`; PR #2
 (`LIVE-3`) open -> `in_review`, close unmerged -> ignored with the status left at
@@ -602,7 +605,27 @@ reinstalls the units and user, then `release.sh` and 27 PASS. Live on
 2026-11-19: bootstrap `--no-stack` installed the units, `verify-host` exited 0
 with 27 PASS and 0 FAIL, and 12 `/proc/stat` samples during a 62 second run
 read 53-56% total CPU, p95 55%, average 54.1%; the timer's next elapse was
-19:00 UTC. The console reclamation step itself remains operator-executed.
+19:00 UTC.
+
+The rebuild drill completed on 2026-11-23. The live instance's original
+`158.101.127.247` was an ephemeral public IP, not reserved, so OCI could not
+convert or move it. A reserved public IP (`129.213.209.162`) now backs
+`https://curv3d.duckdns.org` through a DNS-only DuckDNS A record, and the old
+`sslip.io` name is retired. The drill created a fresh `curved-rebuild` A1
+(2 OCPU/12 GB, Ubuntu 24.04 aarch64, AD-1), took an online FULL backup of
+`curved-data`, restored it to `curved-restore-raw` (`is-hydrated: true`), copied
+`deploy/.env` and the newest nightly set off-host, and restored a current
+`pg_dump` into a fresh 100 GB `curved-data-rebuild`; the database returned 2
+projects and 8 issues. `release.sh --require-public-probe` printed
+`release: public probe ok` and `release: ok d002ccd`, `verify-host` printed 27
+PASS and 0 FAIL (bootstrap now removes `rpcbind` from 111/tcp and 111/udp), a
+public UI sign-in reached `/p/CRV`, SSE delivered `issues_changed`, and a signed
+webhook ping returned 200. The deploy secrets were rotated
+(`DEPLOY_HOST=129.213.209.162`, fresh `DEPLOY_KNOWN_HOSTS`, new
+`DEPLOY_SSH_KEY`), manual dispatch run 45191364607 passed Verify and Deploy, and
+the GitHub hook moved to `715784553` at the new URL. The old `curved` instance
+is stopped, with its boot volume and original `curved-data` volume kept as
+rollback.
 
 The project entity is live: migration `0007_project_details.sql` gives `projects`
 a trimmed `summary` of at most 255 characters, a `description` of at most
