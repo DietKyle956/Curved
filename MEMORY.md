@@ -2,8 +2,9 @@
 
 - **Last updated:** 2026-11-23
 - **Project:** curved
-- **Phase:** product and infrastructure implemented through `LAS-189` (agent
-  tunnel and deployed-commit parity, on top of the `LAS-188` free-tier keepalive
+- **Phase:** product and infrastructure implemented through `LAS-190` (first-run
+  seed and public product acceptance, on top of the `LAS-189` agent tunnel and
+  deployed-commit parity, the `LAS-188` free-tier keepalive
   and rebuild runbook), the project entity is live (migration `0007`:
   summary, description, six-value status, nullable priority and dates, archive,
   and per-status progress across the CLI, HTTP API, and SPA), and passkey login
@@ -13,9 +14,12 @@
   reserved `129.213.209.162` behind `https://curv3d.duckdns.org`; the old
   sslip instance is stopped as rollback. `LAS-189` is Done: the agent tunnel
   and deployed-commit parity are live (`deploy/agent-tunnel.sh`,
-  `deploy/agent-preflight.sh`, and the 16-check `npm run smoke:agent`). Next
-  unbuilt work is `LAS-190` (first-run seed and public product acceptance);
-  `LAS-177` (template audit) is independent.
+  `deploy/agent-preflight.sh`, and the 16-check `npm run smoke:agent`).
+  `LAS-190` is Done: the empty UI-token refusal is covered at the real
+  entrypoint, first-run setup created a project through the SPA against a
+  throwaway database on the deployed Postgres, and a 390x844 public HTTPS run
+  passed 77 checks across the full human surface and human plus agent SSE.
+  Next unbuilt work is `LAS-177` (template audit).
 
 ## Current verified state
 
@@ -37,14 +41,15 @@ git history and the Linear comments.
   `npm run smoke:agent`, and
   `.github/workflows/verify.yml` on every push to `main` and manual dispatch,
   where the main-only `deploy` job runs after `verify`.
-- Baseline: 223 tests pass (217 behavior, 6 architecture),
+- Baseline: 224 tests pass (218 behavior, 6 architecture),
   `architecture: ok (84 files)`, web build green; `npm run acceptance` passes
   (194 checks, including the project CLI show/edit/archive/restore and HTTP
   detail/`PATCH`/archive legs plus the browser passkey registration and
   passkey sign-in lines), `npm run smoke:release` 22 assertions,
   `npm run smoke:backup` 19, `npm run smoke:provision` 52,
   `npm run smoke:webhook` 9, and `npm run smoke:compose` includes the real
-  backup, Postgres drill, and Caddy restore legs.
+  backup, Postgres drill, and Caddy restore legs. Public product acceptance on
+  the deployed stack passed 77 checks on 2026-11-23 (section 20).
 - Layout: `src/domain/` pure rules and types; `src/application/` ports plus
   SQL-free use cases; `src/adapters/` inbound (`http`, `mcp`, `cli`, `github`,
   `sse`, `static`) and outbound (`postgres`, `token-codec`, `timing-safe`);
@@ -645,7 +650,20 @@ git history and the Linear comments.
 
 ## Next best step
 
-`LAS-189` (agent tunnel and deployed-commit parity) is Done. The live proof on
+`LAS-190` (first-run seed and public product acceptance) is Done. On
+2026-11-23 at deployed `57ced3d`, the image refused to start with an empty
+`CURVED_UI_TOKEN` (`exit=1`, stderr naming the variable), and
+`test/server-entry.test.ts` now pins that real entrypoint. First-run setup
+created `FIRST` through the SPA against `curved_las190_firstrun` on the
+deployed Postgres (the project row read back with 0 issues; the throwaway
+database, container, and forward were removed). The 390x844 public HTTPS run
+at `https://curv3d.duckdns.org` passed 77 checks: sign-in, session persistence
+across navigation, board blocked badge and label chips, ready queue stats and
+rows, detail timeline and comment, labels, relation on both API sides, human
+unblock dropping the queue blocked count to 0, palette, and human plus agent
+SSE without a reload. Proof project `LAS190` was released and archived, leaving
+its issues and timeline as evidence; `deploy/provisioning.md` section 20 is the
+runbook. Prior, `LAS-189` (agent tunnel and deployed-commit parity) is Done. The live proof on
 2026-11-23 against `https://curv3d.duckdns.org` (`129.213.209.162`) found local
 `HEAD` and `/srv/curved/release-state` both at `de5c863`, ran
 `deploy/agent-preflight.sh --require-tunnel` green, and kept `55432` as the
@@ -659,9 +677,8 @@ exercised; `list_ready` omitted the blocked issue; `claim_next` claimed
 naming `PRFTEINIO-1`, which proves the global claim fence. A human moved
 `PRFTEINIO-1` to `done`, the formerly blocked `PRFTEINIO-2` became ready and was
 claimed, and `mark_blocked` returned it to `todo` with a reason. Both projects
-were archived and the relation unblocked; the issues remain as evidence. The
-next unbuilt child is `LAS-190` (first-run seed and public product acceptance).
-`LAS-177` (template audit) is independent. A push to
+were archived and the relation unblocked; the issues remain as evidence.
+`LAS-177` (template audit) is the next unbuilt work. A push to
 `main` runs `verify`, then the main-only `deploy` job, which resets
 `/srv/curved/checkout` and runs `./deploy/release.sh`; the release now takes a
 pre-deploy backup before the build and migration, and the public probe requires
@@ -682,11 +699,12 @@ script.
 - Spec `LAS-140` is still Todo (High) in Linear although its 15 sub-issues
   `LAS-141` through `LAS-155` are Done.
 - Refactor `LAS-167` with `LAS-168` through `LAS-176`, all Done.
-- Infra and deploy: `LAS-179` through `LAS-189` Done; parent `LAS-178` is
+- Infra and deploy: `LAS-179` through `LAS-190` Done; parent `LAS-178` is
   Backlog. The live endpoint is `https://curv3d.duckdns.org` on reserved
   `129.213.209.162`; the old `curved` instance is stopped as rollback.
-  `LAS-189` (agent tunnel and deployed-commit parity) is Done; `LAS-190` is
-  Todo. `LAS-177` (template audit) is Todo (Medium).
+  `LAS-189` (agent tunnel and deployed-commit parity) and `LAS-190` (first-run
+  seed and public product acceptance) are Done. `LAS-177` (template audit) is
+  Todo (Medium).
 
 ## Session log
 
@@ -742,3 +760,4 @@ on 2026-11-18, and 037 to 039 on 2026-11-19.
 | 043 | Project entity | Migration `0007_project_details.sql` gives `projects` a trimmed `summary` (<=255), `description` (<=20000), a six-value `status` (`backlog`/`planned`/`in_progress`/`paused`/`completed`/`canceled`, default `planned`), nullable 1..4 `priority`, `start_date`, `target_date`, `archived_at`, and `updated_at`, with a `planned`/`in_progress` backfill and four check constraints; no delete, archive is terminal, and project changes write only `updated_at`. Domain `PROJECT_STATUSES`/`ProjectStatus`/`DEFAULT_PROJECT_STATUS`/`isProjectStatus`, project types with `emptyProgress`, and project validators (summary trims, strict calendar `YYYY-MM-DD` dates); `ProjectRepository` adds `list({includeArchived})`, `findWithProgressByKey`, and a single-statement tri-state `update` with one lateral progress block; `createProject`/`listProjects`/`getProject`/`updateProject` are SQL-free and human-only for edits. HTTP `GET`/`POST /api/projects` and `GET`/`PATCH /api/projects/:key` (`includeArchived`, immutable key, nullable priority and dates, `archived` boolean; issue `PATCH` rejects `project`). CLI `project add|list|show|edit|archive|restore` with `--json` progress and `none` clears. The SPA adds the projects and `/p/<KEY>/overview` routes, `ProjectsPage`, `ProjectOverview`, `ProjectDialog`, `ProjectStatusChip`, five-cell mobile nav at 390 px, palette actions, and project navigation from issue detail, with realtime subscribing to all projects. The second-tab direct load exposed a deep-link race: project resolution could clear the timeline after the issue fetch, so the timeline effect now depends on `projectKeyFromRoute` and refetches. Gates: 223 tests (217 behavior, 6 architecture), `architecture: ok (84 files)`, acceptance 194 checks (five consecutive green runs after the race fix). |
 | 044 | `LAS-188` completion | The live `158.101.127.247` was found to be an ephemeral public IP, not reserved, so the drill moved to reserved `129.213.209.162` and `https://curv3d.duckdns.org` (DNS-only DuckDNS A record). A fresh `curved-rebuild` A1 (2 OCPU/12 GB, AD-1, 50 GB boot) got a fresh 100 GB `curved-data-rebuild`; an online FULL backup of `curved-data` restored to `curved-restore-raw` (`is-hydrated: true`), `deploy/.env` and nightly `20261123T032302Z` were copied off-host with `SHA256SUMS` verified, and a current `pg_dump` (31 KB, 73 TOC entries) restored 2 projects/8 issues. `release.sh --require-public-probe` printed `release: public probe ok` and `release: ok d002ccd`; `verify-host` 27 PASS/0 FAIL after bootstrap now removes rpcbind 111/tcp+udp; UI sign-in reached `/p/CRV`, SSE `issues_changed` arrived, signed webhook ping returned 200 and unsigned 401; GitHub hook 715784553 replaced 714067501. Deploy secrets rotated (`DEPLOY_HOST`, `DEPLOY_KNOWN_HOSTS`, `DEPLOY_SSH_KEY`); manual dispatch run 45191364607 passed Verify and Deploy. Old `curved` instance stopped with boot and `curved-data` volumes kept. |
 | 045 | `LAS-189` | `deploy/agent-tunnel.sh` forwards `55433` to `127.0.0.1:55432` with strict SSH and refuses `55432`, so the local development listener survives; `deploy/agent-preflight.sh` compares checkout `HEAD` to `/srv/curved/release-state` and supports `--require-tunnel`; `scripts/agent-smoke.sh` plus the `smoke:agent` package script run 16 checks (local listener preserved, tunnel parse/refusal, strict SSH options, preflight parity and tunnel-required negatives, token handling). `deploy/provisioning.md` section 19 and `README.md` document the tunnel, preflight, MCP stdio entry, gates, and status. Gates: `npm run check` green with 223 tests and `architecture: ok (84 files)`, `npm run smoke:agent` prints `agent-smoke: ok (16 checks)`. Live proof on 2026-11-23 against `https://curv3d.duckdns.org`: local `HEAD` and release-state both `de5c863`, preflight `--require-tunnel` ok, `55432` local and `55433` tunnel, an agent created via the CLI in the app image with a one-time `crv_` token in a mode-600 home file (never printed), CLI projects `PRFTEINIO`/`OTHTEINIO` and issues `PRFTEINIO-1`/`2`/`3` and `OTHTEINIO-1`, a human HTTP relation blocking `PRFTEINIO-2` on `PRFTEINIO-1`, all eight MCP tools, blocked issue omitted from `list_ready`, `claim_next` claiming `PRFTEINIO-1`, a second claim filtered to `OTHTEINIO` failing `agent_busy` naming `PRFTEINIO-1`, `done` releasing the blocker so `PRFTEINIO-2` became ready and was claimed, `mark_blocked` returning it to `todo`, both projects archived, and the relation unblocked. Next: `LAS-190`. |
+| 046 | `LAS-190` | Added `test/server-entry.test.ts`, which spawns the real `src/composition/server.ts` in a temp cwd with `CURVED_UI_TOKEN=""` and an unreachable `DATABASE_URL`, and asserts exit 1, the `CURVED_UI_TOKEN is required to start the HTTP server` stderr line, no `curved listening` stdout, and no `ECONNREFUSED` (proving no DB attempt). Live at deployed `57ced3d`: `docker run --rm -e CURVED_UI_TOKEN= curved:57ced3d` printed the guard and `exit=1`; first-run setup created `FIRST`/`First Run` through the SPA against a throwaway `curved_las190_firstrun` database on the deployed Postgres (row `FIRST|First Run|planned|0` issues, no SQL insert), with session persistence on reload; the throwaway container, database, env file, and forward were removed. Seeded `LAS190` through the deployed CLI (four issues, agent block of `LAS190-1`, claim of `LAS190-2`, human label on `LAS190-3`), then a 390x844 Chromium/CDP run over `https://curv3d.duckdns.org` passed 77 checks: token sign-in, session persistence across navigation (`/api/me` 200, `navType=navigate`), board blocked badge and label chips, queue `Ready=2 In flight=1 Blocked=1` with rows and Unblock buttons, detail created event and comment, labels editor, relation confirmed on both API sides, human unblock clearing the panel and dropping the blocked count to 0, palette key match, human SSE in 251 ms and agent SSE in 101/201 ms into two tabs without reload, and four screenshots under `/tmp`. Released `LAS190-2` and archived `LAS190`; issues and timeline remain. Documented the runbook in `deploy/provisioning.md` section 20 and updated README, AGENTS, and MEMORY. Gates: `npm run check` 224 tests (218 behavior, 6 architecture), `architecture: ok (84 files)`, `npm run acceptance` 194 checks. The follow-up commit is the test and docs only, so the product code matches the accepted `57ced3d` image. |

@@ -738,7 +738,7 @@ The gate builds on the other two entry points rather than replacing them:
 `./scripts/clean-state.sh` is still the end-of-session gate. This is the only one
 that runs the CLI, MCP server, HTTP server, webhook, and SPA together.
 
-The repository-side gates all pass: `npm run check` passes 223 tests (217
+The repository-side gates all pass: `npm run check` passes 224 tests (218
 behavior, 6 architecture) with `architecture: ok (84 files)`, and `npm run
 acceptance` passes 194 checks, including the project CLI, HTTP, and browser
 lines and the two browser passkey lines. `npm run
@@ -748,6 +748,14 @@ an `issues_changed` frame within 5s, and a real nightly backup restored into a
 throwaway database plus a Caddy volume restore, `npm run smoke:provision`
 reports 52 PASS, `npm run smoke:release` 22 PASS, `npm run smoke:backup`
 19 PASS, and `npm run smoke:webhook` 9 PASS.
+
+Public product acceptance is an operator run against the deployed stack rather
+than a repository test: `deploy/provisioning.md` section 20 covers the empty
+UI-token refusal, first-run project setup on a throwaway database, and a
+390x844 Chromium pass over the public HTTPS surface (sign-in and session
+persistence, board, queue, detail, timeline, comments, labels, relations,
+palette, human unblock, and human plus agent SSE). The live run on 2026-11-23
+passed 77 public checks.
 
 ## HTTP API
 

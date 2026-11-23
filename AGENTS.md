@@ -699,7 +699,7 @@ subscribes to all projects when `projectId` is null. The UI adds `ProjectsPage`,
 Projects and Overview sidebar rows, a five-cell mobile nav at 390 px (78 px per
 cell), shell breadcrumb and primary-button variants, the palette actions Go to
 projects and New project, issue-detail project navigation, and the new
-ProjectSetup footer copy. `npm run check` is green with 223 tests (217 behavior,
+ProjectSetup footer copy. `npm run check` is green with 224 tests (218 behavior,
 6 architecture) and `architecture: ok (84 files)`; `npm run acceptance` is green
 with 194 checks, including the project CLI show/edit/archive/restore assertions,
 the HTTP detail, `PATCH`, and archive assertions, and the browser lines `PASS
@@ -710,7 +710,23 @@ the timeline fetch effect keys on `projectKeyFromRoute`, so a late project
 resolution that clears the timeline refetches exactly once instead of leaving
 the detail modal empty.
 
-Tests: 223 pass, 0 fail, including `test/http.test.ts` and `test/sse.test.ts`,
+`LAS-190` is live: the deployed product passed first-run and public acceptance.
+On 2026-11-23 at deployed sha `57ced3d`, the image refused to start with an
+empty `CURVED_UI_TOKEN` (`exit=1`, stderr naming the variable), and the real
+entrypoint is now covered by `test/server-entry.test.ts`, which spawns
+`src/composition/server.ts` with an empty token and an unreachable
+`DATABASE_URL` and asserts the exit and visible message. First-run setup created
+`FIRST` through the SPA against a throwaway database on the deployed Postgres
+(the row read back with 0 issues), and a 390x844 Chromium run over public HTTPS
+passed 77 checks: sign-in, session persistence across navigation, board blocked
+badge and label chips, ready queue stats and rows, detail timeline and comment,
+labels, relation (both API directions), human unblock with the queue blocked
+count dropping to 0, the command palette, and human plus agent SSE without a
+reload. The proof project `LAS190` was released and archived, leaving its
+issues and timeline as evidence. `deploy/provisioning.md` section 20 is the
+runbook; local gates stay green.
+
+Tests: 224 pass, 0 fail, including `test/http.test.ts` and `test/sse.test.ts`,
 whose session cases exercise the opaque `auth_sessions` cookie rows,
 `test/passkeys.test.ts` for availability without auth, listing without
 verification material, registration and login option contents, single-use
@@ -724,7 +740,7 @@ transaction-scoped ports commit and rollback, and
 repository find by key, plus `test/architecture.test.ts`, which proves the real
 tree passes and five fixtures fail (application -> adapter, domain -> `pg`, web
 ui -> adapter, web application -> adapter, web domain -> a backend module other
-than `src/domain/status.ts`). Those 223 are the node tests (217 behavior and 6
+than `src/domain/status.ts`). Those 224 are the node tests (218 behavior and 6
 architecture); `npm run smoke:release` and `npm run smoke:agent` (16 checks) are
 shell gates, not part of them.
 `ARCH.md` codifies the layers and the one-way dependency rule; all
@@ -776,7 +792,7 @@ carries the same rules as a project-agnostic template.
 | `deploy/keepalive.sh` | Always Free keepalive: one core at `nice 19` for ten minutes hourly (`taskset` on core 0 when present, 600 second default, timeout exits counted as success), installed as `/usr/local/bin/curved-keepalive` and driven by `curved-keepalive.timer`. |
 | `deploy/agent-tunnel.sh` | Agent tunnel: forwards local `55433` to host `127.0.0.1:55432` by default, refuses `55432` to protect local development, and uses strict SSH options. |
 | `deploy/agent-preflight.sh` | Agent preflight: compares local `HEAD` to the host `/srv/curved/release-state` sha, and with `--require-tunnel` probes the forward. |
-| `deploy/provisioning.md` | OCI console runbook: topology, security list, reserved IPv4, DNS-only record, bootstrap and verifier commands, Docker data root and mount gate, reboot persistence, LAS-183 and LAS-184 acceptance evidence, the public ACME/HSTS edge and webhook evidence, capacity fallback, access boundary, storage, releases and rollback, backups and restore, the keepalive and the rebuild-after-reclamation runbook (section 18), troubleshooting. |
+| `deploy/provisioning.md` | OCI console runbook: topology, security list, reserved IPv4, DNS-only record, bootstrap and verifier commands, Docker data root and mount gate, reboot persistence, LAS-183 and LAS-184 acceptance evidence, the public ACME/HSTS edge and webhook evidence, capacity fallback, access boundary, storage, releases and rollback, backups and restore, the keepalive and the rebuild-after-reclamation runbook (section 18), agent access and deployed-commit parity (section 19), public product acceptance including the empty-token and first-run checks (section 20), troubleshooting. |
 | `deploy/bootstrap-host.sh` | Idempotent Ubuntu 24.04 host bootstrap: Docker install, Docker data root on the data volume with the mount dependency, log rotation and prune timer, 0700 backup directory with the daily backup timer and one initial nightly set, hourly keepalive units and `/usr/local/bin/curved-keepalive`, key-only `deploy` user and sshd drop-in, ext4 data volume and UUID fstab entry, checkout, mode-600 env, compose up. |
 | `deploy/verify-host.sh` | Read-only host verifier: OS, deploy account, sshd policy, ext4 mount, 150 GB storage, Docker data root, daemon config, mount dependency and prune timer, keepalive timer and script, backup directory, timer, freshness and integrity, env, checkout, listener allowlist, stack health, `tls-certificate`, `http-redirect`, `hsts`, `compression`, `caddy-issuance`, and the 200/401 HTTPS API. |
 | `deploy/webhook.sh` | Creates or updates the GitHub `pull_request` webhook for the deployed host (default `https://$CURVED_DOMAIN/webhooks/github`), always PATCHing an existing same-URL hook so the secret is reapplied; `--repo`, `--url`, `--env-file`, `--dry-run`. |

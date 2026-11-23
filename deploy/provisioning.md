@@ -1,4 +1,4 @@
-# Oracle Cloud host provisioning (LAS-183, LAS-184, LAS-185, LAS-186, LAS-187, LAS-188, LAS-189)
+# Oracle Cloud host provisioning (LAS-183, LAS-184, LAS-185, LAS-186, LAS-187, LAS-188, LAS-189, LAS-190)
 
 > **Live reference (2026-11-23):** `https://curv3d.duckdns.org` on the reserved
 > public IP `129.213.209.162`. The original `158.101.127.247.sslip.io` address
@@ -2508,3 +2508,164 @@ the final `list_ready` omitted `PRFTEINIO-2`, kept `PRFTEINIO-3` ready, and
 showed no busy claim. Both proof projects were archived and the blocked issue
 was unblocked; the issues and events remain as append-only evidence.
 `npm run smoke:agent` passed 16 checks.
+
+## 20. Public product acceptance
+
+This section proves the loop from an empty database to the public product. It
+runs against the deployed stack and never prints a UI or agent token. The
+browser checks use Chromium over CDP at 390x844, the same viewport as the
+repository acceptance gate.
+
+### 20.1 Empty UI token fails visibly
+
+The image exits before it opens a database connection:
+
+```sh
+ssh deploy@"$HOST"
+cd /srv/curved/checkout
+SHA=$(sed -n 's/^sha=//p' /srv/curved/release-state)
+docker run --rm -e CURVED_UI_TOKEN= "curved:$SHA"
+echo "exit=$?"
+```
+
+Expected: no stdout, stderr `CURVED_UI_TOKEN is required to start the HTTP
+server`, and `exit=1`. Compose also refuses an empty token at interpolation
+time through `${CURVED_UI_TOKEN:?...}`.
+
+### 20.2 First-run setup on a throwaway database
+
+Create an empty database on the deployed Postgres and serve the deployed image
+against it. Only the database lifecycle uses SQL; the project itself is created
+through the SPA.
+
+```sh
+cd /srv/curved/checkout
+set -a; . deploy/.env; set +a
+SHA=$(sed -n 's/^sha=//p' /srv/curved/release-state)
+DB=curved_las190_firstrun
+docker exec curved-prod-db-1 dropdb -U "$POSTGRES_USER" --if-exists "$DB"
+docker exec curved-prod-db-1 psql -U "$POSTGRES_USER" -d postgres \
+  -v ON_ERROR_STOP=1 -c "CREATE DATABASE \"$DB\""
+umask 077
+printf 'DATABASE_URL=postgres://%s:%s@db:5432/%s\n' \
+  "$POSTGRES_USER" "$POSTGRES_PASSWORD" "$DB" > /tmp/las190.env
+docker run --rm --network curved-prod_default --env-file /tmp/las190.env \
+  "curved:$SHA" node src/composition/migrate.ts
+docker run -d --name curved-las190-app --network curved-prod_default \
+  -p 127.0.0.1:4748:4747 --env-file /tmp/las190.env \
+  -e PORT=4747 -e CURVED_UI_TOKEN=las190-firstrun-token \
+  -e COOKIE_SECURE=0 \
+  -e CURVED_WEBAUTHN_ORIGINS=http://localhost:4748 \
+  -e CURVED_WEBAUTHN_RP_ID=localhost "curved:$SHA"
+```
+
+Forward the loopback port and browse `http://localhost:4748` (use `localhost`,
+not `127.0.0.1`, so the WebAuthn origin matches):
+
+```sh
+ssh -f -N -L 127.0.0.1:4748:127.0.0.1:4748 deploy@"$HOST"
+```
+
+Sign in with `las190-firstrun-token`. A fresh database shows project setup, not
+a board. Create `FIRST` / `First Run`, and check that:
+
+- the setup form accepts the key and name and lands on `/p/FIRST/overview`;
+- `/p/FIRST` renders the empty board for a project with 0 issues;
+- a reload keeps the session with no sign-in form and `/api/me` returns 200;
+- `/api/projects` lists `FIRST` with progress `0/0`.
+
+The row exists in the deployed Postgres without any SQL insert:
+
+```sh
+docker exec curved-prod-db-1 psql -U curved -d curved_las190_firstrun \
+  -c "select key, name, status from projects"
+```
+
+Teardown:
+
+```sh
+docker rm -f curved-las190-app
+docker exec curved-prod-db-1 dropdb -U "$POSTGRES_USER" --if-exists "$DB"
+rm -f /tmp/las190.env
+```
+
+### 20.3 Public human surface
+
+Seed a dedicated project through the deployed CLI so the browser starts from
+known queue state. Keep tokens in mode-600 env files, never in argv.
+
+```sh
+# /tmp/las190-prod.env contains DATABASE_URL and CURVED_AGENT_TOKEN for the image.
+RUN="docker run --rm --network curved-prod_default \
+  --env-file /tmp/las190-prod.env curved:$SHA \
+  node src/composition/cli.ts"
+$RUN project add LAS190 "LAS-190 public acceptance" \
+  --summary "Live public acceptance of the deployed product" \
+  --status in_progress --priority 2
+$RUN issue add LAS190 "Blocked for human unblock" --status todo --priority 1
+$RUN issue add LAS190 "In flight for the ready queue" --status todo --priority 2
+$RUN issue add LAS190 "Ready for the ready queue" --status todo --priority 3
+$RUN issue add LAS190 "Relation target for the detail view" --status todo --priority 4
+$RUN claim LAS190
+$RUN issue block LAS190-1 "waiting on credentials"
+$RUN claim LAS190
+```
+
+Label one issue through the human bearer so the board has a label chip before
+the browser run:
+
+```sh
+curl -sS -X POST "https://$CURVED_DOMAIN/api/issues/LAS190-3/labels" \
+  -H "Authorization: Bearer $CURVED_UI_TOKEN" \
+  -H 'content-type: application/json' \
+  --data-binary '{"labels":["ui","acceptance"]}'
+```
+
+Drive Chromium at 390x844 through `https://$CURVED_DOMAIN` and confirm:
+
+- token sign-in reaches a board with the five status tabs;
+- navigating to `/projects` and then `/p/LAS190` keeps the session
+  (`/api/me` 200, Navigation Timing type `navigate`, no sign-in form);
+- the board shows the blocked badge and the label chips;
+- `/p/LAS190/queue` shows `Ready=2`, `In flight=1`, `Blocked=1` with
+  claim-order, in-flight, and blocked rows, each blocked row with `Unblock`;
+- issue detail renders the created event, posts a comment, saves labels through
+  the editor, adds a blocking relation (asserted on both issue sides through
+  the API), and the human `Unblock` clears the blocked panel and drops the
+  queue blocked count to 0;
+- `Ctrl+K` opens the palette, focuses the combobox, filters to the issue key,
+  and renders the key span;
+- a comment in one tab reaches a second tab over SSE within 6 seconds without a
+  reload, and an agent comment posted with its `crv_` bearer reaches both tabs;
+- screenshots of the board, queue, detail, and palette are written under the
+  system temp directory.
+
+The public session cookie is `HttpOnly; SameSite=Lax; Path=/;
+Max-Age=2592000; Secure`, `/` sends
+`strict-transport-security: max-age=31536000`, and the built SPA references
+only same-origin `/assets/*.woff2` fonts. The palette, fonts, and 900px
+breakpoint are unchanged from the local build.
+
+Clean up the proof state by releasing the agent claim and archiving the project.
+The issues, timeline, labels, and relation remain readable as evidence:
+
+```sh
+$RUN release LAS190-2
+$RUN project archive LAS190
+```
+
+### 20.4 Exercise record
+
+The public acceptance ran on 2026-11-23 against
+`https://curv3d.duckdns.org` (`129.213.209.162`) at `curved:57ced3d`, matching
+local `HEAD`. The empty-token image run printed the guard message and
+`exit=1`. First-run setup created `FIRST` through the SPA against a throwaway
+database on the deployed Postgres; the row read back as
+`FIRST|First Run|planned` with 0 issues, and the throwaway database and
+container were removed. The seeded `LAS190` project produced
+`blocked=LAS190-1`, `ready=2`, `in-flight=1`; the 390x844 public browser run
+passed 77 checks covering sign-in, session persistence, board, queue, detail,
+timeline, comment, labels, relation, human unblock, palette, human SSE
+(251 ms), and agent SSE (101/201 ms), then released the claim and archived the
+project. Local gates: `npm run check` passes 224 tests with
+`architecture: ok (84 files)`, and `npm run acceptance` passes 194 checks.
