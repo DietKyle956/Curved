@@ -2,17 +2,20 @@
 
 - **Last updated:** 2026-11-23
 - **Project:** curved
-- **Phase:** product and infrastructure implemented through `LAS-188` (free-tier
-  keepalive and rebuild runbook), the project entity is live (migration `0007`:
+- **Phase:** product and infrastructure implemented through `LAS-189` (agent
+  tunnel and deployed-commit parity, on top of the `LAS-188` free-tier keepalive
+  and rebuild runbook), the project entity is live (migration `0007`:
   summary, description, six-value status, nullable priority and dates, archive,
   and per-status progress across the CLI, HTTP API, and SPA), and passkey login
   is live (migration `0006`, opaque server-side sessions, passkey routes, and
   the sign-in and management UI). `LAS-188` is Done: the rebuild drill ran on
   2026-11-23 on a fresh instance, restored from a dump, and cut over to the
   reserved `129.213.209.162` behind `https://curv3d.duckdns.org`; the old
-  sslip instance is stopped as rollback. Next unbuilt work is `LAS-189` (agent
-  tunnel and deployed-commit parity), then `LAS-190`; `LAS-177` (template audit)
-  is independent.
+  sslip instance is stopped as rollback. `LAS-189` is Done: the agent tunnel
+  and deployed-commit parity are live (`deploy/agent-tunnel.sh`,
+  `deploy/agent-preflight.sh`, and the 16-check `npm run smoke:agent`). Next
+  unbuilt work is `LAS-190` (first-run seed and public product acceptance);
+  `LAS-177` (template audit) is independent.
 
 ## Current verified state
 
@@ -30,7 +33,8 @@ git history and the Linear comments.
   `./scripts/clean-state.sh`, `npm run acceptance`,
   `npm run smoke:container`, `npm run smoke:compose`,
   `npm run smoke:provision`, `npm run smoke:release`,
-  `npm run smoke:backup`, `npm run smoke:webhook`, and
+  `npm run smoke:backup`, `npm run smoke:webhook`,
+  `npm run smoke:agent`, and
   `.github/workflows/verify.yml` on every push to `main` and manual dispatch,
   where the main-only `deploy` job runs after `verify`.
 - Baseline: 223 tests pass (217 behavior, 6 architecture),
@@ -186,8 +190,9 @@ git history and the Linear comments.
   `127.0.0.1:55432`, `app` running migrations then the server with no host port,
   `caddy` publishing 80/443 TCP+UDP). An empty `ACME_EMAIL` selects Caddy's
   internal CA; a set email switches to ACME. Host ports and the image tag are
-  compose variables. Agents reach the deployed Postgres through an SSH tunnel
-  (55433 is the future convention). `deploy/release.sh` is the only release
+  compose variables. Agents reach the deployed Postgres through
+  `deploy/agent-tunnel.sh`, which forwards `55433` to `127.0.0.1:55432`.
+  `deploy/release.sh` is the only release
   path: database `up -d --wait --wait-timeout 300`, build `curved:<short-sha>`,
   the one-shot `run --rm --no-deps -T app node src/composition/migrate.ts`,
   app `up -d --no-deps --wait --wait-timeout 600`, caddy `up -d --no-deps`,
@@ -209,6 +214,16 @@ git history and the Linear comments.
   the same probe policy, updates state, and warns that a non-backward-compatible
   migration requires a database restore instead of an image rollback. The
   release path never runs `down` or `down -v`.
+- Agent access (`LAS-189`): `deploy/agent-tunnel.sh` forwards `55433` to
+  `127.0.0.1:55432` with strict SSH options and refuses the `55432` local port
+  so the development listener is never displaced; `deploy/agent-preflight.sh`
+  compares the checkout `HEAD` to `/srv/curved/release-state` and takes
+  `--require-tunnel` to insist the tunnel is up before an agent runs. Both are
+  exercised by `npm run smoke:agent` (16 checks). `deploy/provisioning.md`
+  section 19 and `README.md` document the tunnel, the preflight, the MCP stdio
+  entry, and the gates. The one-time agent token handover lives at
+  `/home/dietkyle/.curved-las189-agent.token` (mode 600, outside the repo) and
+  is never printed or committed.
 - Public edge: the live host serves `https://curv3d.duckdns.org` from a
   DNS-only DuckDNS A record at the reserved public IP `129.213.209.162`, with a
   Let's Encrypt certificate (issuer `YE2`, subject `CN=curv3d.duckdns.org`,
@@ -616,6 +631,11 @@ git history and the Linear comments.
   volume until an operator removes it after `verify-host` passes.
 - The first bootstrap that changes `daemon.json` recreates the Compose
   containers, which is a brief stack restart on an existing host.
+- The deploy key is root-equivalent and the `LAS-189` proof agent token exists
+  only in a mode-600 home file (`/home/dietkyle/.curved-las189-agent.token`);
+  do not commit either. The live proof left archived `PRFTEINIO`/`OTHTEINIO`
+  projects and their append-only issues on the production database as evidence,
+  and those rows cannot be deleted.
 
 ## Open questions
 
@@ -625,15 +645,23 @@ git history and the Linear comments.
 
 ## Next best step
 
-`LAS-188` (keepalive and rebuild runbook) is Done. The drill completed on
-2026-11-23 on a fresh `curved-rebuild` instance with a fresh data volume and a
-restored dump; `verify-host` prints 27 PASS/0 FAIL, and the app serves
-`https://curv3d.duckdns.org` from reserved `129.213.209.162` with HSTS, the
-HTTP redirect, compressed responses, unbuffered SSE, and the GitHub
-`pull_request` webhook. The original `curved` instance is stopped as rollback.
-The next unbuilt child is `LAS-189` (agent tunnel and deployed-commit parity),
-then `LAS-190` (first-run seed and public product acceptance). `LAS-177`
-(template audit) is independent. A push to
+`LAS-189` (agent tunnel and deployed-commit parity) is Done. The live proof on
+2026-11-23 against `https://curv3d.duckdns.org` (`129.213.209.162`) found local
+`HEAD` and `/srv/curved/release-state` both at `de5c863`, ran
+`deploy/agent-preflight.sh --require-tunnel` green, and kept `55432` as the
+local development listener while `55433` carried the tunnel. An agent created
+through the CLI in the app image received a one-time `crv_` token written to a
+mode-600 home file, then the CLI created projects `PRFTEINIO`/`OTHTEINIO` and
+issues `PRFTEINIO-1`/`2`/`3` and `OTHTEINIO-1` over the tunnel. A human HTTP
+relation made `PRFTEINIO-2` blocked by `PRFTEINIO-1`; all eight MCP tools were
+exercised; `list_ready` omitted the blocked issue; `claim_next` claimed
+`PRFTEINIO-1`; a second claim filtered to `OTHTEINIO` failed `agent_busy`
+naming `PRFTEINIO-1`, which proves the global claim fence. A human moved
+`PRFTEINIO-1` to `done`, the formerly blocked `PRFTEINIO-2` became ready and was
+claimed, and `mark_blocked` returned it to `todo` with a reason. Both projects
+were archived and the relation unblocked; the issues remain as evidence. The
+next unbuilt child is `LAS-190` (first-run seed and public product acceptance).
+`LAS-177` (template audit) is independent. A push to
 `main` runs `verify`, then the main-only `deploy` job, which resets
 `/srv/curved/checkout` and runs `./deploy/release.sh`; the release now takes a
 pre-deploy backup before the build and migration, and the public probe requires
@@ -642,8 +670,10 @@ Docker data root at `/srv/curved/docker`, and backups at
 `/srv/curved/backups` with the daily `curved-backup.timer`. Run
 `npm run smoke:provision` after any change to the host scripts,
 `npm run smoke:backup` after any change to the backup or restore scripts,
-`npm run smoke:release` after any change to the release script, and
-`npm run smoke:webhook` after any change to the webhook script.
+`npm run smoke:release` after any change to the release script,
+`npm run smoke:webhook` after any change to the webhook script, and
+`npm run smoke:agent` after any change to the agent tunnel, preflight, or smoke
+script.
 
 ## Tracker
 
@@ -652,10 +682,11 @@ Docker data root at `/srv/curved/docker`, and backups at
 - Spec `LAS-140` is still Todo (High) in Linear although its 15 sub-issues
   `LAS-141` through `LAS-155` are Done.
 - Refactor `LAS-167` with `LAS-168` through `LAS-176`, all Done.
-- Infra and deploy: `LAS-179` through `LAS-188` Done; parent `LAS-178` is
+- Infra and deploy: `LAS-179` through `LAS-189` Done; parent `LAS-178` is
   Backlog. The live endpoint is `https://curv3d.duckdns.org` on reserved
   `129.213.209.162`; the old `curved` instance is stopped as rollback.
-  `LAS-189` and `190` are Todo. `LAS-177` (template audit) is Todo (Medium).
+  `LAS-189` (agent tunnel and deployed-commit parity) is Done; `LAS-190` is
+  Todo. `LAS-177` (template audit) is Todo (Medium).
 
 ## Session log
 
@@ -710,3 +741,4 @@ on 2026-11-18, and 037 to 039 on 2026-11-19.
 | 042 | UI token recovery | `.github/workflows/rotate-ui-token.yml` (manual `workflow_dispatch`, concurrency `rotate-ui-token`, contents read only) validates `DEPLOY_SSH_KEY`, `DEPLOY_KNOWN_HOSTS`, `DEPLOY_HOST`, and `CURVED_UI_TOKEN`, writes the key and known_hosts under `$RUNNER_TEMP` mode 600, and pipes the token over stdin, never argv and never a log line. On the host it atomically rewrites the mode-600 `CURVED_UI_TOKEN` line in `/srv/curved/checkout/deploy/.env`, restoring the backup and re-running the release if `./deploy/release.sh` fails, then runs the release and proves `POST https://$CURVED_DOMAIN/api/session` with the new token returns 200 (`login probe ok`). Operator path: `gh secret set CURVED_UI_TOKEN < value`, then `gh workflow run rotate-ui-token.yml`; only the GitHub deploy key can reach the host, so local `ssh deploy@...` is denied. The token is also saved at `~/.curved-ui-token` (mode 600, outside the repo). Verified run 44747923125: `release: public probe ok`, `release: ok 2d1588c`, `login probe ok`; a scan of the full log for the token value returned 0 matches. |
 | 043 | Project entity | Migration `0007_project_details.sql` gives `projects` a trimmed `summary` (<=255), `description` (<=20000), a six-value `status` (`backlog`/`planned`/`in_progress`/`paused`/`completed`/`canceled`, default `planned`), nullable 1..4 `priority`, `start_date`, `target_date`, `archived_at`, and `updated_at`, with a `planned`/`in_progress` backfill and four check constraints; no delete, archive is terminal, and project changes write only `updated_at`. Domain `PROJECT_STATUSES`/`ProjectStatus`/`DEFAULT_PROJECT_STATUS`/`isProjectStatus`, project types with `emptyProgress`, and project validators (summary trims, strict calendar `YYYY-MM-DD` dates); `ProjectRepository` adds `list({includeArchived})`, `findWithProgressByKey`, and a single-statement tri-state `update` with one lateral progress block; `createProject`/`listProjects`/`getProject`/`updateProject` are SQL-free and human-only for edits. HTTP `GET`/`POST /api/projects` and `GET`/`PATCH /api/projects/:key` (`includeArchived`, immutable key, nullable priority and dates, `archived` boolean; issue `PATCH` rejects `project`). CLI `project add|list|show|edit|archive|restore` with `--json` progress and `none` clears. The SPA adds the projects and `/p/<KEY>/overview` routes, `ProjectsPage`, `ProjectOverview`, `ProjectDialog`, `ProjectStatusChip`, five-cell mobile nav at 390 px, palette actions, and project navigation from issue detail, with realtime subscribing to all projects. The second-tab direct load exposed a deep-link race: project resolution could clear the timeline after the issue fetch, so the timeline effect now depends on `projectKeyFromRoute` and refetches. Gates: 223 tests (217 behavior, 6 architecture), `architecture: ok (84 files)`, acceptance 194 checks (five consecutive green runs after the race fix). |
 | 044 | `LAS-188` completion | The live `158.101.127.247` was found to be an ephemeral public IP, not reserved, so the drill moved to reserved `129.213.209.162` and `https://curv3d.duckdns.org` (DNS-only DuckDNS A record). A fresh `curved-rebuild` A1 (2 OCPU/12 GB, AD-1, 50 GB boot) got a fresh 100 GB `curved-data-rebuild`; an online FULL backup of `curved-data` restored to `curved-restore-raw` (`is-hydrated: true`), `deploy/.env` and nightly `20261123T032302Z` were copied off-host with `SHA256SUMS` verified, and a current `pg_dump` (31 KB, 73 TOC entries) restored 2 projects/8 issues. `release.sh --require-public-probe` printed `release: public probe ok` and `release: ok d002ccd`; `verify-host` 27 PASS/0 FAIL after bootstrap now removes rpcbind 111/tcp+udp; UI sign-in reached `/p/CRV`, SSE `issues_changed` arrived, signed webhook ping returned 200 and unsigned 401; GitHub hook 715784553 replaced 714067501. Deploy secrets rotated (`DEPLOY_HOST`, `DEPLOY_KNOWN_HOSTS`, `DEPLOY_SSH_KEY`); manual dispatch run 45191364607 passed Verify and Deploy. Old `curved` instance stopped with boot and `curved-data` volumes kept. |
+| 045 | `LAS-189` | `deploy/agent-tunnel.sh` forwards `55433` to `127.0.0.1:55432` with strict SSH and refuses `55432`, so the local development listener survives; `deploy/agent-preflight.sh` compares checkout `HEAD` to `/srv/curved/release-state` and supports `--require-tunnel`; `scripts/agent-smoke.sh` plus the `smoke:agent` package script run 16 checks (local listener preserved, tunnel parse/refusal, strict SSH options, preflight parity and tunnel-required negatives, token handling). `deploy/provisioning.md` section 19 and `README.md` document the tunnel, preflight, MCP stdio entry, gates, and status. Gates: `npm run check` green with 223 tests and `architecture: ok (84 files)`, `npm run smoke:agent` prints `agent-smoke: ok (16 checks)`. Live proof on 2026-11-23 against `https://curv3d.duckdns.org`: local `HEAD` and release-state both `de5c863`, preflight `--require-tunnel` ok, `55432` local and `55433` tunnel, an agent created via the CLI in the app image with a one-time `crv_` token in a mode-600 home file (never printed), CLI projects `PRFTEINIO`/`OTHTEINIO` and issues `PRFTEINIO-1`/`2`/`3` and `OTHTEINIO-1`, a human HTTP relation blocking `PRFTEINIO-2` on `PRFTEINIO-1`, all eight MCP tools, blocked issue omitted from `list_ready`, `claim_next` claiming `PRFTEINIO-1`, a second claim filtered to `OTHTEINIO` failing `agent_busy` naming `PRFTEINIO-1`, `done` releasing the blocker so `PRFTEINIO-2` became ready and was claimed, `mark_blocked` returning it to `todo`, both projects archived, and the relation unblocked. Next: `LAS-190`. |

@@ -1,4 +1,4 @@
-# Oracle Cloud host provisioning (LAS-183, LAS-184, LAS-185, LAS-186, LAS-187, LAS-188)
+# Oracle Cloud host provisioning (LAS-183, LAS-184, LAS-185, LAS-186, LAS-187, LAS-188, LAS-189)
 
 > **Live reference (2026-11-23):** `https://curv3d.duckdns.org` on the reserved
 > public IP `129.213.209.162`. The original `158.101.127.247.sslip.io` address
@@ -985,7 +985,9 @@ add unrelated users to the `docker` group.
 Secrets live only in `/srv/curved/checkout/deploy/.env`: mode 600, owner
 `deploy`, gitignored, and excluded from the image by `.dockerignore`. They are
 never committed, never baked into the image, and never printed by the scripts.
-The Compose stack receives them through `--env-file` at runtime.
+The Compose stack receives them through `--env-file` at runtime. An agent reaches
+the loopback Postgres from its own workstation over an SSH tunnel; section 19
+covers its token, the tunnel, and the deployed-commit check.
 
 ## 13. Storage accounting and layout
 
@@ -1001,6 +1003,9 @@ plan against.
   backups/                   mode 0700, owned by deploy: nightly/ and pre-deploy/
                              set directories, each kind with its own latest symlink
 ```
+
+Section 19 reads `release-state` to pin an agent's checkout to the deployed
+commit before it connects.
 
 `/srv/curved/docker` is Docker's data root: images, the `overlay2` storage
 driver, the build cache, and the Postgres and Caddy named volumes all live on
@@ -2259,3 +2264,247 @@ issues (`CRV-1` to `CRV-5`, `LIVE-1` to `LIVE-3`). The release
 | AC2 | A reclaimed instance is rebuilt from a fresh VM plus the newest off-host dump. | Fresh `curved-rebuild` A1 plus fresh 100 GB `curved-data-rebuild`; online FULL backup of `curved-data` restored to `curved-restore-raw` (`is-hydrated: true`); `deploy/.env` and nightly `20261123T032302Z` copied off-host with `SHA256SUMS` verified; current `pg_dump` (31 KB, 73 TOC entries) restored with `restore.sh postgres`; 2 projects and 8 issues served; `verify-host: ok` (27 PASS, 0 FAIL). | 2026-11-23 |
 | AC3 | The reserved public IPv4 and the deploy known-hosts are re-established. | Reserved public IP `129.213.209.162` assigned; DuckDNS A record `curv3d.duckdns.org`; `ssh-keyscan` refreshed `DEPLOY_KNOWN_HOSTS`, `DEPLOY_HOST=129.213.209.162`, and `DEPLOY_SSH_KEY` was rotated to a new Ed25519 key; manual dispatch run 45191364607 passed Verify (59s) and Deploy (12s, Release step success). | 2026-11-23 |
 | AC4 | Reclamation is treated as a restore. | No `down -v`; fresh volume plus dump restore; UI sign-in at `https://curv3d.duckdns.org` reached `/p/CRV` with 5 issues; SSE `ready` and `issues_changed` (`data: 2`) after a comment; signed webhook ping 200 and unsigned 401; GitHub hook 715784553 ping delivered 200 and old hook 714067501 deleted. | 2026-11-23 |
+
+## 19. Agent access and deployed-commit parity
+
+An agent works from a checkout of this repository on its own workstation, not
+on the host. It reaches the production database through an SSH tunnel and uses
+a dedicated agent token created once on the host. The two helpers in `deploy/`
+encode this path; both exit 2 on usage errors and 1 on check failures, and
+neither prints a secret.
+
+### 19.1 One-time agent creation
+
+The host has no Node toolchain, so create the agent with the CLI inside the app
+image. Run it as `deploy` on the host, with `HOST` set to the value shown in
+section 19.2. `-T` disables TTY allocation, and `--no-deps` leaves the running
+stack untouched.
+
+```bash
+ssh deploy@"$HOST"
+cd /srv/curved/checkout
+docker compose -p curved-prod --env-file deploy/.env \
+  -f deploy/docker-compose.yml run --rm --no-deps -T \
+  app node src/composition/cli.ts agent add <name>
+```
+
+The command prints the `crv_` token once. The database stores only its hash, so
+the token can never be recovered or reprinted. Copy it straight into the
+agent's secret store before the terminal scrolls, then leave the host. The
+database URL and its password are handed over out of band, separately from the
+token.
+
+Never put the token or the database URL in git, a chat message, a command line,
+or a shell history file. A leading space and `HISTCONTROL=ignorespace` are not
+protection. If the token is exposed, create a new agent name instead of reusing
+the old agent.
+
+### 19.2 Checkout, tunnel, and environment
+
+Verify the checkout against the deployed release before connecting. Preflight
+reads `/srv/curved/release-state` over SSH with `cat -- <state-path>`, requires
+a `sha=` value of 7 to 40 lowercase hex characters, resolves it to a full
+commit, and requires that commit to equal local `HEAD`:
+
+```bash
+export HOST=129.213.209.162
+deploy/agent-preflight.sh --host "$HOST"
+```
+
+A pass prints `agent-preflight: ok <local-short> (deployed <sha>)`. A mismatch
+prints the local and deployed revisions and the exact recovery,
+`git fetch origin && git checkout <sha>`; if the checkout lacks the deployed
+commit, preflight says so and gives the same recovery. `--identity` and
+`--known-hosts` select the key and known-hosts file, and `--state-path` and
+`--checkout` override the state file and repository root.
+
+Open the tunnel in a second terminal:
+
+```bash
+deploy/agent-tunnel.sh --host "$HOST"
+```
+
+The default forwards local 55433 to the host's 127.0.0.1:55432. Port 55432 is
+reserved for local development: a workstation Compose run binds
+127.0.0.1:55432, so a tunnel there would collide with the local database. The
+helper refuses local 55432 and `LOCAL == REMOTE`, validates both ports, prints
+one `agent-tunnel: forwarding ...` line, and execs `ssh -N`. `--local-port` and
+`--remote-port` change the mapping, and `--dry-run` prints the shell-quoted ssh
+argv. Add `--require-tunnel` to preflight to probe 127.0.0.1:55433 with a 3
+second timeout.
+
+With the tunnel up, export the two secrets from the out-of-band handover:
+
+```bash
+export DATABASE_URL='postgres://curved:<password>@127.0.0.1:55433/curved'
+export CURVED_AGENT_TOKEN='crv_...'
+```
+
+Then prove the CLI and MCP from the checkout:
+
+```bash
+npm run cli -- ready
+npm run mcp
+```
+
+`npm run cli -- ready` lists the ready queue plus the agent's busy issue.
+`npm run mcp` serves the eight tools over stdio (`claim_next`, `comment`,
+`create_issue`, `get_issue`, `list_ready`, `mark_blocked`, `release_claim`,
+`submit_for_review`) and resolves the agent from `CURVED_AGENT_TOKEN` on every
+call. A client config that starts it, with the same tunnel and token:
+
+```json
+{
+  "mcpServers": {
+    "curved": {
+      "command": "npm",
+      "args": ["run", "mcp"],
+      "cwd": "/path/to/curved",
+      "env": {
+        "DATABASE_URL": "postgres://curved:<password>@localhost:55433/curved",
+        "CURVED_AGENT_TOKEN": "crv_..."
+      }
+    }
+  }
+}
+```
+
+This file holds secrets: keep it out of the repository, mode 600, or let the
+agent runtime inject the two environment variables instead. The checkout must
+be the sha in `/srv/curved/release-state`; when it is not, preflight already
+printed the exact `git checkout` recovery.
+
+### 19.3 Claim-fence proof
+
+Prove the blocking relation and the global fence with throwaway projects. The
+relation is human-only, so it needs the UI token; the queue and claim commands
+use the agent token.
+
+```bash
+npm run cli -- project add PROOF "Fence proof"
+npm run cli -- project add OTHER "Second project"
+npm run cli -- issue add PROOF "Blocker" --status todo --priority 1
+npm run cli -- issue add PROOF "Blocked" --status todo --priority 1
+npm run cli -- issue add PROOF "Loose" --status todo --priority 3
+npm run cli -- issue add OTHER "Elsewhere" --status todo --priority 1
+```
+
+Add the relation with the human token. `<blocked>` is the blocked issue key,
+here `PROOF-2`, and `<blocker>` is `PROOF-1`:
+
+```bash
+API=https://curv3d.duckdns.org
+curl -fsS -X POST "$API/api/issues/PROOF-2/relations" \
+  -H "Authorization: Bearer $CURVED_UI_TOKEN" \
+  -H 'content-type: application/json' \
+  -d '{"blocking":"PROOF-1"}'
+```
+
+Now `npm run cli -- ready` (`list_ready`) lists `PROOF-1` and `PROOF-3` and
+omits `PROOF-2`, because its blocker is not Done. `npm run cli -- claim`
+(`claim_next`) claims `PROOF-1`. A second `claim_next` filtered to the other
+project still fails with `agent_busy` naming `PROOF-1`:
+
+```bash
+npm run cli -- claim OTHER
+```
+
+The partial unique index is global, so the fence holds across projects, not
+within one. Release the active issue and exercise the block and review paths:
+
+```bash
+npm run cli -- release PROOF-1          # release_claim
+npm run cli -- claim PROOF              # claim_next again, PROOF-1
+npm run cli -- issue block PROOF-1 "fence proof done"   # mark_blocked
+npm run cli -- claim PROOF              # claim_next, PROOF-3
+npm run cli -- review PROOF-3 "proof"   # submit_for_review
+```
+
+`issue block` is `mark_blocked`: it only accepts an `in_progress` issue owned
+by the agent, so it runs before the review branch. It returns the issue to Todo
+and clears the claim; after that, the agent claims `PROOF-3` and submits it for
+review. The remaining tools map to commands too: `ready` is `list_ready`,
+`issue add` is `create_issue`, `issue show` is `get_issue`, and
+`issue comment` is `comment`. A blocked issue stays out of `ready` and cannot be
+claimed until a human unblocks it. The live run confirmed that moving a blocking
+issue to Done releases the relation, so the formerly blocked issue becomes
+ready and is the next claim.
+
+### 19.4 Troubleshooting
+
+#### Port 55432 collision
+
+The tunnel exits with an address already in use, or the probe reaches the local
+database. 55432 is the local development port; stop the local Compose stack or
+leave the tunnel on 55433. Check with `ss -ltnp '( sport = :55432 )'`. Never
+move the tunnel onto 55432 to avoid the collision.
+
+#### SSH permission denied
+
+The deploy key is not authorized, `--identity` was not passed under
+`IdentitiesOnly`, or the user is wrong. Debug with `ssh -v deploy@"$HOST"`,
+confirm the public key is in `/home/deploy/.ssh/authorized_keys`, and pass
+`--identity` and `--known-hosts`. Never disable `StrictHostKeyChecking` to get
+past it.
+
+#### Local port already in use
+
+A previous tunnel still holds 55433. Find it with
+`ss -ltnp '( sport = :55433 )'`, stop that `ssh`, or choose another
+`--local-port` and update `DATABASE_URL` to match.
+
+#### Remote state unreadable
+
+Preflight exits 1 when `cat -- /srv/curved/release-state` fails: the file is
+missing or `deploy` cannot read it. `deploy/release.sh` writes it on a
+successful release, so do not hand-edit it; check ownership and rerun a release
+if it is absent.
+
+#### Commit mismatch
+
+Preflight prints the local and deployed revisions and the recovery. Run
+`git fetch origin && git checkout <sha>`. Stash uncommitted work first; if the
+local repository lacks the commit, fetch from the deployed remote before
+checking out.
+
+#### agent_busy
+
+The agent already holds an active issue, `in_progress` or `in_review`, in some
+project; the error names that issue. `npm run cli -- ready` includes the busy
+issue in its output. Release it with `release` or finish it; a project filter
+does not bypass the fence.
+
+#### no_ready_issue
+
+The filtered queue is empty: there is no Todo issue, or every candidate is
+blocked or has a blocker that is not Done. Run `ready` without a project filter.
+Agents cannot unblock; a human clears a blocking relation or a block reason.
+
+### 19.5 Exercise record
+
+The live proof ran on 2026-11-23 against `https://curv3d.duckdns.org` (the
+reserved `129.213.209.162`) with local `HEAD` and
+`/srv/curved/release-state` both `de5c863`.
+`deploy/agent-preflight.sh --host 129.213.209.162 --require-tunnel` printed
+`agent-preflight: ok de5c863 (deployed de5c863)` while local development still
+listened on 55432 and the tunnel listened on 55433. The agent was created
+through the CLI inside the app image, and its one-time `crv_` token was written
+to a mode-600 handover file rather than printed. From a checkout at that
+commit, the CLI created projects `PRFTEINIO` and `OTHTEINIO` plus issues
+`PRFTEINIO-1`, `PRFTEINIO-2`, `PRFTEINIO-3`, and `OTHTEINIO-1` over the
+tunnel, and the human HTTP API recorded that `PRFTEINIO-2` is blocked by
+`PRFTEINIO-1`. MCP listed the eight expected tools. `list_ready` returned
+`PRFTEINIO-1` and `PRFTEINIO-3` but omitted blocked `PRFTEINIO-2`;
+`claim_next` claimed `PRFTEINIO-1`; a second `claim_next` filtered to
+`OTHTEINIO` still failed with `agent_busy` naming `PRFTEINIO-1`, proving the
+fence is global across projects. `get_issue` returned the claim event,
+`comment` appended one, `release_claim` returned the issue to Todo, and a
+second `claim_next` reclaimed it before `submit_for_review` moved it to In
+Review. `create_issue` added a backlog issue through MCP. A human move of
+`PRFTEINIO-1` to Done released the blocking relation, after which `list_ready`
+offered formerly blocked `PRFTEINIO-2` alongside `PRFTEINIO-3`, `claim_next`
+claimed `PRFTEINIO-2`, and `mark_blocked` returned it to Todo with a reason;
+the final `list_ready` omitted `PRFTEINIO-2`, kept `PRFTEINIO-3` ready, and
+showed no busy claim. Both proof projects were archived and the blocked issue
+was unblocked; the issues and events remain as append-only evidence.
+`npm run smoke:agent` passed 16 checks.

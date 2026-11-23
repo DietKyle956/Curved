@@ -398,9 +398,14 @@ redirect, no HSTS while `CURVED_HSTS_MAX_AGE` is empty and
 `/api/ready`, issue detail, `/api/issues`, SSE `ready` plus an `issues_changed`
 frame within 5s, the unsigned webhook `401`, the loopback-only Postgres bind, and
 that the app publishes no host port.
-Agents reach the deployed Postgres through an SSH tunnel (port 55433 is the
-future tunnel convention); the stack exposes only `127.0.0.1:55432` for that
-purpose. The development root `docker-compose.yml` is unchanged, and
+Agents reach the deployed Postgres through an SSH tunnel, and the stack exposes
+only `127.0.0.1:55432` for that purpose. `deploy/agent-tunnel.sh` is the live
+helper: it forwards local `55433` to host `127.0.0.1:55432` by default, refuses
+`55432` so it can never collide with the development database, and always uses
+strict SSH options. `deploy/agent-preflight.sh` compares the local checkout to
+the host's `/srv/curved/release-state` and fails unless local `HEAD` equals the
+deployed sha, and with `--require-tunnel` it also probes the forward. The
+development root `docker-compose.yml` is unchanged, and
 `docker compose -f deploy/docker-compose.yml down -v` deletes the Postgres and
 Caddy volumes, so it must never run on the server.
 
@@ -627,6 +632,21 @@ the GitHub hook moved to `715784553` at the new URL. The old `curved` instance
 is stopped, with its boot volume and original `curved-data` volume kept as
 rollback.
 
+LAS-189 is live: agent access to the deployed stack. `deploy/agent-tunnel.sh`
+and `deploy/agent-preflight.sh` exist and are documented in
+`deploy/provisioning.md` section 19 and the README. `scripts/agent-smoke.sh`
+runs as `npm run smoke:agent` with 16 checks and needs no Docker, database, or
+network beyond a loopback listener. Live proof on 2026-11-23 against
+`https://curv3d.duckdns.org` at `de5c863`: the agent was created through the
+CLI in the app image with a one-time `crv_` token written to a mode-600
+handover file that was never printed; the tunnel opened local `55433` while
+`55432` stayed the local development listener; the CLI created projects and
+issues over the tunnel from a checkout at the deployed commit; all eight MCP
+tools were exercised; `list_ready` omitted a blocked issue and a second claim
+across projects was refused `agent_busy` naming the active key; a human Done
+released the blocking relation so the formerly blocked issue became claimable;
+and the proof projects were archived, leaving the issues as evidence.
+
 The project entity is live: migration `0007_project_details.sql` gives `projects`
 a trimmed `summary` of at most 255 characters, a `description` of at most
 20000, a six-value `status` (`backlog`, `planned`, `in_progress`, `paused`,
@@ -705,8 +725,9 @@ repository find by key, plus `test/architecture.test.ts`, which proves the real
 tree passes and five fixtures fail (application -> adapter, domain -> `pg`, web
 ui -> adapter, web application -> adapter, web domain -> a backend module other
 than `src/domain/status.ts`). Those 223 are the node tests (217 behavior and 6
-architecture); `npm run smoke:release` is a shell gate, not part
-of them. `ARCH.md` codifies the layers and the one-way dependency rule; all
+architecture); `npm run smoke:release` and `npm run smoke:agent` (16 checks) are
+shell gates, not part of them.
+`ARCH.md` codifies the layers and the one-way dependency rule; all
 six steps have landed, along with the import-direction gate and the completion
 handoff, so the refactor parent `LAS-167` and `LAS-176` are complete. `LAS-155`
 added the end-to-end acceptance gate: `npm run acceptance` runs
@@ -753,6 +774,8 @@ carries the same rules as a project-agnostic template.
 | `deploy/backup.sh` | Backup writer: atomically publishes a private `<kind>/<timestamp>` set with a `pg_dump` custom dump, the Caddy data and config archives, `manifest.txt`, and `SHA256SUMS`; `flock`, relative `latest` symlink, retention per kind, `nightly` and `pre-deploy` kinds. |
 | `deploy/restore.sh` | Restore path: checksum-verified Postgres restore into the production database (stops the app, leaves it stopped) or a `--database` drill, plus Caddy volume restore; requires `--yes`. |
 | `deploy/keepalive.sh` | Always Free keepalive: one core at `nice 19` for ten minutes hourly (`taskset` on core 0 when present, 600 second default, timeout exits counted as success), installed as `/usr/local/bin/curved-keepalive` and driven by `curved-keepalive.timer`. |
+| `deploy/agent-tunnel.sh` | Agent tunnel: forwards local `55433` to host `127.0.0.1:55432` by default, refuses `55432` to protect local development, and uses strict SSH options. |
+| `deploy/agent-preflight.sh` | Agent preflight: compares local `HEAD` to the host `/srv/curved/release-state` sha, and with `--require-tunnel` probes the forward. |
 | `deploy/provisioning.md` | OCI console runbook: topology, security list, reserved IPv4, DNS-only record, bootstrap and verifier commands, Docker data root and mount gate, reboot persistence, LAS-183 and LAS-184 acceptance evidence, the public ACME/HSTS edge and webhook evidence, capacity fallback, access boundary, storage, releases and rollback, backups and restore, the keepalive and the rebuild-after-reclamation runbook (section 18), troubleshooting. |
 | `deploy/bootstrap-host.sh` | Idempotent Ubuntu 24.04 host bootstrap: Docker install, Docker data root on the data volume with the mount dependency, log rotation and prune timer, 0700 backup directory with the daily backup timer and one initial nightly set, hourly keepalive units and `/usr/local/bin/curved-keepalive`, key-only `deploy` user and sshd drop-in, ext4 data volume and UUID fstab entry, checkout, mode-600 env, compose up. |
 | `deploy/verify-host.sh` | Read-only host verifier: OS, deploy account, sshd policy, ext4 mount, 150 GB storage, Docker data root, daemon config, mount dependency and prune timer, keepalive timer and script, backup directory, timer, freshness and integrity, env, checkout, listener allowlist, stack health, `tls-certificate`, `http-redirect`, `hsts`, `compression`, `caddy-issuance`, and the 200/401 HTTPS API. |
@@ -771,6 +794,7 @@ carries the same rules as a project-agnostic template.
 | `web/` | Vite + React SPA around `web/src/`. `npm run build` writes `web/dist`; `npm start` serves it; `npm run dev` proxies `/api` to 4747. |
 | `scripts/init.sh` | Baseline runner: install, check, build. `--no-install` skips install. |
 | `scripts/check-architecture.mjs` | Import-direction check over `src/**/*.ts` and `web/src/**/*.ts(x)`; exits 1 on any violation. |
+| `scripts/agent-smoke.sh` | Agent gate (`npm run smoke:agent`, 16 checks): stub `ssh` and a throwaway git fixture over the two deploy helpers, covering the 55432 refusal, strict SSH options, local/deployed parity, and the tunnel probe with no Docker, database, or network. |
 | `scripts/clean-state.sh` | End-of-session gate. Idempotent, writes nothing. |
 | `scripts/acceptance.sh` | Acceptance entry: `bash scripts/db.sh --no-migrate`, `npm run build:web`, then `scripts/acceptance.mjs` with the caller's flags. |
 | `scripts/acceptance.mjs` | End-to-end gate over a throwaway database: CLI (including project add/list/show/edit/archive/restore), MCP, server, HTTP plus SSE (including project detail, `PATCH`, and archive), webhook, palette seed, browser (including the 390 px projects page, project creation at 0%, and the status edit); drops the database and fails if the default `curved` rows changed. `--skip-browser`, `--keep`. |

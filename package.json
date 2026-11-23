@@ -21,6 +21,7 @@
     "smoke:release": "bash scripts/release-smoke.sh",
     "smoke:webhook": "bash scripts/webhook-smoke.sh",
     "smoke:backup": "bash scripts/backup-smoke.sh",
+    "smoke:agent": "bash scripts/agent-smoke.sh",
     "migrate": "node src/composition/migrate.ts",
     "start": "node src/composition/server.ts",
     "cli": "node src/composition/cli.ts",
