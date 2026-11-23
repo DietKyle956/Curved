@@ -409,7 +409,7 @@ export function createApp(options: CreateAppOptions): App {
           return json(NOT_FOUND_BODY, 404);
         }
         return json(
-          { available: await passkeysAvailable(ports) },
+          await passkeysAvailable(ports, webauthn.rpID),
           200,
           { "cache-control": "no-store" },
         );
@@ -424,7 +424,7 @@ export function createApp(options: CreateAppOptions): App {
       if (key === undefined) {
         if (method === "GET") {
           requireHuman(await auth());
-          return json({ passkeys: await listPasskeys(ports) });
+          return json({ passkeys: await listPasskeys(ports, webauthn.rpID) });
         }
         if (method === "POST") {
           requireHuman(await auth());

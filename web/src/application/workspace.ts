@@ -74,6 +74,7 @@ export interface Workspace {
 
   passkeysSupported: boolean;
   passkeyAvailable: boolean;
+  passkeyOtherDomain: number;
   passkeys: PasskeySummary[];
   passkeysOpen: boolean;
   passkeysLoading: boolean;
@@ -179,6 +180,7 @@ export function useWorkspace({
   const [toasts, setToasts] = useState<ToastItem[]>([]);
 
   const [passkeyAvailable, setPasskeyAvailable] = useState(false);
+  const [passkeyOtherDomain, setPasskeyOtherDomain] = useState(0);
   const [passkeys, setPasskeys] = useState<PasskeySummary[]>([]);
   const [passkeysOpen, setPasskeysOpen] = useState(false);
   const [passkeysLoading, setPasskeysLoading] = useState(false);
@@ -232,6 +234,7 @@ export function useWorkspace({
       .then((result) => {
         if (alive) {
           setPasskeyAvailable(result.available);
+          setPasskeyOtherDomain(result.otherDomain);
         }
       })
       .catch(() => {
@@ -796,6 +799,9 @@ export function useWorkspace({
         setPasskeyAvailable(true);
         const result = await api.passkeys();
         setPasskeys(result.passkeys);
+        setPasskeyOtherDomain(
+          result.passkeys.filter((passkey) => !passkey.usable).length,
+        );
         notify("success", "Passkey added");
         return true;
       } catch (error) {
@@ -820,7 +826,10 @@ export function useWorkspace({
         await api.deletePasskey(id);
         const result = await api.passkeys();
         setPasskeys(result.passkeys);
-        setPasskeyAvailable(result.passkeys.length > 0);
+        setPasskeyAvailable(result.passkeys.some((passkey) => passkey.usable));
+        setPasskeyOtherDomain(
+          result.passkeys.filter((passkey) => !passkey.usable).length,
+        );
         notify("success", "Passkey removed");
         return true;
       } catch (error) {
@@ -950,6 +959,7 @@ export function useWorkspace({
 
     passkeysSupported: passkeyCeremony.supported,
     passkeyAvailable,
+    passkeyOtherDomain,
     passkeys,
     passkeysOpen,
     passkeysLoading,

@@ -38,6 +38,7 @@ export function AppView({ workspace }: { workspace: Workspace }) {
         onSignIn={workspace.signIn}
         passkeysSupported={workspace.passkeysSupported}
         passkeyAvailable={workspace.passkeyAvailable}
+        passkeyOtherDomain={workspace.passkeyOtherDomain}
         onPasskeySignIn={workspace.signInWithPasskey}
       />
     );

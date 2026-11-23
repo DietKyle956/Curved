@@ -9,7 +9,11 @@
   summary, description, six-value status, nullable priority and dates, archive,
   and per-status progress across the CLI, HTTP API, and SPA), and passkey login
   is live (migration `0006`, opaque server-side sessions, passkey routes, and
-  the sign-in and management UI). `LAS-188` is Done: the rebuild drill ran on
+  the sign-in and management UI). Passkeys are now scoped to the relying party
+  ID (migration `0008`): credentials from a previous domain stay inert, the
+  sign-in page disables the passkey button and explains the move when only
+  stale rows exist, and the operator adds a new passkey with the UI token then
+  deletes the old row. `LAS-188` is Done: the rebuild drill ran on
   2026-11-23 on a fresh instance, restored from a dump, and cut over to the
   reserved `129.213.209.162` behind `https://curv3d.duckdns.org`; the old
   sslip instance is stopped as rollback. `LAS-189` is Done: the agent tunnel
@@ -41,11 +45,13 @@ git history and the Linear comments.
   `npm run smoke:agent`, and
   `.github/workflows/verify.yml` on every push to `main` and manual dispatch,
   where the main-only `deploy` job runs after `verify`.
-- Baseline: 224 tests pass (218 behavior, 6 architecture),
+- Baseline: 228 tests pass (222 behavior, 6 architecture),
   `architecture: ok (84 files)`, web build green; `npm run acceptance` passes
-  (194 checks, including the project CLI show/edit/archive/restore and HTTP
-  detail/`PATCH`/archive legs plus the browser passkey registration and
-  passkey sign-in lines), `npm run smoke:release` 22 assertions,
+  (197 checks, including the project CLI show/edit/archive/restore and HTTP
+  detail/`PATCH`/archive legs, the browser passkey registration and passkey
+  sign-in lines, and the sign-in-only `browser-signin` leg that seeds a stale
+  passkey row and asserts the disabled button and explanation),
+  `npm run smoke:release` 22 assertions,
   `npm run smoke:backup` 19, `npm run smoke:provision` 52,
   `npm run smoke:webhook` 9, and `npm run smoke:compose` includes the real
   backup, Postgres drill, and Caddy restore legs. Public product acceptance on
@@ -76,7 +82,9 @@ git history and the Linear comments.
   `agents` (unique trimmed name 1..100, unique lowercase SHA-256 `token_hash`);
   migration `0004` adds `labels`, `issue_labels`, `issue_relations`; migration
   `0005` adds the `pg_notify` triggers; migration `0006` adds
-  `passkey_credentials`, `auth_sessions`, and `webauthn_challenges`.
+  `passkey_credentials`, `auth_sessions`, and `webauthn_challenges`; migration
+  `0008` adds a nullable `passkey_credentials.rp_id` with a format check,
+  leaving pre-migration rows NULL and inert.
   `issues_one_active_claim_per_agent` is
   the partial unique claim fence and `issues.claimed_by` references
   `agents(name)`.
@@ -119,12 +127,13 @@ git history and the Linear comments.
   create, show, human-only `PATCH`), transition, comments, labels, relations,
   block, unblock, release, `/api/ready`, `/api/claims/next`, cookie-only
   `/api/events`, and `/webhooks/github`. Passkey routes: `GET
-  /api/passkeys/available` (no auth, `{ available }`, `cache-control:
-  no-store`), `GET /api/passkeys`, `POST /api/passkeys/options`, `POST
-  /api/passkeys` (201 `{ passkey }`), and `DELETE /api/passkeys/:id` (204) are
-  human-only, while `POST /api/session/passkey/options` and `POST
-  /api/session/passkey` are unauthenticated login options and completion that
-  returns the actor plus a session cookie. Human-only routes accept either the
+  /api/passkeys/available` (no auth, `{ available, otherDomain }`,
+  `cache-control: no-store`), `GET /api/passkeys`, `POST
+  /api/passkeys/options`, `POST /api/passkeys` (201 `{ passkey }`), and `DELETE
+  /api/passkeys/:id` (204) are human-only, while `POST
+  /api/session/passkey/options` and `POST /api/session/passkey` are
+  unauthenticated login options and completion that returns the actor plus a
+  session cookie. Human-only routes accept either the
   UI bearer or the session cookie; one implicit human identity owns many
   passkeys, with no users table and no actor/timeline change, and the token
   bearer stays valid for deploy, health, CLI, MCP, and acceptance. Errors are
@@ -761,3 +770,4 @@ on 2026-11-18, and 037 to 039 on 2026-11-19.
 | 044 | `LAS-188` completion | The live `158.101.127.247` was found to be an ephemeral public IP, not reserved, so the drill moved to reserved `129.213.209.162` and `https://curv3d.duckdns.org` (DNS-only DuckDNS A record). A fresh `curved-rebuild` A1 (2 OCPU/12 GB, AD-1, 50 GB boot) got a fresh 100 GB `curved-data-rebuild`; an online FULL backup of `curved-data` restored to `curved-restore-raw` (`is-hydrated: true`), `deploy/.env` and nightly `20261123T032302Z` were copied off-host with `SHA256SUMS` verified, and a current `pg_dump` (31 KB, 73 TOC entries) restored 2 projects/8 issues. `release.sh --require-public-probe` printed `release: public probe ok` and `release: ok d002ccd`; `verify-host` 27 PASS/0 FAIL after bootstrap now removes rpcbind 111/tcp+udp; UI sign-in reached `/p/CRV`, SSE `issues_changed` arrived, signed webhook ping returned 200 and unsigned 401; GitHub hook 715784553 replaced 714067501. Deploy secrets rotated (`DEPLOY_HOST`, `DEPLOY_KNOWN_HOSTS`, `DEPLOY_SSH_KEY`); manual dispatch run 45191364607 passed Verify and Deploy. Old `curved` instance stopped with boot and `curved-data` volumes kept. |
 | 045 | `LAS-189` | `deploy/agent-tunnel.sh` forwards `55433` to `127.0.0.1:55432` with strict SSH and refuses `55432`, so the local development listener survives; `deploy/agent-preflight.sh` compares checkout `HEAD` to `/srv/curved/release-state` and supports `--require-tunnel`; `scripts/agent-smoke.sh` plus the `smoke:agent` package script run 16 checks (local listener preserved, tunnel parse/refusal, strict SSH options, preflight parity and tunnel-required negatives, token handling). `deploy/provisioning.md` section 19 and `README.md` document the tunnel, preflight, MCP stdio entry, gates, and status. Gates: `npm run check` green with 223 tests and `architecture: ok (84 files)`, `npm run smoke:agent` prints `agent-smoke: ok (16 checks)`. Live proof on 2026-11-23 against `https://curv3d.duckdns.org`: local `HEAD` and release-state both `de5c863`, preflight `--require-tunnel` ok, `55432` local and `55433` tunnel, an agent created via the CLI in the app image with a one-time `crv_` token in a mode-600 home file (never printed), CLI projects `PRFTEINIO`/`OTHTEINIO` and issues `PRFTEINIO-1`/`2`/`3` and `OTHTEINIO-1`, a human HTTP relation blocking `PRFTEINIO-2` on `PRFTEINIO-1`, all eight MCP tools, blocked issue omitted from `list_ready`, `claim_next` claiming `PRFTEINIO-1`, a second claim filtered to `OTHTEINIO` failing `agent_busy` naming `PRFTEINIO-1`, `done` releasing the blocker so `PRFTEINIO-2` became ready and was claimed, `mark_blocked` returning it to `todo`, both projects archived, and the relation unblocked. Next: `LAS-190`. |
 | 046 | `LAS-190` | Added `test/server-entry.test.ts`, which spawns the real `src/composition/server.ts` in a temp cwd with `CURVED_UI_TOKEN=""` and an unreachable `DATABASE_URL`, and asserts exit 1, the `CURVED_UI_TOKEN is required to start the HTTP server` stderr line, no `curved listening` stdout, and no `ECONNREFUSED` (proving no DB attempt). Live at deployed `57ced3d`: `docker run --rm -e CURVED_UI_TOKEN= curved:57ced3d` printed the guard and `exit=1`; first-run setup created `FIRST`/`First Run` through the SPA against a throwaway `curved_las190_firstrun` database on the deployed Postgres (row `FIRST|First Run|planned|0` issues, no SQL insert), with session persistence on reload; the throwaway container, database, env file, and forward were removed. Seeded `LAS190` through the deployed CLI (four issues, agent block of `LAS190-1`, claim of `LAS190-2`, human label on `LAS190-3`), then a 390x844 Chromium/CDP run over `https://curv3d.duckdns.org` passed 77 checks: token sign-in, session persistence across navigation (`/api/me` 200, `navType=navigate`), board blocked badge and label chips, queue `Ready=2 In flight=1 Blocked=1` with rows and Unblock buttons, detail created event and comment, labels editor, relation confirmed on both API sides, human unblock clearing the panel and dropping the blocked count to 0, palette key match, human SSE in 251 ms and agent SSE in 101/201 ms into two tabs without reload, and four screenshots under `/tmp`. Released `LAS190-2` and archived `LAS190`; issues and timeline remain. Documented the runbook in `deploy/provisioning.md` section 20 and updated README, AGENTS, and MEMORY. Gates: `npm run check` 224 tests (218 behavior, 6 architecture), `architecture: ok (84 files)`, `npm run acceptance` 194 checks. The follow-up commit is the test and docs only, so the product code matches the accepted `57ced3d` image. |
+| 047 | Passkey domain scoping | A passkey registered at `158.101.127.247.sslip.io` could not authenticate at `curv3d.duckdns.org` because WebAuthn binds a credential to one RP ID, and the server still offered the stale credential in login `allowCredentials`, so iOS showed its cross-device QR sheet instead of Face ID. Migration `0008_passkey_rp_id.sql` adds nullable `passkey_credentials.rp_id` with a format check; pre-migration rows stay NULL and inert. `PasskeySummary`/`PasskeyRecord` carry `rpId: string \| null` and `usable`; `PasskeyRepository` adds `listForRpId` and `countForRpId` and `create` requires `rpId`; `passkeysAvailable(ports, rpID)` returns `{ available, otherDomain }`, served by `GET /api/passkeys/available` (`cache-control: no-store`), while `GET /api/passkeys` annotates each row with `rpId`/`usable`; login options offer only current-domain credentials with `hints: ["client-device"]`, fail validation with "no passkey is registered for this domain" when none exist, and return 401 when completion uses an other-domain credential; registration stores the current RP ID and excludes only usable ids; config lowercases the RP ID. The SPA disables the passkey button and explains the move when only stale rows exist, and `PasskeysDialog` tags them "Different domain" while still allowing deletion. `test/passkeys.test.ts` covers current versus other-domain availability counts, the listing annotation, registration exclusion, login options, and other-domain sign-in rejection; `scripts/acceptance.mjs` adds the sign-in-only `browser-signin` leg, which seeds a NULL-`rp_id` row and asserts the disabled button and explanation. Gates: 228 node tests (222 behavior, 6 architecture), `architecture: ok (84 files)`, `npm run acceptance` 197 checks; the deployed host was not reachable from this workstation, so release and re-registration remain for the operator. |

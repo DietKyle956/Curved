@@ -113,7 +113,7 @@ function readWebAuthn(env: NodeJS.ProcessEnv): WebAuthnConfig {
       );
     }
   }
-  return { rpID, origins };
+  return { rpID: normalizedRpId, origins };
 }
 
 /**

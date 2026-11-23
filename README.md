@@ -738,12 +738,13 @@ The gate builds on the other two entry points rather than replacing them:
 `./scripts/clean-state.sh` is still the end-of-session gate. This is the only one
 that runs the CLI, MCP server, HTTP server, webhook, and SPA together.
 
-The repository-side gates all pass: `npm run check` passes 224 tests (218
+The repository-side gates all pass: `npm run check` passes 228 tests (222
 behavior, 6 architecture) with `architecture: ok (84 files)`, and `npm run
-acceptance` passes 194 checks, including the project CLI, HTTP, and browser
-lines and the two browser passkey lines. `npm run
-smoke:compose` covers the HTTP to HTTPS redirect, the HSTS toggle before and
-after enabling `CURVED_HSTS_MAX_AGE`, gzip on the JS asset,
+acceptance` passes 197 checks, including the project CLI, HTTP, and browser
+lines, the two browser passkey lines, and the sign-in-only `browser-signin`
+leg, which seeds a stale passkey row and asserts the disabled button and
+explanation. `npm run smoke:compose` covers the HTTP to HTTPS redirect, the HSTS
+toggle before and after enabling `CURVED_HSTS_MAX_AGE`, gzip on the JS asset,
 an `issues_changed` frame within 5s, and a real nightly backup restored into a
 throwaway database plus a Caddy volume restore, `npm run smoke:provision`
 reports 52 PASS, `npm run smoke:release` 22 PASS, `npm run smoke:backup`
@@ -781,6 +782,9 @@ Prerequisites:
    otherwise `http://localhost:4747` and `http://localhost:5173`; the RP ID
    defaults to the hostname of the first origin. Each origin must be a bare
    http/https origin, and its host must equal the RP ID or be a subdomain of it.
+   A passkey is bound to the RP ID it was registered under, so changing
+   `CURVED_DOMAIN` or the RP ID invalidates existing passkeys: sign in with the
+   UI token and register a new one.
 7. Over HTTPS only: export `COOKIE_SECURE=1` so the session and logout cookies
    also carry `Secure`.
 
@@ -813,12 +817,25 @@ issue's project cannot change.
 
 Passkeys use one implicit human identity: every registered credential belongs to
 that identity, there is no users table, and passkey registration or login does
-not create timeline events or a new actor type. `GET /api/passkeys/available`
-answers `{ available }` without auth and with `cache-control: no-store`, so the
-sign-in screen knows whether to offer the passkey button. The remaining passkey
-routes are human-only and accept either the UI bearer or the session cookie;
-only the login options and completion pair is unauthenticated. Registration and
-assertion challenges are stored in `webauthn_challenges` and are single-use.
+not create timeline events or a new actor type. Each credential is bound to one
+relying party ID, recorded in `passkey_credentials.rp_id`, because WebAuthn
+cannot use a credential under a different hostname; rows written before
+migration `0008` have no RP ID and are inert. `GET /api/passkeys/available`
+answers `{ available, otherDomain }` without auth and with
+`cache-control: no-store`, so the sign-in screen knows whether to offer the
+passkey button and can explain that stale credentials exist; `GET /api/passkeys`
+annotates each row with `rpId` and `usable`. Login options offer only
+current-domain credentials and add `hints: ["client-device"]`; when none exist
+the route fails with "no passkey is registered for this domain", and finishing
+with an other-domain credential is `401 not_authenticated`. Registration stores
+the current RP ID and excludes only usable ids. After a domain change a passkey
+from the old name cannot be used: sign in with the UI token, add a passkey in the
+passkeys dialog, then delete the old-domain row, which the dialog tags
+"Different domain". The remaining passkey routes are human-only and accept
+either the UI bearer or the session cookie; only the login options and
+completion pair is unauthenticated.
+Registration and assertion challenges are stored in `webauthn_challenges` and
+are single-use.
 
 `GET /api/events` is the one exception: it authenticates by the `curved_session`
 cookie only and ignores `Authorization`, because `EventSource` cannot set request
@@ -842,7 +859,7 @@ issue and `{"ok":true,"ignored":true}` otherwise, so GitHub never retries.
 | `GET` | `/api/me` | human or agent | `{ actor }` |
 | `POST` | `/api/session` | UI token in the `{ token }` body | Sets the cookie, returns `{ actor }` |
 | `DELETE` | `/api/session` | human or agent | `204`, deletes the session row, clears the cookie |
-| `GET` | `/api/passkeys/available` | none | `{ available }`; `cache-control: no-store` |
+| `GET` | `/api/passkeys/available` | none | `{ available, otherDomain }`; `cache-control: no-store` |
 | `GET` | `/api/passkeys` | human only | `{ passkeys }` |
 | `POST` | `/api/passkeys/options` | human only | registration options |
 | `POST` | `/api/passkeys` | human only | `201 { passkey }` |

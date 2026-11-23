@@ -33,24 +33,39 @@ export const PASSKEY_CHALLENGE_TTL_MS = 5 * 60 * 1000;
 const PASSKEY_USER_ID = new TextEncoder().encode("curved-human");
 
 /** Strips the verification material; only what a client may see leaks out. */
-export function toPasskeySummary(record: PasskeyRecord): PasskeySummary {
+export function toPasskeySummary(record: PasskeyRecord, rpID: string): PasskeySummary {
   return {
     id: record.id,
     nickname: record.nickname,
     deviceType: record.deviceType,
     backedUp: record.backedUp,
+    rpId: record.rpId,
+    usable: record.rpId === rpID,
     createdAt: record.createdAt.toISOString(),
     lastUsedAt: record.lastUsedAt === null ? null : record.lastUsedAt.toISOString(),
   };
 }
 
-export async function passkeysAvailable(ports: TransactionPorts): Promise<boolean> {
-  return (await ports.passkeys.count()) > 0;
+/**
+ * Reports whether this domain has a usable passkey, plus how many stored
+ * credentials belong elsewhere (or predate RP ID tracking) so the UI can
+ * explain why sign-in needs a fresh registration.
+ */
+export async function passkeysAvailable(
+  ports: TransactionPorts,
+  rpID: string,
+): Promise<{ available: boolean; otherDomain: number }> {
+  const usable = await ports.passkeys.countForRpId(rpID);
+  const total = await ports.passkeys.count();
+  return { available: usable > 0, otherDomain: total - usable };
 }
 
-export async function listPasskeys(ports: TransactionPorts): Promise<PasskeySummary[]> {
+export async function listPasskeys(
+  ports: TransactionPorts,
+  rpID: string,
+): Promise<PasskeySummary[]> {
   const records = await ports.passkeys.list();
-  return records.map(toPasskeySummary);
+  return records.map((record) => toPasskeySummary(record, rpID));
 }
 
 async function verifyRegistration(
@@ -110,7 +125,9 @@ export async function startPasskeyRegistration(
     userDisplayName: PASSKEY_USER_DISPLAY_NAME,
     userID: PASSKEY_USER_ID,
     attestationType: "none",
-    excludeCredentials: passkeys.map(({ id, transports }) => ({ id, transports })),
+    excludeCredentials: passkeys
+      .filter((record) => record.rpId === config.rpID)
+      .map(({ id, transports }) => ({ id, transports })),
     authenticatorSelection: {
       residentKey: "required",
       userVerification: "required",
@@ -157,8 +174,9 @@ export async function finishPasskeyRegistration(
     deviceType: credentialDeviceType,
     backedUp: credentialBackedUp,
     nickname,
+    rpId: config.rpID,
   });
-  return toPasskeySummary(record);
+  return toPasskeySummary(record, config.rpID);
 }
 
 export async function startPasskeyLogin(
@@ -167,15 +185,21 @@ export async function startPasskeyLogin(
 ): Promise<{ challengeId: string; options: PublicKeyCredentialRequestOptionsJSON }> {
   const now = new Date();
   await ports.challenges.deleteExpired(now);
-  const passkeys = await ports.passkeys.list();
+  const passkeys = await ports.passkeys.listForRpId(config.rpID);
   if (passkeys.length === 0) {
-    throw new ServiceError("validation", "no passkeys are registered");
+    throw new ServiceError(
+      "validation",
+      "no passkey is registered for this domain",
+    );
   }
-  const options = await generateAuthenticationOptions({
-    rpID: config.rpID,
-    allowCredentials: passkeys.map(({ id, transports }) => ({ id, transports })),
-    userVerification: "required",
-  });
+  const options: PublicKeyCredentialRequestOptionsJSON = {
+    ...(await generateAuthenticationOptions({
+      rpID: config.rpID,
+      allowCredentials: passkeys.map(({ id, transports }) => ({ id, transports })),
+      userVerification: "required",
+    })),
+    hints: ["client-device"],
+  };
   const challengeId = ports.tokens.mintNonce();
   await ports.challenges.create({
     id: challengeId,
@@ -208,7 +232,7 @@ export async function finishPasskeyLogin(
     throw new ServiceError("not_authenticated", "passkey sign-in failed");
   }
   const record = await ports.passkeys.findById(id);
-  if (record === null) {
+  if (record === null || record.rpId !== config.rpID) {
     throw new ServiceError("not_authenticated", "passkey sign-in failed");
   }
   const verification = await verifyAuthentication(input.response, record, challenge, config);

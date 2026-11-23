@@ -79,6 +79,10 @@ export interface PasskeySummary {
   nickname: string;
   deviceType: "singleDevice" | "multiDevice";
   backedUp: boolean;
+  /** RP ID that registered this credential; null for legacy rows. */
+  rpId: string | null;
+  /** True when the credential can be used for sign-in on the current domain. */
+  usable: boolean;
   createdAt: string;
   lastUsedAt: string | null;
 }

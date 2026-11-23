@@ -522,7 +522,10 @@ subject `CN=158.101.127.247.sslip.io`, issuer `CN=YE2` under
 https://<domain>/
 ```
 
-and sign in with the `CURVED_UI_TOKEN` value. The browser shows the normal padlock
+and sign in with the `CURVED_UI_TOKEN` value. If the passkey button is disabled
+and the page says a passkey is registered for a different domain, follow the
+domain-change entry in section 15; the token form still signs you in. The
+browser shows the normal padlock
 with no certificate exception to accept. If Caddy has not finished issuance yet,
 the connection fails or shows a warning; wait for `certificate obtained
 successfully` in the Caddy log (section 7) and retry.
@@ -1394,6 +1397,38 @@ Keep the current token out of the repo, for example in a mode-600 file such as
 `~/.curved-ui-token`.
 
 ## 15. Troubleshooting
+
+### Passkey sign-in shows a QR code after a domain change
+
+**Symptom.** After `CURVED_DOMAIN` moves to a new name, the sign-in page offers a
+passkey but the browser or phone shows a cross-device QR sheet, or the passkey
+button does nothing useful, even though the same device signed in before the
+move.
+
+**Cause.** WebAuthn binds every credential to one relying party ID, the hostname
+under which it was registered, so a credential stored for the previous name is
+unusable at the new one. Before migration `0008` the server counted that row as
+available and offered it in login `allowCredentials`, so the device fell back to
+the cross-device flow instead of a local Face ID or Touch ID prompt.
+
+**Recovery.**
+
+1. Open the new domain and sign in with the UI token from
+   `/srv/curved/checkout/deploy/.env` (`CURVED_UI_TOKEN`, mode 600, owned by
+   `deploy`). Section 8 has the read command.
+2. Open the passkeys dialog from the topbar, the sidebar footer, or the command
+   palette action "Manage passkeys", and add a new passkey. It is stored under
+   the current RP ID.
+3. Delete the row tagged "Different domain", which is the passkey from the old
+   name.
+4. If the UI token is unknown, run the `rotate-ui-token` workflow
+   (`.github/workflows/rotate-ui-token.yml`) first; section 14.6 covers the
+   operator path.
+
+Migration `0008` makes rows written before it inert: they have a NULL `rp_id`, so
+the server never offers them. When only such rows exist, the sign-in page
+disables the passkey button and explains that a passkey is registered for a
+different domain, which points here instead of starting the QR flow.
 
 ### Out of host capacity
 
@@ -2667,5 +2702,5 @@ container were removed. The seeded `LAS190` project produced
 passed 77 checks covering sign-in, session persistence, board, queue, detail,
 timeline, comment, labels, relation, human unblock, palette, human SSE
 (251 ms), and agent SSE (101/201 ms), then released the claim and archived the
-project. Local gates: `npm run check` passes 224 tests with
-`architecture: ok (84 files)`, and `npm run acceptance` passes 194 checks.
+project. Local gates: `npm run check` passes 228 tests with
+`architecture: ok (84 files)`, and `npm run acceptance` passes 197 checks.

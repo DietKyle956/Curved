@@ -11,6 +11,10 @@
 //                           WebAuthn ceremonies work)
 //   ACCEPTANCE_UI_TOKEN     UI token used to sign in
 //   ACCEPTANCE_PROJECT_KEY  existing project key, e.g. TAC
+//   ACCEPTANCE_SIGNIN_ONLY  "1" runs only the stale-passkey sign-in regression:
+//                           the page at ACCEPTANCE_BASE_URL must disable the
+//                           passkey button, explain the domain mismatch, and
+//                           keep the token form. No other leg runs.
 //
 // Exit 0 prints PASS browser: lines. Exit 1 prints FAIL browser: with the last
 // phase plus diagnostic page text.
@@ -1390,11 +1394,67 @@ async function goToBoardFor(tab, projectKey) {
 /* Flow                                                                       */
 /* -------------------------------------------------------------------------- */
 
+/**
+ * Permanent regression for the stale-passkey sign-in surface. The throwaway
+ * database holds one legacy credential whose `rp_id` is NULL, so the page must
+ * treat it as unusable at this RP ID: the passkey button stays disabled, the
+ * page explains the domain mismatch, and the token form remains available.
+ * This leg deliberately skips the virtual authenticator and every board,
+ * project, and passkey-registration step the full browser leg runs.
+ */
+async function signinOnlyFlow(baseUrl) {
+  state.phase = "open sign-in page";
+  const tab = await openTab(state.cdp, "signin", baseUrl);
+  await tab.waitFor(SIGNIN_TOKEN, 20_000);
+  await tab.waitFor(SIGNIN_PASSKEY, 20_000);
+
+  // The availability probe resolves after first paint, so the explanation only
+  // appears once the server has reported the credential as other-domain.
+  state.phase = "wait for other-domain explanation";
+  await waitForBodyContains(
+    tab,
+    "A passkey is registered for a different domain",
+    10_000,
+  );
+
+  state.phase = "assert stale passkey is inert";
+  const passkeyDisabled = await tab.evaluate(
+    `document.querySelector(${JSON.stringify(SIGNIN_PASSKEY)})?.disabled === true`,
+  );
+  assert(
+    passkeyDisabled === true,
+    "the passkey sign-in button is enabled although only a different-domain credential exists",
+  );
+
+  const body = String(await tab.bodyText());
+  assert(
+    body.includes("A passkey is registered for a different domain"),
+    `the sign-in page did not explain the other-domain passkey; page text starts ${JSON.stringify(body.slice(0, 300))}`,
+  );
+
+  const tokenFormPresent = await tab.evaluate(
+    `document.querySelector(${JSON.stringify(SIGNIN_TOKEN)}) !== null &&
+       document.querySelector(${JSON.stringify(SIGNIN_SUBMIT)}) !== null`,
+  );
+  assert(
+    tokenFormPresent === true,
+    "the token sign-in form is missing from the sign-in page",
+  );
+
+  await success([
+    `PASS browser-signin: passkey button disabled and the page explains "A passkey is registered for a different domain" at ${baseUrl}`,
+    "PASS browser-signin: token sign-in form present and ready",
+  ]);
+}
+
 async function main() {
   state.phase = "validate environment";
   const baseUrl = readEnv("ACCEPTANCE_BASE_URL").replace(/\/+$/, "");
-  const uiToken = readEnv("ACCEPTANCE_UI_TOKEN");
-  const projectKey = readEnv("ACCEPTANCE_PROJECT_KEY");
+  // The sign-in-only regression never signs in or navigates to a project, so it
+  // must not require the token or project key. The full browser leg still does.
+  const signinOnly = process.env.ACCEPTANCE_SIGNIN_ONLY === "1";
+  const uiToken = signinOnly ? "" : readEnv("ACCEPTANCE_UI_TOKEN");
+  const projectKey = signinOnly ? "" : readEnv("ACCEPTANCE_PROJECT_KEY");
 
   state.phase = "launch chromium";
   const webSocketUrl = await launchChromium();
@@ -1420,6 +1480,11 @@ async function main() {
       state.consoleLines.splice(0, state.consoleLines.length - 100);
     }
   });
+
+  if (signinOnly) {
+    await signinOnlyFlow(baseUrl);
+    return;
+  }
 
   state.phase = "open first tab";
   const boardUrl = `${baseUrl}/p/${encodeURIComponent(projectKey)}`;

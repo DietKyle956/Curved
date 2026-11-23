@@ -110,6 +110,8 @@ export interface PasskeySummary {
   backedUp: boolean;
   createdAt: string;
   lastUsedAt: string | null;
+  rpId: string | null;
+  usable: boolean;
 }
 
 export interface NewIssueInput {

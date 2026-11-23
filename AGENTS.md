@@ -305,9 +305,9 @@ cookies require a new sign-in. `src/application/sessions.ts` and
 `src/adapters/postgres/repositories/` `passkeys.ts`, `auth-sessions.ts`, and
 `passkey-challenges.ts` behind them; `src/adapters/http/auth.ts` resolves the
 cookie through the session row. Routes: `GET /api/passkeys/available` (no auth,
-`{ available }`, `cache-control: no-store`), `GET /api/passkeys`, `POST
-/api/passkeys/options`, `POST /api/passkeys` (201 `{ passkey }`), and `DELETE
-/api/passkeys/:id` (204) are human-only, while `POST
+`{ available, otherDomain }`, `cache-control: no-store`), `GET /api/passkeys`,
+`POST /api/passkeys/options`, `POST /api/passkeys` (201 `{ passkey }`), and
+`DELETE /api/passkeys/:id` (204) are human-only, while `POST
 /api/session/passkey/options` and `POST /api/session/passkey` are
 unauthenticated login options and completion returning the actor plus the
 session cookie. Human-only routes accept the UI bearer or the session cookie.
@@ -699,16 +699,43 @@ subscribes to all projects when `projectId` is null. The UI adds `ProjectsPage`,
 Projects and Overview sidebar rows, a five-cell mobile nav at 390 px (78 px per
 cell), shell breadcrumb and primary-button variants, the palette actions Go to
 projects and New project, issue-detail project navigation, and the new
-ProjectSetup footer copy. `npm run check` is green with 224 tests (218 behavior,
+ProjectSetup footer copy. `npm run check` is green with 228 tests (222 behavior,
 6 architecture) and `architecture: ok (84 files)`; `npm run acceptance` is green
-with 194 checks, including the project CLI show/edit/archive/restore assertions,
-the HTTP detail, `PATCH`, and archive assertions, and the browser lines `PASS
+with 197 checks, including the project CLI show/edit/archive/restore assertions,
+the HTTP detail, `PATCH`, and archive assertions, the sign-in-only
+`browser-signin` leg that seeds a NULL-`rp_id` passkey row and asserts the
+disabled button plus explanation, and the browser lines `PASS
 browser: projects page fits 390px ...`, `PASS browser: project created WEB at
 /p/WEB/overview with "0%" progress ...`, and the status edit to In progress.
 The browser leg's direct issue-URL tab exposed and now guards a deep-link race:
 the timeline fetch effect keys on `projectKeyFromRoute`, so a late project
 resolution that clears the timeline refetches exactly once instead of leaving
 the detail modal empty.
+
+Passkeys are scoped to the relying party ID. Migration
+`0008_passkey_rp_id.sql` adds a nullable `passkey_credentials.rp_id` with a
+format check; rows written before it stay NULL and inert, so a credential
+registered under a previous domain can never match. `PasskeySummary` and
+`PasskeyRecord` in `src/domain/types.ts` carry `rpId: string | null` and
+`usable`; `PasskeyRepository` in `src/application/ports.ts` gains `listForRpId`
+and `countForRpId`, and `create` now requires `rpId`.
+`passkeysAvailable(ports, rpID)` in `src/application/passkeys.ts` returns
+`{ available, otherDomain }`, and `src/adapters/http/app.ts` serves that object
+from `GET /api/passkeys/available` (still `cache-control: no-store`) while
+`GET /api/passkeys` annotates every row with `rpId` and `usable`. Login options
+offer only current-domain credentials and set `hints: ["client-device"]`; when
+none exist the route fails validation with "no passkey is registered for this
+domain", and finishing with an other-domain credential is `401`. Registration
+stores the current RP ID and excludes only usable ids, and
+`src/composition/config.ts` lowercases the RP ID. In the SPA, when only stale
+credentials exist `SignIn` disables the passkey button and says: "A passkey is
+registered for a different domain. Passkeys cannot move between domains, so this
+site needs a new one: sign in with the UI token below, then add a passkey."
+`PasskeysDialog` tags stale rows "Different domain" and still allows deleting
+them. Recovery after a domain move: sign in at the new domain with the token
+from `/srv/curved/checkout/deploy/.env` (`CURVED_UI_TOKEN`), add a passkey in the
+passkeys dialog, then delete the old-domain row; if the token is unknown,
+`.github/workflows/rotate-ui-token.yml` installs a new one.
 
 `LAS-190` is live: the deployed product passed first-run and public acceptance.
 On 2026-11-23 at deployed sha `57ced3d`, the image refused to start with an
@@ -726,11 +753,14 @@ reload. The proof project `LAS190` was released and archived, leaving its
 issues and timeline as evidence. `deploy/provisioning.md` section 20 is the
 runbook; local gates stay green.
 
-Tests: 224 pass, 0 fail, including `test/http.test.ts` and `test/sse.test.ts`,
+Tests: 228 pass, 0 fail, including `test/http.test.ts` and `test/sse.test.ts`,
 whose session cases exercise the opaque `auth_sessions` cookie rows,
-`test/passkeys.test.ts` for availability without auth, listing without
-verification material, registration and login option contents, single-use
-challenges, unknown credentials, and nickname validation,
+`test/passkeys.test.ts` for availability without auth and its current-domain
+versus other-domain counts, listing without verification material and with the
+`rpId`/`usable` annotation, registration options that exclude only usable
+credentials, single-use challenges, unknown credentials, login options that
+offer only current-domain credentials and fail when none exist, sign-in
+rejecting an other-domain credential, and nickname validation,
 `test/event-hub.test.ts`, the label and relation suites in `test/labels.test.ts`
 and `test/relations.test.ts`, the webhook and branch suite in
 `test/github.test.ts`, the issue filter and human-only edit cases in
@@ -740,7 +770,7 @@ transaction-scoped ports commit and rollback, and
 repository find by key, plus `test/architecture.test.ts`, which proves the real
 tree passes and five fixtures fail (application -> adapter, domain -> `pg`, web
 ui -> adapter, web application -> adapter, web domain -> a backend module other
-than `src/domain/status.ts`). Those 224 are the node tests (218 behavior and 6
+than `src/domain/status.ts`). Those 228 are the node tests (222 behavior and 6
 architecture); `npm run smoke:release` and `npm run smoke:agent` (16 checks) are
 shell gates, not part of them.
 `ARCH.md` codifies the layers and the one-way dependency rule; all
@@ -761,8 +791,9 @@ fully into the listbox. It also registers a passkey through Chromium's CDP
 virtual authenticator and signs in with it, printing `PASS browser: passkey
 registered ...` and `PASS browser: passkey sign-in reached the board ...`; focus
 emulation is enabled because headless tabs otherwise reject WebAuthn with
-`NotAllowedError`. The gate reports 194 checks in total, including the project
-CLI, HTTP, and browser assertions.
+`NotAllowedError`. The gate reports 197 checks in total, including the project
+CLI, HTTP, and browser assertions plus the sign-in-only `browser-signin` leg,
+which seeds a stale passkey row and asserts the disabled button and explanation.
 
 `--skip-browser` skips the seed and browser legs; `--keep` keeps the throwaway
 database. `LAS-151`, `LAS-153`, and `LAS-154` are Done after black-box

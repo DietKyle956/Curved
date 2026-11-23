@@ -197,7 +197,10 @@ export interface WebAuthnChallengeRepository {
 }
 
 /** A stored WebAuthn credential: summary fields plus the verification material. */
-export interface PasskeyRecord extends Omit<PasskeySummary, "createdAt" | "lastUsedAt"> {
+export interface PasskeyRecord
+  extends Omit<PasskeySummary, "createdAt" | "lastUsedAt" | "usable"> {
+  /** RP ID that registered this credential; null for legacy rows. */
+  rpId: string | null;
   publicKey: Uint8Array;
   counter: number;
   transports: string[];
@@ -215,9 +218,15 @@ export interface PasskeyRepository {
     deviceType: "singleDevice" | "multiDevice";
     backedUp: boolean;
     nickname: string;
+    rpId: string;
   }): Promise<PasskeyRecord>;
+  /** Every stored credential, including legacy and other-domain rows. */
   list(): Promise<PasskeyRecord[]>;
+  /** Count of every stored credential, including legacy and other-domain rows. */
   count(): Promise<number>;
+  /** Only credentials registered for the given RP ID. */
+  listForRpId(rpId: string): Promise<PasskeyRecord[]>;
+  countForRpId(rpId: string): Promise<number>;
   findById(id: string): Promise<PasskeyRecord | null>;
   /** Sets the counter and stamps `lastUsedAt` in one statement. */
   updateCounter(input: { id: string; counter: number }): Promise<void>;

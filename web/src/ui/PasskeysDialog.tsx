@@ -162,9 +162,16 @@ export function PasskeysDialog({
                   <Key className="size-3.5" aria-hidden="true" />
                 </span>
                 <div className="min-w-0 flex-1">
-                  <p className="truncate text-[12.5px] font-medium text-fg">
-                    {passkey.nickname}
-                  </p>
+                  <div className="flex min-w-0 items-center gap-2">
+                    <p className="truncate text-[12.5px] font-medium text-fg">
+                      {passkey.nickname}
+                    </p>
+                    {passkey.usable ? null : (
+                      <span className="inline-flex shrink-0 items-center rounded-ui border border-line bg-elevated px-1.5 py-0.5 font-mono text-[9.5px] leading-none tracking-[0.06em] text-fg-muted uppercase">
+                        Different domain
+                      </span>
+                    )}
+                  </div>
                   <p className="mt-0.5 text-[10.5px] leading-snug text-fg-muted">
                     Added {relativeTime(passkey.createdAt)} ·{" "}
                     {describeDevice(passkey)}

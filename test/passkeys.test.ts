@@ -21,6 +21,7 @@ interface ErrorResponse {
 
 interface AvailableResponse {
   available: boolean;
+  otherDomain: number;
 }
 
 interface Passkey {
@@ -30,6 +31,8 @@ interface Passkey {
   backedUp: boolean;
   createdAt: string;
   lastUsedAt: string | null;
+  rpId: string | null;
+  usable: boolean;
 }
 
 interface PasskeysResponse {
@@ -108,16 +111,46 @@ function postJson(
   });
 }
 
-async function seedPasskey(): Promise<void> {
+interface SeedPasskeyOptions {
+  id?: string;
+  nickname?: string;
+  rpId?: string;
+}
+
+async function seedPasskey(options: SeedPasskeyOptions = {}): Promise<void> {
   await testDb.ports.passkeys.create({
-    id: "cred-1",
+    id: options.id ?? "cred-1",
     publicKey: new Uint8Array([1, 2, 3]),
     counter: 0,
     transports: ["internal"],
     deviceType: "singleDevice",
     backedUp: false,
-    nickname: "Phone",
+    nickname: options.nickname ?? "Phone",
+    rpId: options.rpId ?? "localhost",
   });
+}
+
+/**
+ * Seeds a credential that predates RP-scoped storage: either a row from a
+ * domain that is no longer the relying party (`null` is a legacy row).
+ */
+async function seedOtherDomainPasskey(
+  rpId: string | null = "old-domain.example",
+): Promise<void> {
+  await testDb.ports.passkeys.create({
+    id: "cred-old",
+    publicKey: new Uint8Array([4, 5, 6]),
+    counter: 0,
+    transports: ["internal"],
+    deviceType: "singleDevice",
+    backedUp: false,
+    nickname: "Old laptop",
+    rpId: rpId as string,
+  });
+}
+
+function storedPasskeys() {
+  return testDb.ports.passkeys.list();
 }
 
 async function startRegistration(): Promise<RegistrationOptionsResponse> {
@@ -129,24 +162,56 @@ async function startRegistration(): Promise<RegistrationOptionsResponse> {
   return readJson<RegistrationOptionsResponse>(response);
 }
 
-test("passkey availability tracks registered credentials without auth", async () => {
+test("availability ignores credentials with no registered domain", async () => {
   const empty = await request(app, "/api/passkeys/available");
   assert.equal(empty.status, 200);
+  assert.equal(empty.headers.get("cache-control"), "no-store");
   assert.deepEqual(await readJson<AvailableResponse>(empty), {
     available: false,
+    otherDomain: 0,
   });
 
+  await seedOtherDomainPasskey(null);
+
+  const legacy = await request(app, "/api/passkeys/available");
+  assert.equal(legacy.status, 200);
+  assert.equal(legacy.headers.get("cache-control"), "no-store");
+  assert.deepEqual(await readJson<AvailableResponse>(legacy), {
+    available: false,
+    otherDomain: 1,
+  });
+});
+
+test("availability counts only credentials for the current domain", async () => {
   await seedPasskey();
 
-  const seeded = await request(app, "/api/passkeys/available");
-  assert.equal(seeded.status, 200);
-  assert.deepEqual(await readJson<AvailableResponse>(seeded), {
+  const current = await request(app, "/api/passkeys/available");
+  assert.equal(current.status, 200);
+  assert.deepEqual(await readJson<AvailableResponse>(current), {
     available: true,
+    otherDomain: 0,
   });
+
+  await seedOtherDomainPasskey();
+
+  const mixed = await request(app, "/api/passkeys/available");
+  assert.equal(mixed.status, 200);
+  assert.deepEqual(await readJson<AvailableResponse>(mixed), {
+    available: true,
+    otherDomain: 1,
+  });
+
+  const stored = await storedPasskeys();
+  const byId = new Map(
+    stored.map(({ id, rpId }) => [id, rpId] as const),
+  );
+  assert.equal(byId.get("cred-1"), "localhost");
+  assert.equal(byId.get("cred-old"), "old-domain.example");
 });
 
 test("listing passkeys with the bearer omits verification material", async () => {
   await seedPasskey();
+  await seedOtherDomainPasskey();
 
   const response = await request(app, "/api/passkeys", {
     headers: HUMAN_BEARER,
@@ -154,16 +219,26 @@ test("listing passkeys with the bearer omits verification material", async () =>
   assert.equal(response.status, 200);
 
   const body = await readJson<PasskeysResponse>(response);
-  assert.equal(body.passkeys.length, 1);
-  const passkey = body.passkeys[0];
-  assert.ok(passkey !== undefined);
-  assert.equal(passkey.id, "cred-1");
-  assert.equal(passkey.nickname, "Phone");
-  assert.equal(Object.hasOwn(passkey, "publicKey"), false);
+  assert.equal(body.passkeys.length, 2);
+
+  const current = body.passkeys.find(({ id }) => id === "cred-1");
+  assert.ok(current !== undefined);
+  assert.equal(current.nickname, "Phone");
+  assert.equal(current.rpId, "localhost");
+  assert.equal(current.usable, true);
+  assert.equal(Object.hasOwn(current, "publicKey"), false);
+
+  const legacy = body.passkeys.find(({ id }) => id === "cred-old");
+  assert.ok(legacy !== undefined);
+  assert.equal(legacy.nickname, "Old laptop");
+  assert.equal(legacy.rpId, "old-domain.example");
+  assert.equal(legacy.usable, false);
+  assert.equal(Object.hasOwn(legacy, "publicKey"), false);
 });
 
 test("registration options name the relying party and exclude known credentials", async () => {
   await seedPasskey();
+  await seedOtherDomainPasskey();
 
   const body = await startRegistration();
   assert.equal(body.options.rp.id, "localhost");
@@ -205,8 +280,39 @@ test("a failed registration consumes its challenge exactly once", async () => {
   assert.match(secondError.error.message, /challenge is missing or expired/);
 });
 
-test("login options stop once every passkey is deleted", async () => {
+test("login options offer only credentials registered for this domain", async () => {
   await seedPasskey();
+  await seedOtherDomainPasskey();
+
+  const options = await request(app, "/api/session/passkey/options", {
+    method: "POST",
+  });
+  assert.equal(options.status, 200);
+  const optionsBody = await readJson<LoginOptionsResponse>(options);
+  const allowed = optionsBody.options.allowCredentials ?? [];
+  assert.equal(allowed.length, 1);
+  assert.equal(allowed[0]?.id, "cred-1");
+  assert.equal(
+    allowed.some(({ id }) => id === "cred-old"),
+    false,
+  );
+});
+
+test("login options fail when only other-domain credentials exist", async () => {
+  await seedOtherDomainPasskey();
+
+  const response = await request(app, "/api/session/passkey/options", {
+    method: "POST",
+  });
+  assert.equal(response.status, 400);
+  const error = await readJson<ErrorResponse>(response);
+  assert.equal(error.error.code, "validation");
+  assert.match(error.error.message, /no passkey is registered for this domain/);
+});
+
+test("login options stop once every current-domain passkey is deleted", async () => {
+  await seedPasskey();
+  await seedOtherDomainPasskey();
 
   const options = await request(app, "/api/session/passkey/options", {
     method: "POST",
@@ -229,7 +335,7 @@ test("login options stop once every passkey is deleted", async () => {
   assert.equal(afterDelete.status, 400);
   const error = await readJson<ErrorResponse>(afterDelete);
   assert.equal(error.error.code, "validation");
-  assert.match(error.error.message, /no passkeys are registered/);
+  assert.match(error.error.message, /no passkey is registered for this domain/);
 });
 
 test("an unknown credential fails sign-in and consumes its challenge", async () => {
@@ -251,6 +357,38 @@ test("an unknown credential fails sign-in and consumes its challenge", async () 
   const second = await postJson("/api/session/passkey", {
     challengeId,
     response: { id: "unknown" },
+  });
+  assert.equal(second.status, 401);
+  assert.match(
+    (await readJson<ErrorResponse>(second)).error.message,
+    /challenge is missing or expired/,
+  );
+});
+
+test("sign-in rejects an other-domain credential and consumes its challenge", async () => {
+  await seedPasskey();
+  await seedOtherDomainPasskey();
+
+  const options = await request(app, "/api/session/passkey/options", {
+    method: "POST",
+  });
+  assert.equal(options.status, 200);
+  const { challengeId } = await readJson<LoginOptionsResponse>(options);
+
+  const first = await postJson("/api/session/passkey", {
+    challengeId,
+    response: { id: "cred-old" },
+  });
+  assert.equal(first.status, 401);
+  assert.equal(first.headers.get("set-cookie"), null);
+  assert.equal(
+    (await readJson<ErrorResponse>(first)).error.code,
+    "not_authenticated",
+  );
+
+  const second = await postJson("/api/session/passkey", {
+    challengeId,
+    response: { id: "cred-old" },
   });
   assert.equal(second.status, 401);
   assert.match(

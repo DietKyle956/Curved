@@ -30,6 +30,13 @@ const GUARDED_TABLES = [
   "schema_migrations",
 ];
 const PROJECT_KEY = "TAC";
+/**
+ * A credential whose `rp_id` is NULL models a passkey registered before the
+ * RP-ID scoping migration. The sign-in-only leg needs exactly one such row to
+ * prove the page never offers it; the main browser leg then registers its own
+ * passkey and still finds a single usable row.
+ */
+const LEGACY_PASSKEY_ID = "acceptance-legacy";
 const EXPECTED_MCP_TOOLS = [
   "claim_next",
   "comment",
@@ -1526,6 +1533,91 @@ async function paletteSeedLeg(server) {
   return created.length;
 }
 
+/** Opens a client, runs `work`, and always closes it. */
+async function withDatabaseClient(databaseUrl, work) {
+  const client = new pg.Client({ connectionString: databaseUrl });
+  await client.connect();
+  try {
+    return await work(client);
+  } finally {
+    await client.end();
+  }
+}
+
+/**
+ * Seeds the one legacy credential the sign-in-only leg expects. Mirrors the
+ * pre-RP-ID row shape: `rp_id` is NULL, so the server must never offer it.
+ */
+async function seedLegacyPasskey(databaseUrl) {
+  const leg = "browser-signin";
+  const result = await withDatabaseClient(databaseUrl, (client) =>
+    client.query(
+      `insert into passkey_credentials
+         (id, public_key, counter, transports, device_type, backed_up, nickname, rp_id)
+       values ('acceptance-legacy', $1, 0, '{internal}', 'singleDevice', false, 'Old domain', null)`,
+      [Buffer.from([9, 9, 9])],
+    ),
+  );
+  assert(
+    leg,
+    result.rowCount === 1,
+    `seeding the legacy passkey inserted ${result.rowCount} rows`,
+  );
+}
+
+/** Removes the legacy row so the main browser leg sees exactly its own passkey. */
+async function removeLegacyPasskey(databaseUrl) {
+  const leg = "browser-signin";
+  const result = await withDatabaseClient(databaseUrl, (client) =>
+    client.query(
+      `delete from passkey_credentials where id = $1`,
+      [LEGACY_PASSKEY_ID],
+    ),
+  );
+  assert(
+    leg,
+    result.rowCount === 1,
+    `removing the legacy passkey deleted ${result.rowCount} rows`,
+  );
+}
+
+/**
+ * Runs `scripts/acceptance-browser.mjs` in sign-in-only mode: the same browser
+ * environment as the main leg plus `ACCEPTANCE_SIGNIN_ONLY=1`, so only the
+ * stale-passkey sign-in assertions run.
+ */
+async function browserSigninLeg(server, databaseUrl) {
+  const leg = "browser-signin";
+  // Detached for the same reason as the main browser leg: chromium inherits
+  // this process group, so a shutdown signal reaches the browser too.
+  const child = supervise(
+    spawn(process.execPath, ["scripts/acceptance-browser.mjs"], {
+      cwd: ROOT,
+      env: {
+        ...process.env,
+        DATABASE_URL: databaseUrl,
+        ACCEPTANCE_BASE_URL: server.browserBaseUrl,
+        ACCEPTANCE_UI_TOKEN: server.uiToken,
+        ACCEPTANCE_PROJECT_KEY: PROJECT_KEY,
+        ACCEPTANCE_SIGNIN_ONLY: "1",
+      },
+      stdio: ["ignore", "inherit", "inherit"],
+      detached: true,
+    }),
+    true,
+  );
+  const exited = new Promise((resolvePromise, rejectPromise) => {
+    child.once("error", rejectPromise);
+    child.once("close", (code, signal) => resolvePromise({ code, signal }));
+  });
+  const result = await exited;
+  assert(
+    leg,
+    result.code === 0,
+    `scripts/acceptance-browser.mjs (sign-in only) exited ${result.code}${result.signal === null ? "" : ` (signal ${result.signal})`}`,
+  );
+}
+
 async function browserLeg(server, databaseUrl) {
   const leg = "browser";
   // Detached so the leg leads its own process group: chromium inherits that
@@ -1775,6 +1867,16 @@ async function main() {
       pass(
         "palette-seed",
         `${checks - legChecks} checks: ${paletteSeeded} backlog issues created over the human bearer`,
+      );
+
+      gate.currentLeg = "browser-signin";
+      legChecks = checks;
+      await seedLegacyPasskey(acceptanceUrl);
+      await browserSigninLeg(server, acceptanceUrl);
+      await removeLegacyPasskey(acceptanceUrl);
+      pass(
+        "browser-signin",
+        `${checks - legChecks} checks: stale (null rp_id) passkey hidden behind a disabled button with the domain explanation`,
       );
 
       gate.currentLeg = "browser";

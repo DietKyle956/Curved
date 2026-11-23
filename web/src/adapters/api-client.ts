@@ -187,7 +187,7 @@ export function createApiClient(): ApiPort {
       return request(`${issuePath(key)}/unblock`, { method: "POST" });
     },
 
-    passkeyAvailable(): Promise<{ available: boolean }> {
+    passkeyAvailable(): Promise<{ available: boolean; otherDomain: number }> {
       return request("/api/passkeys/available");
     },
 

@@ -9,11 +9,13 @@ export function SignIn({
   onSignIn,
   passkeysSupported,
   passkeyAvailable,
+  passkeyOtherDomain,
   onPasskeySignIn,
 }: {
   onSignIn: (token: string) => Promise<void>;
   passkeysSupported: boolean;
   passkeyAvailable: boolean;
+  passkeyOtherDomain: number;
   onPasskeySignIn: () => Promise<void>;
 }) {
   const [token, setToken] = useState("");
@@ -166,7 +168,13 @@ export function SignIn({
                   : "Sign in with passkey"}
               </Button>
 
-              {passkeyAvailable ? null : (
+              {passkeyAvailable ? null : passkeyOtherDomain > 0 ? (
+                <p className="text-[11px] leading-relaxed text-fg-muted">
+                  A passkey is registered for a different domain. Passkeys
+                  cannot move between domains, so this site needs a new one:
+                  sign in with the UI token below, then add a passkey.
+                </p>
+              ) : (
                 <p className="text-[11px] leading-relaxed text-fg-muted">
                   No passkey registered yet. Sign in with the token below, then
                   add one.
