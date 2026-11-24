@@ -49,6 +49,7 @@ export const createIssueInput = z.object({
   title: titleSchema,
   description: descriptionSchema.optional(),
   priority: prioritySchema.optional(),
+  parent: issueKeySchema.optional(),
 });
 export const getIssueInput = z.object({
   key: issueKeySchema,
@@ -139,6 +140,7 @@ export async function createIssue(deps: ToolDeps, input: CreateIssueInput) {
     title: input.title,
     description: input.description,
     priority: input.priority,
+    parent: input.parent,
     actor: "agent",
   });
 }

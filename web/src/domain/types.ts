@@ -70,12 +70,19 @@ export interface Issue {
   allowedTransitions: Status[];
   priority: Priority;
   parentId: number | null;
+  parentKey: string | null;
   blockedReason: string | null;
   claimedBy: string | null;
   labels: string[];
   relations: { blocks: string[]; blockedBy: string[] };
   createdAt: string;
   updatedAt: string;
+}
+
+export interface IssueRef {
+  key: string;
+  title: string;
+  status: Status;
 }
 
 export interface IssueEvent {
@@ -92,6 +99,7 @@ export interface IssueEvent {
 export interface IssueTimeline {
   issue: Issue;
   events: IssueEvent[];
+  children: IssueRef[];
 }
 
 export interface ReadyQueue {
@@ -122,6 +130,7 @@ export interface NewIssueInput {
   labels: string[];
   blocks: string[];
   blockedBy: string[];
+  parent?: string;
 }
 
 export type ToastKind = "success" | "error" | "info";

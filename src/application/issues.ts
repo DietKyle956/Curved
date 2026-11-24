@@ -10,7 +10,7 @@ import { mayMove } from "../domain/move-policy.ts";
 import { DEFAULT_PRIORITY, DEFAULT_STATUS } from "../domain/status.ts";
 import { isLegalTransition } from "../domain/transition.ts";
 import { emptyMeta } from "../domain/types.ts";
-import type { Issue, IssueEvent } from "../domain/types.ts";
+import type { Issue, IssueEvent, IssueRef } from "../domain/types.ts";
 import {
   validatePriority,
   validateProjectKey,
@@ -51,6 +51,19 @@ export async function createIssue(
         throw new ServiceError(
           "not_found",
           `parent issue "${parentKey}" not found`,
+        );
+      }
+      if (parent.projectKey !== project) {
+        const target = await tx.projects.findByKey(project);
+        if (target === null) {
+          throw new ServiceError(
+            "not_found",
+            `project "${project}" not found`,
+          );
+        }
+        throw new ServiceError(
+          "validation",
+          `parent issue "${parentKey}" is in project "${parent.projectKey}", not "${project}"`,
         );
       }
       parentId = parent.id;
@@ -185,6 +198,7 @@ export async function getIssue(
 export interface IssueTimeline {
   issue: Issue;
   events: IssueEvent[];
+  children: IssueRef[];
 }
 
 export async function getIssueTimeline(
@@ -194,7 +208,8 @@ export async function getIssueTimeline(
 ): Promise<IssueTimeline> {
   const issue = await getIssue(ports, key, context);
   const events = await ports.events.list(issue.id);
-  return { issue, events };
+  const children = await ports.issues.listChildren(issue.id);
+  return { issue, events, children };
 }
 
 export interface MoveIssueInput {

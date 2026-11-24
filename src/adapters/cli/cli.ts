@@ -669,11 +669,11 @@ async function runIssueCommand(
     if (extra.length > 0) {
       throw new UsageError("issue show accepts exactly one KEY argument");
     }
-    const { issue, events } = await deps.withPorts((ports) =>
+    const { issue, events, children } = await deps.withPorts((ports) =>
       getIssueTimeline(ports, key),
     );
     if (json) {
-      printJson({ ...issue, events });
+      printJson({ ...issue, events, children });
     } else {
       const lines = [
         `key: ${issue.key}`,
@@ -681,7 +681,9 @@ async function runIssueCommand(
         `priority: ${issue.priority}`,
         `title: ${issue.title}`,
         `description: ${issue.description}`,
-        `parent: ${issue.parentId === null ? "-" : String(issue.parentId)}`,
+        `parent: ${issue.parentKey === null ? "-" : issue.parentKey}`,
+        `children: ${children.length}`,
+        ...children.map((child) => `  ${child.key}\t${child.status}\t${child.title}`),
         `labels: ${issue.labels.length === 0 ? "-" : issue.labels.join(", ")}`,
         `blocks: ${issue.relations.blocks.length === 0 ? "-" : issue.relations.blocks.join(", ")}`,
         `blocked_by: ${issue.relations.blockedBy.length === 0 ? "-" : issue.relations.blockedBy.join(", ")}`,

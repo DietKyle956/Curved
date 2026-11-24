@@ -757,7 +757,30 @@ reload. The proof project `LAS190` was released and archived, leaving its
 issues and timeline as evidence. `deploy/provisioning.md` section 20 is the
 runbook; local gates stay green.
 
-Tests: 236 pass, 0 fail, including `test/http.test.ts` and `test/sse.test.ts`,
+CRV-3 is live: parent-child issues (sub-issues). Migration
+`0009_issues_parent_index.sql` adds a partial index on `issues.parent_id`; the
+foreign key and not-self check already existed. Every issue payload now carries
+`parentKey` (`Issue` and `IssueRecord` gained it, and the issue repository
+selects `pi.key as parent_key` through `left join issues pi on pi.id =
+i.parent_id` in the create readback, `findById`, `findByKey`, `list`, and
+`listReady`, so `listIssues` stays at three statements). `IssueRef`
+(`{ key, title, status }`) and `IssueRepository.listChildren(parentId)` list
+direct children ascending by number, and `getIssueTimeline` returns `children`.
+Parent stays create-only across CLI (`issue add --parent`), HTTP
+(`POST /api/issues { parent }`), MCP (`create_issue` gained an optional
+`parent`), and the SPA new-issue dialog (a Parent select over
+`parentCandidates`); `createIssue` rejects a parent in another project with
+`validation` and the message `parent issue "<key>" is in project "<parent>",
+not "<project>"`. `issue show` prints `parent: <key|->` plus a `children:` block
+and one indented row per child, and `--json` carries both; the issue detail
+renders a Hierarchy section with the parent link and clickable children with
+status chips. There is no reparenting, no depth cap, and parent status is
+independent of children. `npm run check` is green with 240 tests (234 behavior,
+6 architecture) and `architecture: ok (86 files)`; `npm run acceptance` is green
+with 232 checks, including the browser lines for the child's parent row and the
+parent's children row.
+
+Tests: 240 pass, 0 fail, including `test/http.test.ts` and `test/sse.test.ts`,
 whose session cases exercise the opaque `auth_sessions` cookie rows,
 `test/passkeys.test.ts` for availability without auth and its current-domain
 versus other-domain counts, listing without verification material and with the
@@ -774,7 +797,7 @@ transaction-scoped ports commit and rollback, and
 repository find by key, plus `test/architecture.test.ts`, which proves the real
 tree passes and five fixtures fail (application -> adapter, domain -> `pg`, web
 ui -> adapter, web application -> adapter, web domain -> a backend module other
-than `src/domain/status.ts`). Those 236 are the node tests (230 behavior and 6
+than `src/domain/status.ts`). Those 240 are the node tests (234 behavior and 6
 architecture); `npm run smoke:release` and `npm run smoke:agent` (16 checks) are
 shell gates, not part of them.
 `ARCH.md` codifies the layers and the one-way dependency rule; all
@@ -795,7 +818,7 @@ fully into the listbox. It also registers a passkey through Chromium's CDP
 virtual authenticator and signs in with it, printing `PASS browser: passkey
 registered ...` and `PASS browser: passkey sign-in reached the board ...`; focus
 emulation is enabled because headless tabs otherwise reject WebAuthn with
-`NotAllowedError`. The gate reports 197 checks in total, including the project
+`NotAllowedError`. The gate reports 232 checks in total, including the project
 CLI, HTTP, and browser assertions plus the sign-in-only `browser-signin` leg,
 which seeds a stale passkey row and asserts the disabled button and explanation.
 

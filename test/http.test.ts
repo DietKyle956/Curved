@@ -50,6 +50,7 @@ interface IssuesResponse {
 interface IssueTimelineResponse {
   issue: Issue;
   events: IssueEvent[];
+  children: Array<{ key: string; title: string; status: string }>;
 }
 
 interface EventResponse {
@@ -612,9 +613,18 @@ test("issues create, list with filters, timeline read, and unknown keys", async 
   const second = await request(app, "/api/issues", {
     method: "POST",
     headers: { ...HUMAN_BEARER, ...JSON_HEADERS },
-    body: JSON.stringify({ project: "TAC", title: "Second issue", status: "todo" }),
+    body: JSON.stringify({
+      project: "TAC",
+      title: "Second issue",
+      status: "todo",
+      parent: "TAC-1",
+    }),
   });
   assert.equal(second.status, 201);
+  assertJson(second);
+  const child = (await readJson<IssueResponse>(second)).issue;
+  assert.equal(child.key, "TAC-2");
+  assert.equal(child.parentKey, "TAC-1");
 
   const all = await request(app, "/api/issues?project=TAC", {
     headers: HUMAN_BEARER,
@@ -643,6 +653,10 @@ test("issues create, list with filters, timeline read, and unknown keys", async 
   assertJson(show);
   const timeline = await readJson<IssueTimelineResponse>(show);
   assert.equal(timeline.issue.key, "TAC-1");
+  assert.equal(timeline.issue.parentKey, null);
+  assert.deepEqual(timeline.children, [
+    { key: "TAC-2", title: "Second issue", status: "todo" },
+  ]);
   assert.equal(timeline.events[0]?.kind, "created");
   assert.equal(timeline.events[0]?.actorType, "human");
   assert.equal(
@@ -650,11 +664,61 @@ test("issues create, list with filters, timeline read, and unknown keys", async 
     timeline.events[0]!.createdAt,
   );
 
+  const childShow = await request(app, "/api/issues/TAC-2", {
+    headers: HUMAN_BEARER,
+  });
+  assert.equal(childShow.status, 200);
+  assertJson(childShow);
+  const childTimeline = await readJson<IssueTimelineResponse>(childShow);
+  assert.equal(childTimeline.issue.parentKey, "TAC-1");
+  assert.deepEqual(childTimeline.children, []);
+
   const missing = await request(app, "/api/issues/ZZZ-1", {
     headers: HUMAN_BEARER,
   });
   assert.equal(missing.status, 404);
   assert.equal((await readJson<ErrorResponse>(missing)).error.code, "not_found");
+});
+
+test("issues reject a parent from another project over HTTP", async () => {
+  await seedProject();
+
+  const parent = await request(app, "/api/issues", {
+    method: "POST",
+    headers: { ...HUMAN_BEARER, ...JSON_HEADERS },
+    body: JSON.stringify({ project: "TAC", title: "Parent issue" }),
+  });
+  assert.equal(parent.status, 201);
+  const parentIssue = (await readJson<IssueResponse>(parent)).issue;
+  assert.equal(parentIssue.key, "TAC-1");
+
+  const otherProject = await request(app, "/api/projects", {
+    method: "POST",
+    headers: { ...HUMAN_BEARER, ...JSON_HEADERS },
+    body: JSON.stringify({ key: "OPS", name: "Operations" }),
+  });
+  assert.equal(otherProject.status, 201);
+
+  const crossProject = await request(app, "/api/issues", {
+    method: "POST",
+    headers: { ...HUMAN_BEARER, ...JSON_HEADERS },
+    body: JSON.stringify({
+      project: "OPS",
+      title: "Cross-project child",
+      parent: "TAC-1",
+    }),
+  });
+  assert.equal(crossProject.status, 400);
+  assertJson(crossProject);
+  const crossProjectBody = await readJson<ErrorResponse>(crossProject);
+  assert.equal(crossProjectBody.error.code, "validation");
+  assert.match(crossProjectBody.error.message, /is in project/);
+
+  const ops = await request(app, "/api/issues?project=OPS", {
+    headers: HUMAN_BEARER,
+  });
+  assert.equal(ops.status, 200);
+  assert.deepEqual((await readJson<IssuesResponse>(ops)).issues, []);
 });
 
 test("PATCH updates an issue for humans and forbids agents", async () => {

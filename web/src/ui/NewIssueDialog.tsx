@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import type { FormEvent } from "react";
 
 import {
+  parentCandidates,
   PRIORITY_LABEL,
   relationCandidates,
   STATUS_LABEL,
@@ -38,12 +39,14 @@ export function NewIssueDialog({
   const [description, setDescription] = useState("");
   const [priority, setPriority] = useState<Priority>(3);
   const [status, setStatus] = useState<Status>("backlog");
+  const [parent, setParent] = useState("");
   const [labels, setLabels] = useState("");
   const [blocks, setBlocks] = useState<string[]>([]);
   const [blockedBy, setBlockedBy] = useState<string[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
   const candidates = relationCandidates(issues);
+  const parentOptions = parentCandidates(issues);
 
   useEffect(() => {
     if (!open) {
@@ -53,6 +56,7 @@ export function NewIssueDialog({
     setDescription("");
     setPriority(3);
     setStatus(defaultStatus === "todo" ? "todo" : "backlog");
+    setParent("");
     setLabels("");
     setBlocks([]);
     setBlockedBy([]);
@@ -73,6 +77,7 @@ export function NewIssueDialog({
       description,
       priority,
       status,
+      parent: parent === "" ? undefined : parent,
       labels: labels
         .split(",")
         .map((label) => label.trim())
@@ -173,6 +178,28 @@ export function NewIssueDialog({
             )}
           </Field>
         </div>
+
+        <Field
+          label="Parent"
+          hint="Optional. Creates this issue as a child of the parent."
+        >
+          {(id) => (
+            <select
+              id={id}
+              data-testid="new-issue-parent"
+              value={parent}
+              onChange={(event) => setParent(event.target.value)}
+              className="field-input"
+            >
+              <option value="">None</option>
+              {parentOptions.map((candidate) => (
+                <option key={candidate.key} value={candidate.key}>
+                  {candidate.key} · {candidate.title}
+                </option>
+              ))}
+            </select>
+          )}
+        </Field>
 
         <Field
           label="Labels"

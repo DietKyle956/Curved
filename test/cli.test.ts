@@ -69,6 +69,8 @@ interface ShowPayload {
   title: string;
   description: string;
   parentId: number | null;
+  parentKey: string | null;
+  children: Array<{ key: string; title: string; status: string }>;
   labels: string[];
   relations: { blocks: string[]; blockedBy: string[] };
   blockedReason: string | null;
@@ -374,6 +376,7 @@ test("issue add --json prints the created issue", async () => {
     priority: number;
     description: string;
     parentId: number | null;
+    parentKey: string | null;
     blockedReason: string | null;
     claimedBy: string | null;
     createdAt: string;
@@ -526,6 +529,7 @@ test("issue add, list, and show print the pinned human formats", async () => {
       "title: Fix the flux capacitor",
       "description: Needs 1.21 GW",
       "parent: -",
+      "children: 0",
       "labels: -",
       "blocks: -",
       "blocked_by: -",
@@ -539,6 +543,43 @@ test("issue add, list, and show print the pinned human formats", async () => {
       "",
     ].join("\n"),
   );
+});
+
+test("issue show renders the parent key and direct children", async () => {
+  const project = await runCli(["project", "add", "TAC", "Tac", "--json"]);
+  assert.equal(project.code, 0, project.stderr);
+
+  const parent = await runCli(["issue", "add", "TAC", "Parent"]);
+  assert.equal(parent.code, 0, parent.stderr);
+  assert.equal(parent.stdout, "created issue TAC-1 (Parent)\n");
+
+  const child = await runCli(["issue", "add", "TAC", "Child", "--parent", "TAC-1"]);
+  assert.equal(child.code, 0, child.stderr);
+  assert.equal(child.stdout, "created issue TAC-2 (Child)\n");
+
+  const childShow = await runCli(["issue", "show", "TAC-2"]);
+  assert.equal(childShow.code, 0, childShow.stderr);
+  assert.ok(childShow.stdout.includes("\nparent: TAC-1\n"), childShow.stdout);
+  assert.ok(childShow.stdout.includes("\nchildren: 0\n"), childShow.stdout);
+
+  const parentShow = await runCli(["issue", "show", "TAC-1"]);
+  assert.equal(parentShow.code, 0, parentShow.stderr);
+  assert.ok(parentShow.stdout.includes("\nparent: -\n"), parentShow.stdout);
+  assert.match(parentShow.stdout, /\nchildren: 1\n  TAC-2\tbacklog\tChild\n/);
+
+  const json = await runCli(["issue", "show", "TAC-1", "--json"]);
+  assert.equal(json.code, 0, json.stderr);
+  const payload = JSON.parse(json.stdout) as ShowPayload;
+  assert.equal(payload.parentKey, null);
+  assert.deepEqual(payload.children, [
+    { key: "TAC-2", title: "Child", status: "backlog" },
+  ]);
+
+  const childJson = await runCli(["issue", "show", "TAC-2", "--json"]);
+  assert.equal(childJson.code, 0, childJson.stderr);
+  const childPayload = JSON.parse(childJson.stdout) as ShowPayload;
+  assert.equal(childPayload.parentKey, "TAC-1");
+  assert.deepEqual(childPayload.children, []);
 });
 
 test("issue comment then issue show render the comment in human and JSON form", async () => {
@@ -582,6 +623,7 @@ test("issue comment then issue show render the comment in human and JSON form", 
       "title: Comment target",
       "description: ",
       "parent: -",
+      "children: 0",
       "labels: -",
       "blocks: -",
       "blocked_by: -",

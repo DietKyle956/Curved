@@ -39,6 +39,7 @@ export interface ApiPort {
     description?: string;
     priority?: number;
     status?: Status;
+    parent?: string;
   }): Promise<{ issue: Issue }>;
   updateIssue(
     key: string,

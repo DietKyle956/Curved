@@ -26,6 +26,7 @@ export function toIssue(
     }),
     priority: record.priority,
     parentId: record.parentId,
+    parentKey: record.parentKey,
     blockedReason: record.blockedReason,
     claimedBy: record.claimedBy,
     labels: meta.labels,

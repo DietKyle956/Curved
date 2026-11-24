@@ -140,6 +140,7 @@ export function createApiClient(): ApiPort {
       description?: string;
       priority?: number;
       status?: Status;
+      parent?: string;
     }): Promise<{ issue: Issue }> {
       return request("/api/issues", { method: "POST", body: input });
     },

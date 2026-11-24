@@ -550,6 +550,7 @@ export function useWorkspace({
           description: input.description,
           priority: input.priority,
           status: input.status,
+          parent: input.parent,
         });
         if (input.labels.length > 0) {
           try {

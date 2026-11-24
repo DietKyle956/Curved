@@ -113,6 +113,9 @@ const PALETTE_BOARD_OPTION = "#palette-board";
 const NEW_ISSUE_TITLE = '[data-testid="new-issue-title"]';
 const NEW_ISSUE_SUBMIT = '[data-testid="new-issue-submit"]';
 const NEW_ISSUE_BLOCKED_BY = '[data-testid="new-issue-blocked-by"]';
+const NEW_ISSUE_PARENT = '[data-testid="new-issue-parent"]';
+const ISSUE_PARENT_ROW = '[data-testid="issue-parent-row"]';
+const ISSUE_CHILDREN_ROW = '[data-testid="issue-children-row"]';
 const ISSUE_DETAIL = '[data-testid="issue-detail"]';
 const EDIT_RELATIONS = '[data-testid="edit-relations"]';
 const RELATION_DIALOG = '[data-testid="relation-dialog"]';
@@ -1901,6 +1904,32 @@ async function main() {
     creationBlockerKey.length > 0,
     "new issue dialog offers no blocked-by candidate; the seeded backlog fillers are missing",
   );
+  // CRV-3: the dialog's Parent select offers the project's issues; pick the
+  // first real candidate so the created issue lands as a child.
+  await tabA.waitFor(NEW_ISSUE_PARENT, 10_000);
+  const creationParentKey = String(
+    await tabA.evaluate(
+      `(() => {
+        const select = document.querySelector(${JSON.stringify(NEW_ISSUE_PARENT)});
+        if (select === null) {
+          return "";
+        }
+        const option = Array.from(select.options).find(
+          (candidate) => candidate.value.length > 0,
+        );
+        if (option === undefined) {
+          return "";
+        }
+        select.value = option.value;
+        select.dispatchEvent(new Event("change", { bubbles: true }));
+        return option.value;
+      })()`,
+    ),
+  );
+  assert(
+    creationParentKey.length > 0,
+    "new issue dialog offers no parent candidate; the seeded issues are missing",
+  );
   await tabA.click(NEW_ISSUE_SUBMIT);
   await tabA.waitFor('[data-testid="toast"]', 5000);
   await tabA.waitFor(ISSUE_DETAIL, 15_000);
@@ -1912,6 +1941,20 @@ async function main() {
     createdBlockedByText.includes(creationBlockerKey),
     `create-time blocked-by row ${JSON.stringify(createdBlockedByText)} omits ${creationBlockerKey}`,
   );
+  await tabA.waitFor(ISSUE_PARENT_ROW, 10_000);
+  const parentRowDeadline = Date.now() + 10_000;
+  let createdParentText = "";
+  for (;;) {
+    createdParentText = String(await tabA.text(ISSUE_PARENT_ROW));
+    if (createdParentText.includes(creationParentKey)) {
+      break;
+    }
+    assert(
+      Date.now() < parentRowDeadline,
+      `created issue parent row ${JSON.stringify(createdParentText)} omits ${creationParentKey}`,
+    );
+    await sleep(50);
+  }
 
   const issuePath = String(await tabA.evaluate("window.location.pathname"));
   const issueMatch = /^\/p\/([^/]+)\/i\/([^/]+)\/?$/.exec(issuePath);
@@ -2067,6 +2110,26 @@ async function main() {
   await sleep(150);
   const screenshotBBytes = await tabBSession.screenshot(SCREENSHOT_SECOND_TAB);
 
+  // CRV-3: the child names its parent, and following that link shows the
+  // child on the parent's hierarchy row. The passkey phase reloads the board
+  // next, so it does not depend on where this leaves tab A.
+  state.phase = "open parent from hierarchy";
+  await tabA.click(`${ISSUE_PARENT_ROW} button`);
+  await tabA.waitFor(ISSUE_CHILDREN_ROW, 10_000);
+  const childrenRowDeadline = Date.now() + 10_000;
+  let createdChildrenText = "";
+  for (;;) {
+    createdChildrenText = String(await tabA.text(ISSUE_CHILDREN_ROW));
+    if (createdChildrenText.includes(issueKey)) {
+      break;
+    }
+    assert(
+      Date.now() < childrenRowDeadline,
+      `parent children row ${JSON.stringify(createdChildrenText)} omits ${issueKey}`,
+    );
+    await sleep(50);
+  }
+
   // Passkey leg: register a credential through the CDP virtual authenticator,
   // sign out, then sign back in without the UI token. The board is reloaded
   // first so the path asserted after sign-in is the board itself.
@@ -2164,6 +2227,8 @@ async function main() {
     `PASS browser: second tab opened ${issuePath} with ${eventsB} timeline event(s)`,
     `PASS browser: comment propagated tab A -> tab B in ${elapsedMs}ms (< ${COMMENT_LATENCY_LIMIT_MS}ms; marker ${JSON.stringify(marker)}; tab A timeline events ${eventsA})`,
     `PASS browser: second-tab screenshot ${SCREENSHOT_SECOND_TAB} (${screenshotBBytes} bytes)`,
+    `PASS browser: created issue ${issueKey} parent row names ${creationParentKey} (${JSON.stringify(createdParentText.trim())})`,
+    `PASS browser: parent ${creationParentKey} children row lists ${issueKey} (${JSON.stringify(createdChildrenText.trim())})`,
     `PASS browser: passkey registered as ${JSON.stringify(passkeyNickname)} through virtual authenticator ${authenticatorId} (${passkeyRows} passkey row(s) in the dialog)`,
     `PASS browser: passkey sign-in reached the board at ${passkeyPath}`,
   ];

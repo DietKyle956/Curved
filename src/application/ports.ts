@@ -9,6 +9,7 @@ import type {
   Agent,
   IssueEvent,
   IssueMeta,
+  IssueRef,
   PasskeySummary,
   Project,
   ProjectWithProgress,
@@ -62,6 +63,7 @@ export interface IssueRecord {
   status: Status;
   priority: Priority;
   parentId: number | null;
+  parentKey: string | null;
   blockedReason: string | null;
   claimedBy: string | null;
   createdAt: Date;
@@ -88,6 +90,8 @@ export interface IssueRepository {
   }): Promise<IssueRecord | null>;
   findById(id: number): Promise<IssueRecord | null>;
   findByKey(key: string): Promise<IssueRecord | null>;
+  /** Direct children of an issue, ascending by number. */
+  listChildren(parentId: number): Promise<IssueRef[]>;
   lockByKey(key: string): Promise<LockedIssueRecord | null>;
   list(filter: { project: string | null; status: Status | null }): Promise<IssueRecord[]>;
   updateFields(input: {
