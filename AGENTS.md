@@ -852,6 +852,8 @@ carries the same rules as a project-agnostic template.
 
 | Path | Role |
 |---|---|
+| `README.md` | Public overview: what Curved is, its invariants, a quick start, and the documentation index. |
+| `docs/` | In-depth guides: `workflow.md`, `cli.md`, `api.md`, `clients.md`, `operations.md`, `development.md`. |
 | `initial_idea.md` | Product intent and the design sketch. Source of truth for scope. |
 | `ARCH.md` | Architecture contract: layer map, one-way dependency rule, rule ownership, ports and transactions, error translation, testing policy, review checklist. |
 | `AGENTS.md` | This file: constraints and startup path. |
