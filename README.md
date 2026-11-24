@@ -1105,13 +1105,13 @@ Tools:
 
 | Tool | Input | Result |
 |---|---|---|
-| `claim_next` | `{ project? }` | Claims the next ready issue, then returns `{ issue, events }`. |
+| `claim_next` | `{ project? }` | Claims the next ready issue, then returns `{ issue, events, children }`. |
 | `comment` | `{ key, body }` | Appends a comment event and returns it. |
-| `create_issue` | `{ project, title, description?, priority? }` | Returns the created issue. |
-| `get_issue` | `{ key }` | Returns `{ issue, events }`. |
+| `create_issue` | `{ project, title, description?, priority?, parent? }` | Returns the created issue. |
+| `get_issue` | `{ key }` | Returns `{ issue, events, children }`. |
 | `list_ready` | `{ project? }` | Returns `{ ready, busy }`. |
-| `mark_blocked` | `{ key, reason }` | Blocks the issue and returns it. |
-| `release_claim` | `{ key }` | Returns the issue to Todo and returns it. |
+| `mark_blocked` | `{ key, reason }` | Returns the issue to Todo, clears the claim, and returns it. |
+| `release_claim` | `{ key }` | Returns the issue to Todo, clears the claim, and returns it. |
 | `submit_for_review` | `{ key, summary }` | Submits the issue for review and returns it. |
 
 Successful results are the payload as pretty-printed JSON in a single text
@@ -1119,3 +1119,27 @@ content block. A service error becomes a text block of `<code>: <message>` with
 `isError: true`, for example `not_authenticated: ...` or `agent_busy: ...`.
 Invalid tool input fails zod validation before the handler runs and comes back as
 an error result: `Input validation error: Invalid arguments for tool <name>: ...`.
+
+## Agent skills
+
+`skills/` holds three public, installer-facing agent skills for agents that use
+Curved:
+
+| Skill | Use it when |
+|---|---|
+| `curved-agent` | Work a Curved issue through MCP: ready queue, claim, comment, review, block, release. |
+| `curved-cli` | Run Curved commands from a shell: projects, issues, agent setup, queue commands, `git-branch`, `--json`. |
+| `curved-api` | Call the HTTP API and SSE stream directly with a `crv_` bearer token. |
+
+Install them with the [skills](https://skills.sh) CLI:
+
+```sh
+npx skills add DietKyle956/Curved --list
+npx skills add DietKyle956/Curved --all
+```
+
+Or copy `skills/<name>` into your agent's skill directory, for example
+`~/.omp/agent/skills/` or `.claude/skills/`. The skills are generic: they read
+`DATABASE_URL` and `CURVED_AGENT_TOKEN` for the CLI and MCP, or
+`CURVED_BASE_URL` and `CURVED_AGENT_TOKEN` for HTTP. They contain no hostnames,
+tokens, or local paths.

@@ -106,7 +106,7 @@ export function createCurvedMcpServer(deps: ToolDeps): McpServer {
     {
       title: "Mark Issue Blocked",
       description:
-        "Block the authenticated agent's claimed issue with a reason and return it to the backlog.",
+        "Block the authenticated agent's claimed issue with a reason, return it to Todo, and clear the claim.",
       inputSchema: markBlockedInput,
     },
     (input) => runTool(() => markBlocked(deps, input)),
