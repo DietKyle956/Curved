@@ -28,9 +28,9 @@ Options:
   --mount-dir DIR     Data volume mount point (default /srv/curved).
   --domain NAME       Hostname probed over HTTPS. Defaults to CURVED_DOMAIN
                       from <checkout>/deploy/.env, then localhost.
-  --skip-stack        Skip the Docker Compose, edge TLS, and HTTPS API checks.
-                      Every host check, including the Docker data-root checks,
-                      runs.
+  --skip-stack        Skip the Docker Compose, edge TLS, HTTPS API, and webhook
+                      checks. Every host check, including the Docker data-root
+                      checks, runs.
   -h, --help          Show this message and exit.
 
 Checks, in order: os, deploy-user, deploy-ssh-dir, deploy-authorized-keys,
@@ -44,8 +44,8 @@ enabled and active), backup-freshness (newest nightly set at most 93600s old
 with a non-empty postgres.dump), backup-integrity (newest set verifies against
 SHA256SUMS), env-file,
 checkout, tcp-listeners, udp-listeners, then stack, tls-certificate,
-http-redirect, hsts, compression, caddy-issuance, and https-api unless
---skip-stack is given.
+http-redirect, hsts, compression, caddy-issuance, https-api, and webhook
+unless --skip-stack is given.
 
 Public TLS is assumed only when ACME_EMAIL is non-empty in the environment
 file and the domain is not localhost; otherwise Caddy's internal CA is
@@ -1030,6 +1030,44 @@ check_https_api() {
   pass "https-api: $url returns 200 with the token and 401 without it"
 }
 
+check_webhook() {
+  local compose_file="$CHECKOUT_DIR/deploy/docker-compose.yml"
+  local body='{"action":"opened","number":0,"pull_request":{"number":0,"title":"ZZZ-999999 verify","merged":false,"head":{"ref":"ZZZ-999999-verify"}}}'
+  local sig=""
+  local status=""
+  local url="https://$DOMAIN/webhooks/github"
+  read_env GITHUB_WEBHOOK_SECRET >/dev/null || return
+  if ! command -v curl >/dev/null 2>&1; then
+    fail_list webhook "curl is not installed"
+    return
+  fi
+  # The HMAC is computed inside the app container so the secret never reaches
+  # host argv or output.
+  sig=$(printf '%s' "$body" | docker compose -f "$compose_file" exec -T app node -e 'let d="";process.stdin.on("data",c=>d+=c).on("end",()=>{const c=require("node:crypto");process.stdout.write("sha256="+c.createHmac("sha256",process.env.GITHUB_WEBHOOK_SECRET).update(d,"utf8").digest("hex"))})' 2>/dev/null) || sig=""
+  if [ -z "$sig" ]; then
+    fail_list webhook "the app container produced no signature (is GITHUB_WEBHOOK_SECRET set in the app env?)"
+    return
+  fi
+  status=$(curl_tls --max-time 10 --resolve "$DOMAIN:443:127.0.0.1" \
+    -o /dev/null -w '%{http_code}' -X POST \
+    -H 'content-type: application/json' -H 'x-github-event: pull_request' \
+    --data-binary "$body" -- "$url" 2>/dev/null)
+  if [ "$status" != 401 ]; then
+    fail_list webhook "unsigned delivery returned ${status:-no status}, expected 401"
+    return
+  fi
+  status=$(curl_tls --max-time 10 --resolve "$DOMAIN:443:127.0.0.1" \
+    -o /dev/null -w '%{http_code}' -X POST \
+    -H 'content-type: application/json' -H 'x-github-event: pull_request' \
+    -H "x-hub-signature-256: $sig" \
+    --data-binary "$body" -- "$url" 2>/dev/null)
+  if [ "$status" != 200 ]; then
+    fail_list webhook "signed delivery returned ${status:-no status} and body is not the ignored acknowledgement, expected 200"
+    return
+  fi
+  pass "webhook: unsigned delivery is 401 and a correctly signed unknown-key delivery is ignored with 200"
+}
+
 check_tls_certificate() {
   local token=$UI_TOKEN
   local url="https://$DOMAIN/api/projects"
@@ -1281,6 +1319,7 @@ if [ "$SKIP_STACK" -eq 0 ]; then
   check_compression
   check_caddy_issuance
   check_https_api
+  check_webhook
 fi
 
 if [ "$FAILED" -eq 0 ]; then

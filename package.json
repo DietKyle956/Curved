@@ -20,6 +20,7 @@
     "smoke:provision": "bash scripts/provision-smoke.sh",
     "smoke:release": "bash scripts/release-smoke.sh",
     "smoke:webhook": "bash scripts/webhook-smoke.sh",
+    "smoke:webhook:live": "bash scripts/webhook-live.sh",
     "smoke:backup": "bash scripts/backup-smoke.sh",
     "smoke:agent": "bash scripts/agent-smoke.sh",
     "migrate": "node src/composition/migrate.ts",

@@ -121,6 +121,7 @@ function pullRequestPayload(
   overrides: {
     action?: string;
     merged?: boolean;
+    draft?: boolean;
     title?: string;
     headRef?: string | null;
     nestedActionOnly?: boolean;
@@ -132,6 +133,9 @@ function pullRequestPayload(
     title: overrides.title ?? "TAC-1 support",
     merged: overrides.merged ?? false,
   };
+  if (overrides.draft !== undefined) {
+    pullRequest.draft = overrides.draft;
+  }
   if (overrides.headRef !== null) {
     pullRequest.head = { ref: overrides.headRef ?? "TAC-1-support" };
   }
@@ -172,7 +176,10 @@ test("issueKeyFromText finds canonical keys and rejects non-matches", () => {
     ["TAC-014-add-login", "TAC-14"],
     ["feature/TAC-7-fix", "TAC-7"],
     ["Add LAS-151 support", "LAS-151"],
-    ["los-151", null],
+    ["los-151", "LOS-151"],
+    ["crv-6-live-drill", "CRV-6"],
+    ["Add crv-6 support", "CRV-6"],
+    ["TAC-0", null],
     ["TAC-1234567", null],
     ["TAC-", null],
   ];
@@ -295,6 +302,59 @@ test("replaying the same delivery is ignored without adding an event", async () 
   assert.equal((await statusEvents("TAC-1")).length, 1);
 });
 
+test("a draft pull request opened on an in-progress issue is ignored", async () => {
+  await seedIssue("in_progress");
+
+  const response = await postWebhook(
+    app,
+    pullRequestPayload({ action: "opened", draft: true }),
+  );
+
+  assert.equal(response.status, 200);
+  assert.deepEqual(await readJson<WebhookResponse>(response), {
+    ok: true,
+    ignored: true,
+  });
+  assert.equal(await issueStatus("TAC-1"), "in_progress");
+  assert.equal((await statusEvents("TAC-1")).length, 0);
+});
+
+test("a ready for review pull request moves an in-progress issue to in review", async () => {
+  await seedIssue("in_progress");
+
+  const response = await postWebhook(
+    app,
+    pullRequestPayload({ action: "ready_for_review", draft: false }),
+  );
+
+  assert.equal(response.status, 200);
+  assert.deepEqual(await readJson<WebhookResponse>(response), { ok: true });
+  assert.equal(await issueStatus("TAC-1"), "in_review");
+  const events = await statusEvents("TAC-1");
+  assert.equal(events.length, 1);
+  assert.equal(events[0]?.actorType, "git");
+  assert.equal(events[0]?.fromStatus, "in_progress");
+  assert.equal(events[0]?.toStatus, "in_review");
+  assert.equal(events[0]?.body, "pull request #7 ready_for_review");
+});
+
+test("a draft pull request reopened on an in-progress issue is ignored", async () => {
+  await seedIssue("in_progress");
+
+  const response = await postWebhook(
+    app,
+    pullRequestPayload({ action: "reopened", draft: true }),
+  );
+
+  assert.equal(response.status, 200);
+  assert.deepEqual(await readJson<WebhookResponse>(response), {
+    ok: true,
+    ignored: true,
+  });
+  assert.equal(await issueStatus("TAC-1"), "in_progress");
+  assert.equal((await statusEvents("TAC-1")).length, 0);
+});
+
 test("a merged closed pull request moves a reviewing issue to done", async () => {
   await seedIssue("in_review");
 
@@ -412,6 +472,35 @@ test("the title supplies the key when the head ref is absent", async () => {
   const response = await postWebhook(
     app,
     pullRequestPayload({ headRef: null, title: "Add TAC-1 support" }),
+  );
+
+  assert.equal(response.status, 200);
+  assert.deepEqual(await readJson<WebhookResponse>(response), { ok: true });
+  assert.equal(await issueStatus("TAC-1"), "in_review");
+});
+
+test("a lowercase head ref resolves a lowercase branch to the issue", async () => {
+  await seedIssue("in_progress");
+
+  const response = await postWebhook(
+    app,
+    pullRequestPayload({ headRef: "tac-1-first" }),
+  );
+
+  assert.equal(response.status, 200);
+  assert.deepEqual(await readJson<WebhookResponse>(response), { ok: true });
+  assert.equal(await issueStatus("TAC-1"), "in_review");
+  const events = await statusEvents("TAC-1");
+  assert.equal(events.length, 1);
+  assert.equal(events[0]?.body, "pull request #7 opened");
+});
+
+test("a lowercase title fallback resolves the issue key case-insensitively", async () => {
+  await seedIssue("in_progress");
+
+  const response = await postWebhook(
+    app,
+    pullRequestPayload({ headRef: null, title: "Add tac-1 support" }),
   );
 
   assert.equal(response.status, 200);

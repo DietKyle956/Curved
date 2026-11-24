@@ -611,7 +611,8 @@ The checks run in this order: `os`, `deploy-user`, `deploy-ssh-dir`,
 `docker-prune-timer`, `keepalive-timer`, `backup-dir`, `backup-timer`, `backup-freshness`,
 `backup-integrity`, `env-file`, `checkout`, `tcp-listeners`, `udp-listeners`,
 then, unless `--skip-stack` is given, `stack`, `tls-certificate`,
-`http-redirect`, `hsts`, `compression`, `caddy-issuance`, and `https-api`.
+`http-redirect`, `hsts`, `compression`, `caddy-issuance`, `https-api`, and
+`webhook`.
 
 `keepalive-timer` requires both keepalive unit files to exist,
 `curved-keepalive.timer` to be both enabled and active, and the service's
@@ -645,8 +646,9 @@ the domain not `localhost`. In that mode:
 
 With the internal CA, the certificate checks run with `-k` and `hsts` instead
 requires that no `Strict-Transport-Security` header is sent. A full run covers
-27 checks, including the five edge checks above, the keepalive check, and the
-four backup checks.
+28 checks, including the five edge checks above, the `webhook` check (an
+unsigned delivery is `401` and a correctly signed unknown-key delivery is
+`200`), the keepalive check, and the four backup checks.
 
 ### 9.2 External reachability and boundary
 
@@ -914,13 +916,14 @@ The six acceptance criteria for LAS-186, with the evidence that closes each one:
 | AC5 | Duplicate, unknown, and non-PR deliveries are acknowledged without changing state. | A replayed identical signed delivery for LIVE-2 returned `200 {"ok":true,"ignored":true}` and the issue stayed `in_review`; GitHub's Re-deliver of a processed `pull_request opened` delivery created a `redelivery: true` entry with status `200` and left LIVE-2 in `in_review`; an unknown key `NOPE-999` returned `200 {"ok":true,"ignored":true}`; non-PR `issues` and `push` deliveries also returned `200 {"ok":true,"ignored":true}`. |
 | AC6 | Caddy obtains and renews the certificate automatically, and the release probe requires HSTS under public TLS before promoting a release. | The Caddy log shows `certificate obtained successfully`, `identifier 158.101.127.247.sslip.io`, `issuer acme-v02.api.letsencrypt.org-directory`, account email `admin@sslip.io`, with challenge `tls-alpn-01`; `verify-host` prints `PASS caddy-issuance`; deploy run 44551897724 printed `release: public probe ok` and `release: ok c711540`, and the public probe requires HSTS with a max-age matching `CURVED_HSTS_MAX_AGE` once `ACME_EMAIL` is set. |
 
-`verify-host` now runs 27 checks. The transcripts recorded for LAS-183, LAS-184,
+`verify-host` now runs 28 checks. The transcripts recorded for LAS-183, LAS-184,
 and LAS-186 above were produced by the 22-check verifier that predates the
-backup and keepalive checks, so a rerun on the same host reports five more
-`PASS` lines: `backup-dir`, `backup-timer`, `backup-freshness`,
-`backup-integrity`, and `keepalive-timer`. The edge checks are unchanged:
-`tls-certificate`, `http-redirect`, `hsts`, `compression`, `caddy-issuance`, and
-`https-api` (`200` with the token, `401` without it).
+backup, keepalive, and webhook checks, so a rerun on the same host reports six
+more `PASS` lines: `backup-dir`, `backup-timer`, `backup-freshness`,
+`backup-integrity`, `keepalive-timer`, and `webhook`. The edge checks are
+`tls-certificate`, `http-redirect`, `hsts`, `compression`, `caddy-issuance`,
+`https-api` (`200` with the token, `401` without it), and `webhook` (an unsigned
+delivery is `401` and a correctly signed unknown-key delivery is `200`).
 
 The four acceptance criteria for LAS-188, with the evidence that closes each
 one:
@@ -2259,7 +2262,7 @@ Data paths:
   sudo -u deploy ./deploy/release.sh
   ```
 
-Verify with `sudo bash deploy/verify-host.sh` (27 PASS), then sign in on the
+Verify with `sudo bash deploy/verify-host.sh` (28 PASS), then sign in on the
 public URL, confirm a server-sent event arrives, and send a webhook delivery
 that the app acknowledges.
 

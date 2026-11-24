@@ -1957,12 +1957,24 @@ async function main() {
   );
   await tabA.click(RELATION_SAVE);
   await waitForSelectorGone(tabA, RELATION_DIALOG, 10_000);
-  await tabA.waitFor(RELATION_BLOCKS_ROW, 10_000);
-  const blocksRowText = String(await tabA.text(RELATION_BLOCKS_ROW));
-  assert(
-    blocksRowText.includes(addedBlockKey),
-    `blocks row ${JSON.stringify(blocksRowText)} omits added block ${addedBlockKey}`,
-  );
+  // The row can render before the post-save refetch lands, so poll until its
+  // text names the added key instead of reading one transient render.
+  const addDeadline = Date.now() + 10_000;
+  let blocksRowText = "";
+  for (;;) {
+    blocksRowText =
+      (await tabA.count(RELATION_BLOCKS_ROW)) === 0
+        ? ""
+        : String(await tabA.text(RELATION_BLOCKS_ROW));
+    if (blocksRowText.includes(addedBlockKey)) {
+      break;
+    }
+    assert(
+      Date.now() < addDeadline,
+      `blocks row ${JSON.stringify(blocksRowText)} omits added block ${addedBlockKey}`,
+    );
+    await sleep(50);
+  }
 
   state.phase = "remove blocker through relations dialog";
   await tabA.click(EDIT_RELATIONS);

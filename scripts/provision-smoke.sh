@@ -11,13 +11,14 @@
 # containers so the new log defaults take effect while the idempotent re-run
 # starts them without recreation, the verifier's internal and public happy
 # paths (docker, backup, and keepalive checks, certificate, redirect, HSTS,
-# compression, Caddy issuance, and https API), three verifier negatives
+# compression, Caddy issuance, https API, and webhook), three verifier negatives
 # (wrong data root, disabled prune timer, disabled keepalive timer),
 # four backup verifier negatives (missing directory, stale set, corrupt
-# checksum, inactive timer), five edge verifier negatives (unverified public
+# checksum, inactive timer), six edge verifier negatives (unverified public
 # certificate, missing public HSTS, HTTP 200 instead of a redirect, issuance
-# log without an ACME marker, internal HSTS), two security boundaries (public
-# 5432, password authentication), and two --acme-email argument rejections.
+# log without an ACME marker, internal HSTS, unsigned webhook answering 200),
+# two security boundaries (public 5432, password authentication), and two
+# --acme-email argument rejections.
 # The container and the temp harness are always removed; the harness is kept
 # with `--keep`.
 set -euo pipefail
@@ -663,7 +664,8 @@ cat > "$HARNESS_DIR/bin/docker" <<'STUB'
 #!/usr/bin/env bash
 # docker stub: reports the data root from /etc/docker/daemon.json, refuses a
 # compose up unless that root is on the data volume, models compose
-# version/up (counted)/ps (healthy), and serves caddy issuance logs that match
+# version/up (counted)/ps (healthy), answers an in-container `exec` with a
+# well-formed webhook signature, and serves caddy issuance logs that match
 # the public or internal environment (a marker drops the ACME issuer line).
 set -euo pipefail
 state=/run/smoke
@@ -696,6 +698,13 @@ if [ "${1:-}" != compose ]; then
   exit 1
 fi
 shift
+# Model the in-container HMAC helper: any exec prints a well-formed signature.
+for arg in "$@"; do
+  if [ "$arg" = exec ]; then
+    printf 'sha256=%064d\n' 0
+    exit 0
+  fi
+done
 case "${1:-}" in
   version)
     printf 'Docker Compose version v2.29.7\n'
@@ -786,10 +795,11 @@ STUB
 
 cat > "$HARNESS_DIR/bin/curl" <<'STUB'
 #!/usr/bin/env bash
-# curl stub: Bearer requests get 200, anonymous requests 401, the plain-HTTP
-# probe redirects to HTTPS, certificate probes report ssl_verify_result, and
-# header probes carry HSTS and gzip for the environment in deploy/.env. Marker
-# files flip one probe at a time for the negative cases.
+# curl stub: Bearer requests get 200, anonymous requests 401, webhook
+# deliveries 401 unless signed, the plain-HTTP probe redirects to HTTPS,
+# certificate probes report ssl_verify_result, and header probes carry HSTS and
+# gzip for the environment in deploy/.env. Marker files flip one probe at a time
+# for the negative cases.
 set -euo pipefail
 state=/run/smoke
 env_file=/srv/curved/checkout/deploy/.env
@@ -810,6 +820,7 @@ fmt=""
 headers=0
 auth=0
 gzip=0
+sig=0
 url=""
 args=("$@")
 i=0
@@ -836,6 +847,7 @@ while [ "$i" -lt "${#args[@]}" ]; do
       case "$header" in
         'Authorization: Bearer '*) auth=1 ;;
         'Accept-Encoding: gzip'*) gzip=1 ;;
+        'x-hub-signature-256: '*) sig=1 ;;
       esac
       ;;
     --header=*)
@@ -843,6 +855,7 @@ while [ "$i" -lt "${#args[@]}" ]; do
       case "$header" in
         'Authorization: Bearer '*) auth=1 ;;
         'Accept-Encoding: gzip'*) gzip=1 ;;
+        'x-hub-signature-256: '*) sig=1 ;;
       esac
       ;;
     --resolve)
@@ -869,6 +882,15 @@ done
 
 host=${url#*://}
 host=${host%%/*}
+
+case "$url" in
+  */webhooks/github)
+    status=401
+    if [ "$sig" -eq 1 ] || [ -e "$state/webhook-unsigned-200" ]; then status=200; fi
+    case "$fmt" in *'%{http_code}'*) printf '%s\n' "$status" ;; esac
+    exit 0
+    ;;
+esac
 
 case "$url" in
   http://*)
@@ -1429,7 +1451,7 @@ pass "verify-host backup checks (dir, timer, freshness, integrity)"
 grep -q '^PASS keepalive-timer:' "$verify_out" \
   || fail "verify-host printed no PASS keepalive-timer: line on the happy path"
 
-for prefix in tls-certificate http-redirect hsts compression caddy-issuance https-api; do
+for prefix in tls-certificate http-redirect hsts compression caddy-issuance https-api webhook; do
   grep -q "^PASS $prefix:" "$verify_out" \
     || fail "verify-host printed no PASS $prefix: line on the happy path"
 done
@@ -1625,6 +1647,22 @@ if ! grep -Eq '^FAIL hsts: .*present for a non-public deployment' "$verify_out";
 fi
 pass "negative: internal deployment sending HSTS rejected"
 
+# 9b. Negative: an unsigned webhook delivery must not be accepted.
+: > "$STATE/webhook-unsigned-200"
+verify_out="$STATE/verify-webhook-unsigned.log"
+verify_rc=0
+bash "$VERIFIER" >"$verify_out" 2>&1 || verify_rc=$?
+rm -f "$STATE/webhook-unsigned-200"
+if [ "$verify_rc" -eq 0 ]; then
+  cat "$verify_out" >&2
+  fail "webhook unsigned: verify-host exited 0, expected a failure"
+fi
+if ! grep -q '^FAIL webhook:' "$verify_out"; then
+  cat "$verify_out" >&2
+  fail "webhook unsigned: no FAIL webhook line names the unsigned delivery"
+fi
+pass "negative: unsigned webhook answering 200 rejected"
+
 # 10. A fresh bootstrap with --acme-email writes the public environment, and
 # the verifier proves the public certificate, redirect, HSTS, compression, and
 # ACME issuance.
@@ -1660,7 +1698,7 @@ if grep -q '^FAIL' "$verify_out"; then
   cat "$verify_out" >&2
   fail "public verify-host printed FAIL lines on the happy path"
 fi
-for prefix in tls-certificate http-redirect hsts compression caddy-issuance https-api; do
+for prefix in tls-certificate http-redirect hsts compression caddy-issuance https-api webhook; do
   grep -q "^PASS $prefix:" "$verify_out" \
     || fail "public verify-host printed no PASS $prefix: line on the happy path"
 done

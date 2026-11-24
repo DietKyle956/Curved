@@ -3,7 +3,7 @@ import { ServiceError } from "./errors.ts";
 export const PROJECT_KEY_PATTERN = /^[A-Z][A-Z0-9]{1,9}$/;
 export const ISSUE_KEY_PATTERN = /^([A-Z][A-Z0-9]{1,9})-([0-9]{1,6})$/;
 export const ISSUE_KEY_IN_TEXT =
-  /(?:^|[^A-Za-z0-9])([A-Z][A-Z0-9]{1,9})-([0-9]{1,6})(?![A-Za-z0-9])/;
+  /(?:^|[^A-Za-z0-9])([A-Za-z][A-Za-z0-9]{1,9})-([0-9]{1,6})(?![A-Za-z0-9])/;
 export const BRANCH_SLUG_MAX_LENGTH = 60;
 
 export function parseIssueKey(input: string): {
@@ -43,7 +43,11 @@ export function issueKeyFromText(input: string): string | null {
   if (project === undefined || digits === undefined) {
     return null;
   }
-  return `${project}-${Number(digits)}`;
+  const number = Number(digits);
+  if (number < 1) {
+    return null;
+  }
+  return `${project.toUpperCase()}-${number}`;
 }
 
 /** Builds `<canonical-key>-<title-slug>` for an issue branch. */

@@ -182,6 +182,12 @@ issue payload carries `labels` and `relations: { blocks, blockedBy }`, where
 - `npm run smoke:webhook` - webhook gate: exercises `deploy/webhook.sh` against
   a stub `gh`, covering the create and update paths without a GitHub account or
   network. See "GitHub webhook" below.
+- `npm run smoke:webhook:live` - live webhook drill: opens a real pull request
+  on a throwaway base branch in a real repository, waits for the GitHub
+  delivery to move the issue through the deployed app and Postgres, asserts the
+  timeline and status, merges, then closes the pull request, deletes the
+  branches and worktree, and archives the drill project. Needs `gh` auth, the
+  Curved tunnel, and network; not run by CI. See "GitHub webhook" below.
 - `npm run smoke:backup` - backup gate: drives `deploy/backup.sh` and
   `deploy/restore.sh` against stub binaries, with no Docker, database, or
   network. See "Backups and restore" below.
@@ -408,10 +414,11 @@ listeners, the stack health,
 `tls-certificate` (a verified HTTPS response to the API), `http-redirect`
 (HTTP to HTTPS), `hsts` (the configured max-age), `compression` (a compressed
 asset), `caddy-issuance` (an ACME certificate obtained for the domain in the
-Caddy log), and `https-api` (200 authenticated, 401 unauthenticated). A full run
-prints 27 PASS lines. The bootstrap ends with `bootstrap-host: ok` and the
-verifier with `verify-host: ok`; any other ending is a failure. A reboot proof
-is in `deploy/provisioning.md` section 9.4.
+Caddy log), `https-api` (200 authenticated, 401 unauthenticated), and `webhook`
+(an unsigned delivery is 401 and a correctly signed unknown-key delivery is
+200). A full run prints 28 PASS lines. The bootstrap ends with
+`bootstrap-host: ok` and the verifier with `verify-host: ok`; any other ending
+is a failure. A reboot proof is in `deploy/provisioning.md` section 9.4.
 
 LAS-183 provisions the host, LAS-184 makes its data durable, LAS-185 adds the
 release script and SSH deploy job described under "Releasing", and LAS-186
@@ -738,8 +745,8 @@ The gate builds on the other two entry points rather than replacing them:
 `./scripts/clean-state.sh` is still the end-of-session gate. This is the only one
 that runs the CLI, MCP server, HTTP server, webhook, and SPA together.
 
-The repository-side gates all pass: `npm run check` passes 228 tests (222
-behavior, 6 architecture) with `architecture: ok (84 files)`, and `npm run
+The repository-side gates all pass: `npm run check` passes 236 tests (230
+behavior, 6 architecture) with `architecture: ok (86 files)`, and `npm run
 acceptance` passes 197 checks, including the project CLI, HTTP, and browser
 lines, the two browser passkey lines, and the sign-in-only `browser-signin`
 leg, which seeds a stale passkey row and asserts the disabled button and
@@ -747,7 +754,7 @@ explanation. `npm run smoke:compose` covers the HTTP to HTTPS redirect, the HSTS
 toggle before and after enabling `CURVED_HSTS_MAX_AGE`, gzip on the JS asset,
 an `issues_changed` frame within 5s, and a real nightly backup restored into a
 throwaway database plus a Caddy volume restore, `npm run smoke:provision`
-reports 52 PASS, `npm run smoke:release` 22 PASS, `npm run smoke:backup`
+reports 53 PASS, `npm run smoke:release` 22 PASS, `npm run smoke:backup`
 19 PASS, and `npm run smoke:webhook` 9 PASS.
 
 Public product acceptance is an operator run against the deployed stack rather
@@ -925,6 +932,10 @@ reapplied on every run (GitHub never returns a stored secret). Pass
 update path, the dry run, the missing-secret and localhost guards, and that the
 secret never reaches the output or argv.
 
+The host verifier proves the deployed boundary the same way: an unsigned
+delivery is `401`, and a correctly signed unknown-key delivery is
+`200 {"ok":true,"ignored":true}`.
+
 The `x-github-event` header must read `pull_request`; deliveries carrying any
 other event value are ignored. `GITHUB_WEBHOOK_SECRET` must be exported for the
 server process; until it is, the route answers `503 webhook_not_configured`. A
@@ -932,26 +943,40 @@ missing or wrong signature is `401 not_authenticated`, and a body that is not
 valid JSON is `400 validation`.
 
 Only `pull_request` events act, and the payload's `action` with the
-`pull_request` object's `merged` decide the move. `opened` and `reopened` move
-the issue to In Review; `closed` moves it to Done only when the pull request
-merged. `closed` without a merge, every other action, and every other event are
-acknowledged with `200 {"ok":true,"ignored":true}` so GitHub does not retry the
-delivery. The same ignored response covers an unknown issue key, a key whose
-issue cannot take the move, and a replay of a move already made.
+`pull_request` object's `draft` and `merged` decide the move. A non-draft
+`opened`, a non-draft `reopened`, and `ready_for_review` move the issue to In
+Review; a draft is ignored until it is ready; `closed` moves it to Done only
+when the pull request merged. `closed` without a merge, every other action, and
+every other event are acknowledged with `200 {"ok":true,"ignored":true}` so
+GitHub does not retry the delivery. The same ignored response covers an unknown
+issue key, a key whose issue cannot take the move, and a replay of a move
+already made.
 
-The issue key is read from the pull request branch (`head.ref`) first and from
-the pull request title second, taking the first `ABC-123` shaped match and
-normalizing it without padding, so `TAC-014` resolves to `TAC-14`. Keys are
-uppercase, which means a lowercase branch name such as `tac-14-fix-the-thing`
-falls through to the title. A move the webhook makes is an ordinary status change
-by the `git` actor, so the same transition graph and actor matrix apply, and its
-timeline event body reads `pull request #<number> <action>`.
+The issue key is read case-insensitively from the pull request branch
+(`head.ref`) first and from the pull request title second, taking the first
+`ABC-123` shaped match and normalizing it without padding, so `TAC-014` resolves
+to `TAC-14` and `tac-14-fix-the-thing` resolves TAC-14. The first valid match
+comes from the branch and then the title, and numbers below 1 are not keys. A
+move the webhook makes is an ordinary status change by the `git` actor, so the
+same transition graph and actor matrix apply, and its timeline event body reads
+`pull request #<number> <action>`.
 
-On the live host the flow is exercised end to end: a pull request opened moved
-its issue to In Review with a `git` event body `pull request #<n> opened`, a
-reopen after a close moved it to In Review again, and a merge moved it to Done
-with `pull request #<n> closed`. A replayed signed delivery, an unknown key, and
-non-PR `issues` or `push` deliveries all answered
+### Pull request workflow
+
+1. `curved claim <PROJECT>` (or a human move) puts the issue in In Progress.
+2. `curved git-branch <KEY>` prints `KEY-title-slug`; push it.
+3. `gh pr create --base main --title "<KEY> <title>"`; the `opened` delivery
+   moves the issue to In Review. A draft PR is ignored until `ready_for_review`.
+4. `verify` runs on the PR. Merge; the `closed` delivery moves the issue to Done
+   and the push to `main` deploys.
+
+A `todo` issue is ignored by design: the claim or human move comes first.
+
+On the live host the flow is exercised end to end: a non-draft pull request
+opened moved its issue to In Review with a `git` event body `pull request #<n>
+opened`, a reopen after a close moved it to In Review again, and a merge moved
+it to Done with `pull request #<n> closed`. A replayed signed delivery, an
+unknown key, and non-PR `issues` or `push` deliveries all answered
 `200 {"ok":true,"ignored":true}` and left the issue untouched.
 
 To test locally, sign the exact bytes you send:
