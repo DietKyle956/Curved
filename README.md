@@ -745,10 +745,11 @@ The gate builds on the other two entry points rather than replacing them:
 `./scripts/clean-state.sh` is still the end-of-session gate. This is the only one
 that runs the CLI, MCP server, HTTP server, webhook, and SPA together.
 
-The repository-side gates all pass: `npm run check` passes 236 tests (230
+The repository-side gates all pass: `npm run check` passes 240 tests (234
 behavior, 6 architecture) with `architecture: ok (86 files)`, and `npm run
-acceptance` passes 197 checks, including the project CLI, HTTP, and browser
-lines, the two browser passkey lines, and the sign-in-only `browser-signin`
+acceptance` passes 232 checks, including the project CLI, HTTP, and browser
+lines, the sub-issue hierarchy lines, the two browser passkey lines, and the
+sign-in-only `browser-signin`
 leg, which seeds a stale passkey row and asserts the disabled button and
 explanation. `npm run smoke:compose` covers the HTTP to HTTPS redirect, the HSTS
 toggle before and after enabling `CURVED_HSTS_MAX_AGE`, gzip on the JS asset,

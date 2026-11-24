@@ -61,6 +61,7 @@ test("createIssue applies defaults and stores a trimmed title", async () => {
   assert.equal(issue.status, "backlog");
   assert.equal(issue.priority, 3);
   assert.equal(issue.parentId, null);
+  assert.equal(issue.parentKey, null);
   assert.equal(issue.blockedReason, null);
   assert.equal(issue.claimedBy, null);
   assertIsoTimestamp(issue.createdAt);
@@ -141,7 +142,64 @@ test("createIssue honors explicit status, priority, and a padded parent key", as
   assert.equal(child.status, "todo");
   assert.equal(child.priority, 1);
   assert.equal(child.parentId, parent.id);
+  assert.equal(child.parentKey, parent.key);
+  assert.equal(parent.parentKey, null);
   assert.equal(child.number, 2);
+});
+
+test("createIssue rejects a parent from another project", async () => {
+  await seedProject("TAC");
+  await seedProject("OPS");
+
+  const parent = await createIssue(testDb.ports, {
+    project: "TAC",
+    title: "Cross-project parent",
+  });
+
+  await assert.rejects(
+    createIssue(testDb.ports, {
+      project: "OPS",
+      title: "Cross-project child",
+      parent: parent.key,
+    }),
+    (error: unknown) => {
+      assert.ok(error instanceof ServiceError, `expected ServiceError, got ${String(error)}`);
+      assert.equal(error.code, "validation");
+      assert.match(error.message, /is in project "TAC", not "OPS"/);
+      return true;
+    },
+  );
+
+  const ops = await listIssues(testDb.ports, { project: "OPS" });
+  assert.deepEqual(ops, []);
+});
+
+test("getIssueTimeline lists direct children in ascending order", async () => {
+  await seedProject("TAC");
+
+  const parent = await createIssue(testDb.ports, { project: "TAC", title: "Parent" });
+  const first = await createIssue(testDb.ports, {
+    project: "TAC",
+    title: "First child",
+    parent: parent.key,
+  });
+  const second = await createIssue(testDb.ports, {
+    project: "TAC",
+    title: "Second child",
+    parent: parent.key,
+  });
+
+  const timeline = await getIssueTimeline(testDb.ports, parent.key);
+  assert.deepEqual(timeline.children, [
+    { key: first.key, title: first.title, status: "backlog" },
+    { key: second.key, title: second.title, status: "backlog" },
+  ]);
+
+  const created = await listIssues(testDb.ports, { project: "TAC" });
+  const childRow = created.find((issue) => issue.key === second.key);
+  assert.ok(childRow, "expected the child in the project listing");
+  assert.equal(childRow.parentKey, parent.key);
+  assert.equal(childRow.parentId, parent.id);
 });
 
 test("25 concurrent createIssue calls allocate 25 distinct sequential keys", async () => {

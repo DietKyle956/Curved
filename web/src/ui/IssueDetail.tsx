@@ -28,6 +28,7 @@ import type {
   EventKind,
   Issue,
   IssueEvent,
+  IssueRef,
   IssueTimeline,
   Priority,
   Status,
@@ -635,6 +636,22 @@ export function IssueDetail({
                 </section>
 
                 <section className="mt-4 border-t border-line pt-3">
+                  <h2 className="text-[11px] font-medium text-fg">Hierarchy</h2>
+                  <div className="mt-2 grid gap-2">
+                    <RelationRow
+                      label="Parent"
+                      testId="issue-parent-row"
+                      keys={issue.parentKey === null ? [] : [issue.parentKey]}
+                      onOpen={onOpenIssueKey}
+                    />
+                    <IssueChildrenRow
+                      children={timeline?.children ?? []}
+                      onOpen={onOpenIssueKey}
+                    />
+                  </div>
+                </section>
+
+                <section className="mt-4 border-t border-line pt-3">
                   <h2 className="text-[11px] font-medium text-fg">
                     Timeline
                     <span className="ml-1.5 font-mono text-[9.5px] font-normal text-fg-muted">
@@ -743,6 +760,44 @@ function RelationRow({
             >
               <LinkSimple className="size-2.5" aria-hidden="true" />
               {key}
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function IssueChildrenRow({
+  children,
+  onOpen,
+}: {
+  children: IssueRef[];
+  onOpen: (key: string) => void;
+}) {
+  return (
+    <div className="flex items-start gap-3" data-testid="issue-children-row">
+      <span className="w-20 shrink-0 pt-0.5 font-mono text-[9.5px] text-fg-muted">
+        Children
+      </span>
+      {children.length === 0 ? (
+        <span className="text-[11px] text-fg-muted">None</span>
+      ) : (
+        <div className="flex flex-col gap-1">
+          {children.map((child) => (
+            <button
+              key={child.key}
+              type="button"
+              data-testid={`issue-child-${child.key}`}
+              onClick={() => {
+                onOpen(child.key);
+              }}
+              className="flex items-center gap-1.5 rounded-ui border border-line bg-panel px-1.5 py-0.5 text-left text-[10.5px] text-fg-secondary transition-colors hover:border-line-strong hover:text-fg"
+            >
+              <LinkSimple className="size-2.5" aria-hidden="true" />
+              <span className="font-mono text-[9.5px]">{child.key}</span>
+              <span className="truncate">{child.title}</span>
+              <StatusChip status={child.status} />
             </button>
           ))}
         </div>

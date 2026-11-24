@@ -19,6 +19,8 @@ export interface Issue {
   allowedTransitions: Status[];
   priority: Priority;
   parentId: number | null;
+  /** Key of the parent issue, or null at the top level. */
+  parentKey: string | null;
   blockedReason: string | null;
   claimedBy: string | null;
   /** Label names in ascending order. */
@@ -27,6 +29,13 @@ export interface Issue {
   relations: { blocks: string[]; blockedBy: string[] };
   createdAt: string;
   updatedAt: string;
+}
+
+/** A direct child issue, as listed on its parent's timeline. */
+export interface IssueRef {
+  key: string;
+  title: string;
+  status: Status;
 }
 
 export interface Project {

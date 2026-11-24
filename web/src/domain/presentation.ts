@@ -232,6 +232,12 @@ export function relationCandidates(
     .map((key) => ({ key, title: titles.get(key) ?? "" }));
 }
 
+export function parentCandidates(issues: readonly Issue[]): RelationCandidate[] {
+  return [...issues]
+    .sort((left, right) => left.number - right.number)
+    .map((issue) => ({ key: issue.key, title: issue.title }));
+}
+
 const relative = new Intl.RelativeTimeFormat("en", { numeric: "auto" });
 const absolute = new Intl.DateTimeFormat("en", {
   dateStyle: "medium",

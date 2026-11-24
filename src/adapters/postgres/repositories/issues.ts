@@ -8,6 +8,7 @@ import type {
 } from "../../../application/ports.ts";
 import { ActiveClaimConflict } from "../../../application/ports.ts";
 import type { Priority, Status } from "../../../domain/status.ts";
+import type { IssueRef } from "../../../domain/types.ts";
 
 interface IssueRow extends QueryResultRow {
   id: number;
@@ -20,11 +21,19 @@ interface IssueRow extends QueryResultRow {
   status: Status;
   priority: Priority;
   parent_id: number | null;
+  parent_key: string | null;
   blocked_reason: string | null;
   claimed_by: string | null;
   created_at: Date;
   updated_at: Date;
 }
+
+interface IssueRefRow extends QueryResultRow {
+  key: string;
+  title: string;
+  status: Status;
+}
+
 
 interface LockedIssueRow extends QueryResultRow {
   id: number;
@@ -42,7 +51,7 @@ interface KeyRow extends QueryResultRow {
 }
 
 const ISSUE_COLUMNS = `i.id, i.project_id, p.key as project_key, i.number, i.key, i.title, i.description,
-       i.status, i.priority, i.parent_id, i.blocked_reason, i.claimed_by,
+       i.status, i.priority, i.parent_id, pi.key as parent_key, i.blocked_reason, i.claimed_by,
        i.created_at, i.updated_at`;
 
 function toRecord(row: IssueRow): IssueRecord {
@@ -57,6 +66,7 @@ function toRecord(row: IssueRow): IssueRecord {
     status: row.status,
     priority: row.priority,
     parentId: row.parent_id,
+    parentKey: row.parent_key,
     blockedReason: row.blocked_reason,
     claimedBy: row.claimed_by,
     createdAt: row.created_at,
@@ -107,6 +117,7 @@ export function createIssueRepository(db: Db): IssueRepository {
         `select ${ISSUE_COLUMNS}
        from issues i
        join projects p on p.id = i.project_id
+       left join issues pi on pi.id = i.parent_id
        where i.id = $1`,
         [created.id],
       );
@@ -121,6 +132,7 @@ export function createIssueRepository(db: Db): IssueRepository {
         `select ${ISSUE_COLUMNS}
      from issues i
      join projects p on p.id = i.project_id
+     left join issues pi on pi.id = i.parent_id
      where i.id = $1`,
         [id],
       );
@@ -132,10 +144,22 @@ export function createIssueRepository(db: Db): IssueRepository {
         `select ${ISSUE_COLUMNS}
      from issues i
      join projects p on p.id = i.project_id
+     left join issues pi on pi.id = i.parent_id
      where i.key = $1`,
         [key],
       );
       return row === null ? null : toRecord(row);
+    },
+
+    async listChildren(parentId: number): Promise<IssueRef[]> {
+      const rows = await db.query<IssueRefRow>(
+        `select i.key, i.title, i.status
+     from issues i
+     where i.parent_id = $1
+     order by i.number asc`,
+        [parentId],
+      );
+      return rows.map((row) => ({ key: row.key, title: row.title, status: row.status }));
     },
 
     async lockByKey(key: string): Promise<LockedIssueRecord | null> {
@@ -151,6 +175,7 @@ export function createIssueRepository(db: Db): IssueRepository {
         `select ${ISSUE_COLUMNS}
      from issues i
      join projects p on p.id = i.project_id
+     left join issues pi on pi.id = i.parent_id
      where ($1::text is null or p.key = $1)
        and ($2::text is null or i.status = $2)
      order by p.key asc, i.number asc`,
@@ -203,6 +228,7 @@ export function createIssueRepository(db: Db): IssueRepository {
         `select ${ISSUE_COLUMNS}
      from issues i
      join projects p on p.id = i.project_id
+     left join issues pi on pi.id = i.parent_id
      where i.status = 'todo'
        and i.blocked_reason is null
        and not exists (

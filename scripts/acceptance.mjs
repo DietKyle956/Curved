@@ -635,6 +635,84 @@ async function cliLeg(databaseUrl) {
     `created issue ${PROJECT_KEY}-1 (Acceptance CLI task)\n`,
   );
 
+  // CRV-3: a parent is create-only and its detail lists direct children.
+  // A separate project keeps this from consuming the ${PROJECT_KEY} numbers
+  // the later webhook leg pins to -2.
+  const specProject = "SPC";
+  expectStdout(
+    leg,
+    await runCli(databaseUrl, ["project", "add", specProject, "Specs"]),
+    "project add for hierarchy",
+    `created project ${specProject} (Specs)\n`,
+  );
+  const specParent = readCliJson(
+    leg,
+    await runCli(databaseUrl, [
+      "issue",
+      "add",
+      specProject,
+      "Acceptance spec parent",
+      "--json",
+    ]),
+    "issue add hierarchy parent",
+  );
+  assert(
+    leg,
+    specParent.parentKey === null,
+    `top-level issue parentKey was ${JSON.stringify(specParent.parentKey)}`,
+  );
+  const specChildTitle = "Acceptance spec child";
+  const specChild = readCliJson(
+    leg,
+    await runCli(databaseUrl, [
+      "issue",
+      "add",
+      specProject,
+      specChildTitle,
+      "--parent",
+      specParent.key,
+      "--json",
+    ]),
+    "issue add hierarchy child",
+  );
+  assert(
+    leg,
+    specChild.parentKey === specParent.key,
+    `child parentKey was ${JSON.stringify(specChild.parentKey)}, expected ${JSON.stringify(specParent.key)}`,
+  );
+  const parentShow = await runCli(databaseUrl, ["issue", "show", specParent.key]);
+  assert(
+    leg,
+    parentShow.code === 0,
+    `issue show parent exited ${parentShow.code}: ${describe(parentShow)}`,
+  );
+  assert(
+    leg,
+    parentShow.stdout.includes("children: 1"),
+    `issue show parent printed no "children: 1": ${JSON.stringify(truncate(parentShow.stdout))}`,
+  );
+  assert(
+    leg,
+    parentShow.stdout.split("\n").includes(`  ${specChild.key}\tbacklog\t${specChildTitle}`),
+    `issue show ${specParent.key} printed no child row for ${specChild.key}: ${JSON.stringify(truncate(parentShow.stdout))}`,
+  );
+  const childShow = await runCli(databaseUrl, ["issue", "show", specChild.key]);
+  assert(
+    leg,
+    childShow.code === 0,
+    `issue show child exited ${childShow.code}: ${describe(childShow)}`,
+  );
+  assert(
+    leg,
+    childShow.stdout.includes(`parent: ${specParent.key}`),
+    `issue show ${specChild.key} printed no "parent: ${specParent.key}": ${JSON.stringify(truncate(childShow.stdout))}`,
+  );
+  assert(
+    leg,
+    childShow.stdout.includes("children: 0"),
+    `issue show ${specChild.key} printed no "children: 0": ${JSON.stringify(truncate(childShow.stdout))}`,
+  );
+
   const ready = readReady(leg, await runCli(databaseUrl, ["ready"], alphaToken));
   assert(
     leg,
@@ -731,6 +809,7 @@ async function mcpLeg(databaseUrl, alphaToken) {
   let buffered = "";
   let toolsFound = null;
   const toolsListed = Promise.withResolvers();
+  const pending = new Map();
 
   function handleLine(line) {
     const trimmed = line.trim();
@@ -748,6 +827,15 @@ async function mcpLeg(databaseUrl, alphaToken) {
     if (parsed !== null && typeof parsed === "object" && parsed.id === 2) {
       toolsFound = parsed;
       toolsListed.resolve();
+    }
+    if (
+      parsed !== null &&
+      typeof parsed === "object" &&
+      typeof parsed.id === "number" &&
+      pending.has(parsed.id)
+    ) {
+      pending.get(parsed.id)(parsed);
+      pending.delete(parsed.id);
     }
   }
 
@@ -841,6 +929,94 @@ async function mcpLeg(databaseUrl, alphaToken) {
     leg,
     JSON.stringify(names.slice().sort()) === JSON.stringify(EXPECTED_MCP_TOOLS.slice().sort()),
     `tools/list names were ${JSON.stringify(names)}`,
+  );
+
+  function callTool(id, name, args) {
+    const deferred = Promise.withResolvers();
+    pending.set(id, deferred.resolve);
+    child.stdin.write(
+      `${JSON.stringify({
+        jsonrpc: "2.0",
+        id,
+        method: "tools/call",
+        params: { name, arguments: args },
+      })}\n`,
+    );
+    return withTimeout(
+      deferred.promise,
+      MCP_RESPONSE_TIMEOUT_MS,
+      leg,
+      `${name} response`,
+    );
+  }
+
+  function toolPayload(response, name) {
+    const text = response?.result?.content?.[0]?.text;
+    assert(
+      leg,
+      response?.result?.isError !== true,
+      `${name} failed: ${JSON.stringify(truncate(String(text ?? "")))}`,
+    );
+    assert(
+      leg,
+      typeof text === "string",
+      `${name} returned no text content: ${JSON.stringify(truncate(JSON.stringify(response)))}`,
+    );
+    try {
+      return JSON.parse(text);
+    } catch {
+      throw new AcceptanceFailure(
+        leg,
+        `${name} returned non-JSON text ${JSON.stringify(truncate(text))}`,
+      );
+    }
+  }
+
+  // CRV-3: create a parent through the tool, then attach a child to it. The
+  // dedicated project keeps ${PROJECT_KEY} numbering for the webhook leg.
+  const mcpProject = "MCP";
+  expectStdout(
+    leg,
+    await runCli(databaseUrl, ["project", "add", mcpProject, "Mcp acceptance"]),
+    "project add for mcp hierarchy",
+    `created project ${mcpProject} (Mcp acceptance)\n`,
+  );
+  const mcpParent = toolPayload(
+    await callTool(3, "create_issue", {
+      project: mcpProject,
+      title: "MCP hierarchy parent",
+    }),
+    "create_issue parent",
+  );
+  assert(
+    leg,
+    typeof mcpParent?.key === "string" && mcpParent.key.startsWith(`${mcpProject}-`),
+    `create_issue parent returned ${JSON.stringify(truncate(JSON.stringify(mcpParent)))}`,
+  );
+  const mcpChild = toolPayload(
+    await callTool(4, "create_issue", {
+      project: mcpProject,
+      title: "MCP hierarchy child",
+      parent: mcpParent.key,
+    }),
+    "create_issue child",
+  );
+  assert(
+    leg,
+    mcpChild?.parentKey === mcpParent.key,
+    `create_issue child parentKey was ${JSON.stringify(mcpChild?.parentKey)}, expected ${JSON.stringify(mcpParent.key)}`,
+  );
+  const mcpParentTimeline = toolPayload(
+    await callTool(5, "get_issue", { key: mcpParent.key }),
+    "get_issue parent",
+  );
+  const mcpChildKeys = Array.isArray(mcpParentTimeline?.children)
+    ? mcpParentTimeline.children.map((entry) => entry?.key)
+    : [];
+  assert(
+    leg,
+    mcpChildKeys.includes(mcpChild.key),
+    `get_issue parent children were ${JSON.stringify(mcpChildKeys)}, expected ${mcpChild.key}`,
   );
 
   child.stdin.end();
@@ -1144,6 +1320,131 @@ async function httpLeg(server, databaseUrl) {
   );
   const projectId = issuesBody.issues[0].projectId;
   assert(leg, Number.isInteger(projectId), `project id was ${JSON.stringify(projectId)}`);
+
+  // CRV-3: the HTTP surface carries parent on create and children on detail.
+  // Dedicated projects again keep the ${PROJECT_KEY} numbering intact.
+  const postIssue = async (body) => {
+    const response = await fetch(`${baseUrl}/api/issues`, {
+      method: "POST",
+      headers: { ...bearer, "content-type": "application/json" },
+      body: JSON.stringify(body),
+      signal: AbortSignal.timeout(HTTP_REQUEST_TIMEOUT_MS),
+    });
+    const raw = await response.text();
+    let parsed = null;
+    try {
+      parsed = JSON.parse(raw);
+    } catch {
+      parsed = null;
+    }
+    return { status: response.status, body: parsed, raw };
+  };
+  const createProject = async (key, name) => {
+    const response = await fetch(`${baseUrl}/api/projects`, {
+      method: "POST",
+      headers: { ...bearer, "content-type": "application/json" },
+      body: JSON.stringify({ key, name }),
+      signal: AbortSignal.timeout(HTTP_REQUEST_TIMEOUT_MS),
+    });
+    return { status: response.status, raw: await response.text() };
+  };
+
+  const hierarchyProject = "HIE";
+  const hierarchyProjectCreated = await createProject(hierarchyProject, "Hierarchy");
+  assert(
+    leg,
+    hierarchyProjectCreated.status === 201,
+    `POST /api/projects ${hierarchyProject} returned ${hierarchyProjectCreated.status}: ${truncate(hierarchyProjectCreated.raw)}`,
+  );
+  const httpParent = await postIssue({
+    project: hierarchyProject,
+    title: "HTTP hierarchy parent",
+  });
+  assert(
+    leg,
+    httpParent.status === 201,
+    `POST /api/issues parent returned ${httpParent.status}: ${truncate(httpParent.raw)}`,
+  );
+  const httpParentKey = httpParent.body?.issue?.key;
+  assert(
+    leg,
+    typeof httpParentKey === "string" && httpParentKey.startsWith(`${hierarchyProject}-`),
+    `parent issue body was ${JSON.stringify(truncate(httpParent.raw))}`,
+  );
+  const httpChild = await postIssue({
+    project: hierarchyProject,
+    title: "HTTP hierarchy child",
+    parent: httpParentKey,
+  });
+  assert(
+    leg,
+    httpChild.status === 201,
+    `POST /api/issues child returned ${httpChild.status}: ${truncate(httpChild.raw)}`,
+  );
+  const httpChildKey = httpChild.body?.issue?.key;
+  assert(
+    leg,
+    typeof httpChildKey === "string" && httpChildKey.startsWith(`${hierarchyProject}-`),
+    `child issue body was ${JSON.stringify(truncate(httpChild.raw))}`,
+  );
+
+  const httpParentDetail = await fetch(`${baseUrl}/api/issues/${httpParentKey}`, {
+    headers: bearer,
+    signal: AbortSignal.timeout(HTTP_REQUEST_TIMEOUT_MS),
+  });
+  assert(
+    leg,
+    httpParentDetail.status === 200,
+    `GET /api/issues/${httpParentKey} returned ${httpParentDetail.status}`,
+  );
+  const httpParentDetailBody = await httpParentDetail.json();
+  const httpChildKeys = Array.isArray(httpParentDetailBody?.children)
+    ? httpParentDetailBody.children.map((entry) => entry?.key)
+    : [];
+  assert(
+    leg,
+    httpChildKeys.includes(httpChildKey),
+    `GET /api/issues/${httpParentKey} children were ${JSON.stringify(httpChildKeys)}, expected ${httpChildKey}`,
+  );
+
+  const httpChildDetail = await fetch(`${baseUrl}/api/issues/${httpChildKey}`, {
+    headers: bearer,
+    signal: AbortSignal.timeout(HTTP_REQUEST_TIMEOUT_MS),
+  });
+  assert(
+    leg,
+    httpChildDetail.status === 200,
+    `GET /api/issues/${httpChildKey} returned ${httpChildDetail.status}`,
+  );
+  const httpChildDetailBody = await httpChildDetail.json();
+  assert(
+    leg,
+    httpChildDetailBody?.issue?.parentKey === httpParentKey,
+    `GET /api/issues/${httpChildKey} issue.parentKey was ${JSON.stringify(httpChildDetailBody?.issue?.parentKey)}`,
+  );
+
+  const crossProject = "HXO";
+  const crossProjectCreated = await createProject(crossProject, "Other");
+  assert(
+    leg,
+    crossProjectCreated.status === 201,
+    `POST /api/projects ${crossProject} returned ${crossProjectCreated.status}: ${truncate(crossProjectCreated.raw)}`,
+  );
+  const crossProjectChild = await postIssue({
+    project: crossProject,
+    title: "Cross-project child",
+    parent: httpParentKey,
+  });
+  assert(
+    leg,
+    crossProjectChild.status === 400,
+    `cross-project child returned ${crossProjectChild.status}: ${truncate(crossProjectChild.raw)}`,
+  );
+  assert(
+    leg,
+    /is in project/.test(String(crossProjectChild.body?.error?.message ?? "")),
+    `cross-project child error was ${JSON.stringify(truncate(crossProjectChild.raw))}`,
+  );
 
   const commentStartedAt = performance.now();
   const comment = await runCli(databaseUrl, [

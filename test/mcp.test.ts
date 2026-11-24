@@ -50,6 +50,7 @@ interface IssuePayload {
   status: string;
   priority: number;
   parentId: number | null;
+  parentKey: string | null;
   blockedReason: string | null;
   claimedBy: string | null;
   createdAt: string;
@@ -67,8 +68,15 @@ interface EventPayload {
   createdAt: string;
 }
 
+interface IssueRefPayload {
+  key: string;
+  title: string;
+  status: string;
+}
+
 interface TimelinePayload {
   issue: IssuePayload;
+  children: IssueRefPayload[];
   events: EventPayload[];
 }
 
@@ -698,6 +706,18 @@ test(
       assert.equal(created.description, "Show the backlog counts");
       assert.equal(created.priority, 2);
 
+      const child = await callOk<IssuePayload>(
+        session.client,
+        "create_issue",
+        {
+          project: "TAC",
+          title: "Show the backlog counts",
+          parent: created.key,
+        },
+      );
+      assert.equal(child.key, "TAC-2");
+      assert.equal(child.parentKey, created.key);
+
       const timeline = await callOk<TimelinePayload>(
         session.client,
         "get_issue",
@@ -708,6 +728,17 @@ test(
         timeline.events.some((event) => event.kind === "created"),
         "created event is missing",
       );
+      assert.deepEqual(
+        timeline.children.map((entry) => entry.key),
+        [child.key],
+      );
+
+      const childTimeline = await callOk<TimelinePayload>(
+        session.client,
+        "get_issue",
+        { key: child.key },
+      );
+      assert.equal(childTimeline.issue.parentKey, created.key);
     } finally {
       await closeMcp(session);
     }
