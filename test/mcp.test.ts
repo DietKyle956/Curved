@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
+import { readFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import { createInterface } from "node:readline";
 import { after, before, beforeEach, test } from "node:test";
@@ -391,6 +392,16 @@ test(
         listResult.tools.map((tool) => tool.name).sort(),
         [...TOOL_NAMES].sort(),
       );
+      const agentSkill = await readFile(
+        resolve(REPO_ROOT, "skills", "curved-agent", "SKILL.md"),
+        "utf8",
+      );
+      for (const tool of listResult.tools) {
+        assert.ok(
+          agentSkill.includes(tool.name),
+          `curved-agent skill is missing tool ${tool.name}`,
+        );
+      }
     } finally {
       await server.finish();
     }

@@ -780,7 +780,18 @@ independent of children. `npm run check` is green with 240 tests (234 behavior,
 with 232 checks, including the browser lines for the child's parent row and the
 parent's children row.
 
-Tests: 240 pass, 0 fail, including `test/http.test.ts` and `test/sse.test.ts`,
+CRV-7 is live: `skills/` ships three public installer-facing agent skills
+(`curved-agent` for the MCP work loop, `curved-cli` for the shell surface, and
+`curved-api` for HTTP and SSE), discovered by the skills CLI through
+`skills/<name>/SKILL.md` and installable with
+`npx skills add DietKyle956/Curved`. Each skill is standalone and repeats the
+status, claim, and actor rules; all content is generic and contains no host,
+token, or local path. `test/skills.test.ts` validates the bundle contract, and
+the MCP stdio tool-list test also asserts every registered tool is named in
+`curved-agent`. The `mark_blocked` MCP description now says it returns the issue
+to Todo and clears the claim.
+
+Tests: 245 pass, 0 fail, including `test/http.test.ts` and `test/sse.test.ts`,
 whose session cases exercise the opaque `auth_sessions` cookie rows,
 `test/passkeys.test.ts` for availability without auth and its current-domain
 versus other-domain counts, listing without verification material and with the
@@ -794,10 +805,13 @@ and `test/relations.test.ts`, the webhook and branch suite in
 `test/issues.test.ts`, `test/projects.test.ts` for create, list, detail,
 update, archive, duplicate, validation, and the strict date rules, the
 transaction-scoped ports commit and rollback, and
-repository find by key, plus `test/architecture.test.ts`, which proves the real
+repository find by key, `test/skills.test.ts` for the skill bundle contract
+(frontmatter, name and directory agreement, description limits, forbidden
+deployment identifiers, link integrity, and the exact published set), plus
+`test/architecture.test.ts`, which proves the real
 tree passes and five fixtures fail (application -> adapter, domain -> `pg`, web
 ui -> adapter, web application -> adapter, web domain -> a backend module other
-than `src/domain/status.ts`). Those 240 are the node tests (234 behavior and 6
+than `src/domain/status.ts`). Those 245 are the node tests (239 behavior and 6
 architecture); `npm run smoke:release` and `npm run smoke:agent` (16 checks) are
 shell gates, not part of them.
 `ARCH.md` codifies the layers and the one-way dependency rule; all
@@ -866,6 +880,7 @@ carries the same rules as a project-agnostic template.
 | `web/src/ui/` | React and styles only: `AppView.tsx`, `Boot.tsx`, `PasskeysDialog.tsx`, `ProjectsPage.tsx`, `ProjectOverview.tsx`, `ProjectDialog.tsx`, `ProjectStatusChip.tsx`, and the shell, board, queue, detail, dialog, palette, sign-in (passkey button plus the UI-token divider), setup, toast, and primitive components plus `styles.css`. No transport imports. |
 | `web/src/main.tsx` | Composition root: creates the API client and passkey adapter, calls the history and realtime adapters, injects all four ports into `useWorkspace`, renders `AppView`. |
 | `web/` | Vite + React SPA around `web/src/`. `npm run build` writes `web/dist`; `npm start` serves it; `npm run dev` proxies `/api` to 4747. |
+| `skills/` | Three public installer-facing agent skills (`curved-agent`, `curved-cli`, `curved-api`) for using Curved over MCP, the CLI, and HTTP; installed with `npx skills add DietKyle956/Curved`. |
 | `scripts/init.sh` | Baseline runner: install, check, build. `--no-install` skips install. |
 | `scripts/check-architecture.mjs` | Import-direction check over `src/**/*.ts` and `web/src/**/*.ts(x)`; exits 1 on any violation. |
 | `scripts/agent-smoke.sh` | Agent gate (`npm run smoke:agent`, 16 checks): stub `ssh` and a throwaway git fixture over the two deploy helpers, covering the 55432 refusal, strict SSH options, local/deployed parity, and the tunnel probe with no Docker, database, or network. |
