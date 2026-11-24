@@ -52,6 +52,12 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v7
 
+      - name: Main guard
+        if: github.ref == 'refs/heads/main'
+        env:
+          GITHUB_EVENT_BEFORE: ${{ github.event.before }}
+        run: bash scripts/check-main-merge.sh
+
       - name: Set up Node
         uses: actions/setup-node@v7
         with:
