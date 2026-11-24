@@ -1,6 +1,6 @@
 # MEMORY.md
 
-- **Last updated:** 2026-11-23
+- **Last updated:** 2026-11-24
 - **Project:** curved
 - **Phase:** product and infrastructure implemented through `LAS-190` (first-run
   seed and public product acceptance, on top of the `LAS-189` agent tunnel and
@@ -23,7 +23,11 @@
   entrypoint, first-run setup created a project through the SPA against a
   throwaway database on the deployed Postgres, and a 390x844 public HTTPS run
   passed 77 checks across the full human surface and human plus agent SSE.
-  Next unbuilt work is `LAS-177` (template audit).
+  `CRV-6` is Done: the GitHub webhook is proven in place by a live drill, the
+  PR policy now ignores drafts until `ready_for_review`, keys resolve
+  case-insensitively, CI runs on pull requests, and the host verifier proves
+  unsigned `401` and signed unknown-key `200`. Work now flows branch -> PR ->
+  `verify` -> merge -> deploy. Next unbuilt work is `LAS-177` (template audit).
 
 ## Current verified state
 
@@ -659,6 +663,19 @@ git history and the Linear comments.
 
 ## Next best step
 
+`CRV-6` (test the GitHub webhook) is Done. Diagnosis on 2026-11-24: hook
+`715784553` was active (`pull_request`, json, `/webhooks/github`) but its
+30-day delivery log held only two pings, so no `pull_request` delivery had
+ever reached the app; the old rules also required an In Progress issue and an
+uppercase key. `npm run smoke:webhook:live` now proves the chain end to end:
+the pre-change run at deployed `95e5301` passed `opened -> in_review` and
+`merged -> done` (PR #3 on a throwaway base branch), PR #4 moved `CRV-6` to In
+Review through the live webhook, its merge deployed `475f1ee` and moved
+`CRV-6` to Done, and the post-deploy `--draft` run (PR #5) proved a draft is
+ignored, `ready_for_review` moves to In Review, and the merge moves to Done.
+The host prints `unsigned=401 signed=200`. Work now flows branch -> PR ->
+`verify` -> merge -> deploy; do not push `main` directly.
+
 `LAS-190` (first-run seed and public product acceptance) is Done. On
 2026-11-23 at deployed `57ced3d`, the image refused to start with an empty
 `CURVED_UI_TOKEN` (`exit=1`, stderr naming the variable), and
@@ -721,7 +738,7 @@ One line per session: earlier verification evidence and the full acceptance
 matrices live in git history and the Linear comments. Sessions 001 to 013 ran on
 2026-11-10, 014 to 018 on 2026-11-16, 019 to 030 on 2026-11-17, 031 to 036
 on 2026-11-18, and 037 to 039 on 2026-11-19. Sessions 040 to 048 ran on
-2026-11-23.
+2026-11-23. Session 049 ran on 2026-11-24.
 
 | Session | Work item | Outcome |
 |---|---|---|
@@ -773,3 +790,4 @@ on 2026-11-18, and 037 to 039 on 2026-11-19. Sessions 040 to 048 ran on
 | 046 | `LAS-190` | Added `test/server-entry.test.ts`, which spawns the real `src/composition/server.ts` in a temp cwd with `CURVED_UI_TOKEN=""` and an unreachable `DATABASE_URL`, and asserts exit 1, the `CURVED_UI_TOKEN is required to start the HTTP server` stderr line, no `curved listening` stdout, and no `ECONNREFUSED` (proving no DB attempt). Live at deployed `57ced3d`: `docker run --rm -e CURVED_UI_TOKEN= curved:57ced3d` printed the guard and `exit=1`; first-run setup created `FIRST`/`First Run` through the SPA against a throwaway `curved_las190_firstrun` database on the deployed Postgres (row `FIRST|First Run|planned|0` issues, no SQL insert), with session persistence on reload; the throwaway container, database, env file, and forward were removed. Seeded `LAS190` through the deployed CLI (four issues, agent block of `LAS190-1`, claim of `LAS190-2`, human label on `LAS190-3`), then a 390x844 Chromium/CDP run over `https://curv3d.duckdns.org` passed 77 checks: token sign-in, session persistence across navigation (`/api/me` 200, `navType=navigate`), board blocked badge and label chips, queue `Ready=2 In flight=1 Blocked=1` with rows and Unblock buttons, detail created event and comment, labels editor, relation confirmed on both API sides, human unblock clearing the panel and dropping the blocked count to 0, palette key match, human SSE in 251 ms and agent SSE in 101/201 ms into two tabs without reload, and four screenshots under `/tmp`. Released `LAS190-2` and archived `LAS190`; issues and timeline remain. Documented the runbook in `deploy/provisioning.md` section 20 and updated README, AGENTS, and MEMORY. Gates: `npm run check` 224 tests (218 behavior, 6 architecture), `architecture: ok (84 files)`, `npm run acceptance` 194 checks. The follow-up commit is the test and docs only, so the product code matches the accepted `57ced3d` image. |
 | 047 | Passkey domain scoping | A passkey registered at `158.101.127.247.sslip.io` could not authenticate at `curv3d.duckdns.org` because WebAuthn binds a credential to one RP ID, and the server still offered the stale credential in login `allowCredentials`, so iOS showed its cross-device QR sheet instead of Face ID. Migration `0008_passkey_rp_id.sql` adds nullable `passkey_credentials.rp_id` with a format check; pre-migration rows stay NULL and inert. `PasskeySummary`/`PasskeyRecord` carry `rpId: string \| null` and `usable`; `PasskeyRepository` adds `listForRpId` and `countForRpId` and `create` requires `rpId`; `passkeysAvailable(ports, rpID)` returns `{ available, otherDomain }`, served by `GET /api/passkeys/available` (`cache-control: no-store`), while `GET /api/passkeys` annotates each row with `rpId`/`usable`; login options offer only current-domain credentials with `hints: ["client-device"]`, fail validation with "no passkey is registered for this domain" when none exist, and return 401 when completion uses an other-domain credential; registration stores the current RP ID and excludes only usable ids; config lowercases the RP ID. The SPA disables the passkey button and explains the move when only stale rows exist, and `PasskeysDialog` tags them "Different domain" while still allowing deletion. `test/passkeys.test.ts` covers current versus other-domain availability counts, the listing annotation, registration exclusion, login options, and other-domain sign-in rejection; `scripts/acceptance.mjs` adds the sign-in-only `browser-signin` leg, which seeds a NULL-`rp_id` row and asserts the disabled button and explanation. Gates: 228 node tests (222 behavior, 6 architecture), `architecture: ok (84 files)`, `npm run acceptance` 197 checks; the deployed host was not reachable from this workstation, so release and re-registration remain for the operator. |
 | 048 | CRV-4 blocking relationships | Relation edges are now removable and settable at creation and edit time. Backend: `RelationRepository.remove` deletes an edge via `delete from issue_relations ... returning blocking_issue_id`; `removeRelation(ports, { blocked, blocking, actor?, agent? })` is human-only (`forbidden_transition`), rejects a self edge (`validation`) and unknown keys (`not_found`), removes idempotently inside one transaction, and appends a `relation` event body `{"blocking","blocked","removed":true}` only when a row was removed; `DELETE /api/issues/:key/relations/:blocking` maps those codes to 400/403/404 and returns `{ issue }`. Web: `relationSummary` renders "X no longer blocks Y"; `relationCandidates(issues, { excludeKey?, includeKeys? })` keeps every non-Done same-project issue plus existing relations (even Done/cross-project), sorted numerically; `NewIssueInput` gains `blocks`/`blockedBy`; `ApiPort.removeRelation` DELETE client; new `RelationSelect` (multi-select through `Field`) and `RelationsDialog` (one Save diffs all four directions) replace the inline single-input blocker form in `IssueDetail` (rows carry `relation-blocks-row`/`relation-blocked-by-row`, `edit-relations` opens the dialog); `NewIssueDialog` renders Blocked-by/Blocks dropdowns after Labels; `workspace.createIssue` applies relations post-create with a non-atomic error toast and `workspace.setRelations` diffs against the loaded issue (removed `issueKeys` and the old `addRelation`). No migration (the table and PK predate this). Gates: `npm run typecheck` and `npm run check:arch` green (`architecture: ok (86 files)`), `npm test` 231 pass (was 228; +3 removal tests, extended HTTP DELETE cases), `npm run build:web` green, a throwaway-DB HTTP proof (POST -> blockedBy, DELETE -> empty, two events add+removed, idempotent repeat, self 400, unknown 404, agent 403), and `npm run acceptance` 197 checks including `PASS browser: create modal relation TAC-2 rendered on TAC-27`, `PASS browser: relations modal added TAC-3 as a block`, and `PASS browser: relations modal removed TAC-2`. |
+| 049 | CRV-6 webhook proof | Diagnosis: hook `715784553` was active with only two `ping` deliveries and no `pull_request` delivery, and the old rules required an In Progress issue plus an uppercase key. Added `scripts/webhook-live.sh` (`npm run smoke:webhook:live`): real PR on a throwaway base branch, GitHub delivery, deployed app/Postgres, timeline assertions, merge, cleanup. `targetForAction` ignores draft `opened`/`reopened` and moves `ready_for_review` to In Review; `issueKeyFromText` resolves case-insensitively and rejects number 0 before `parseIssueKey`. `verify.yml` runs on `pull_request` (deploy stays main-only), AGENTS/README document branch -> PR -> merge, `verify-host` proves unsigned `401` and signed unknown-key `200` with a provisioning-smoke negative, and the acceptance relation-row assertion polls instead of reading one transient render. Pre-change drill at `95e5301` passed opened/merged on PR #3; PR #4 moved CRV-6 to In Review and its merge deployed `475f1ee` and moved CRV-6 to Done; the post-deploy `--draft` drill (PR #5) passed draft-ignored, ready_for_review, and merge; the host printed `unsigned=401 signed=200` at `tag=curved:475f1ee`. Gates: 236 tests, `architecture: ok (86 files)`, acceptance 197, smoke:webhook 9, smoke:provision 53. |
