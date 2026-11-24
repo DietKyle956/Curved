@@ -16,8 +16,12 @@ function record(value: unknown): Record<string, unknown> | null {
 function targetForAction(
   action: unknown,
   merged: unknown,
+  draft: unknown,
 ): "in_review" | "done" | null {
   if (action === "opened" || action === "reopened") {
+    return draft === true ? null : "in_review";
+  }
+  if (action === "ready_for_review") {
     return "in_review";
   }
   if (action === "closed") {
@@ -55,7 +59,11 @@ export async function applyPullRequestEvent(
       : typeof nestedAction === "string"
         ? nestedAction
         : null;
-  const to = targetForAction(action, pullRequest["merged"]);
+  const to = targetForAction(
+    action,
+    pullRequest["merged"],
+    pullRequest["draft"],
+  );
   if (to === null) {
     return null;
   }

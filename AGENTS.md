@@ -92,12 +92,16 @@ issue detail with timeline, comments, edits, labels, and blocking relations, and
 `Ctrl/Cmd+K` palette. The warm near-black palette is fixed; there is no light
 mode. `npm run dev` proxies `/api` to 4747 for development. LAS-151 is live:
 `POST /webhooks/github` verifies the `x-hub-signature-256` HMAC of the raw body
-against `GITHUB_WEBHOOK_SECRET` before parsing, moves `pull_request` `opened` and
-`reopened` events to In Review and `closed` events with a merged pull request to
-Done as the `git` actor with a `pull request #<n> <action>` status event, answers
-`200 {"ok":true,"ignored":true}` for unknown keys, illegal transitions, replays,
-and non-PR events so GitHub never retries, and
+against `GITHUB_WEBHOOK_SECRET` before parsing, moves non-draft `pull_request`
+`opened` and non-draft `reopened` events plus `ready_for_review` events to In
+Review and `closed` events with a merged pull request to Done as the `git` actor
+with a `pull request #<n> <action>` status event, reads the issue key
+case-insensitively from the branch (`head.ref`) and then the title, leaves an
+issue that is not already In Progress alone so the workflow's claim happens
+first, answers `200 {"ok":true,"ignored":true}` for unknown keys, illegal
+transitions, replays, and non-PR events so GitHub never retries, and
 `node src/composition/cli.ts git-branch <KEY>` prints the canonical branch name.
+`npm run smoke:webhook:live` (`scripts/webhook-live.sh`) is the live drill: a real pull request on a throwaway base branch is delivered by GitHub to the deployed app and Postgres, its timeline and status transitions are asserted, and merge and cleanup follow; the host verifier's `webhook` check proves an unsigned delivery is `401` and a correctly signed unknown-key delivery is `200`.
 LAS-152 is live: the hand-rolled history router (`web/src/lib/router.ts`) parses
 `/`, `/p/<KEY>`, `/p/<KEY>/queue`, `/p/<KEY>/i/<ISSUE>`, and `/new` or
 `/p/<KEY>/new`, writes history with `pushState`/`replaceState`, listens
@@ -699,8 +703,8 @@ subscribes to all projects when `projectId` is null. The UI adds `ProjectsPage`,
 Projects and Overview sidebar rows, a five-cell mobile nav at 390 px (78 px per
 cell), shell breadcrumb and primary-button variants, the palette actions Go to
 projects and New project, issue-detail project navigation, and the new
-ProjectSetup footer copy. `npm run check` is green with 228 tests (222 behavior,
-6 architecture) and `architecture: ok (84 files)`; `npm run acceptance` is green
+ProjectSetup footer copy. `npm run check` is green with 236 tests (230 behavior,
+6 architecture) and `architecture: ok (86 files)`; `npm run acceptance` is green
 with 197 checks, including the project CLI show/edit/archive/restore assertions,
 the HTTP detail, `PATCH`, and archive assertions, the sign-in-only
 `browser-signin` leg that seeds a NULL-`rp_id` passkey row and asserts the
@@ -753,7 +757,7 @@ reload. The proof project `LAS190` was released and archived, leaving its
 issues and timeline as evidence. `deploy/provisioning.md` section 20 is the
 runbook; local gates stay green.
 
-Tests: 228 pass, 0 fail, including `test/http.test.ts` and `test/sse.test.ts`,
+Tests: 236 pass, 0 fail, including `test/http.test.ts` and `test/sse.test.ts`,
 whose session cases exercise the opaque `auth_sessions` cookie rows,
 `test/passkeys.test.ts` for availability without auth and its current-domain
 versus other-domain counts, listing without verification material and with the
@@ -770,7 +774,7 @@ transaction-scoped ports commit and rollback, and
 repository find by key, plus `test/architecture.test.ts`, which proves the real
 tree passes and five fixtures fail (application -> adapter, domain -> `pg`, web
 ui -> adapter, web application -> adapter, web domain -> a backend module other
-than `src/domain/status.ts`). Those 228 are the node tests (222 behavior and 6
+than `src/domain/status.ts`). Those 236 are the node tests (230 behavior and 6
 architecture); `npm run smoke:release` and `npm run smoke:agent` (16 checks) are
 shell gates, not part of them.
 `ARCH.md` codifies the layers and the one-way dependency rule; all
@@ -825,7 +829,7 @@ carries the same rules as a project-agnostic template.
 | `deploy/agent-preflight.sh` | Agent preflight: compares local `HEAD` to the host `/srv/curved/release-state` sha, and with `--require-tunnel` probes the forward. |
 | `deploy/provisioning.md` | OCI console runbook: topology, security list, reserved IPv4, DNS-only record, bootstrap and verifier commands, Docker data root and mount gate, reboot persistence, LAS-183 and LAS-184 acceptance evidence, the public ACME/HSTS edge and webhook evidence, capacity fallback, access boundary, storage, releases and rollback, backups and restore, the keepalive and the rebuild-after-reclamation runbook (section 18), agent access and deployed-commit parity (section 19), public product acceptance including the empty-token and first-run checks (section 20), troubleshooting. |
 | `deploy/bootstrap-host.sh` | Idempotent Ubuntu 24.04 host bootstrap: Docker install, Docker data root on the data volume with the mount dependency, log rotation and prune timer, 0700 backup directory with the daily backup timer and one initial nightly set, hourly keepalive units and `/usr/local/bin/curved-keepalive`, key-only `deploy` user and sshd drop-in, ext4 data volume and UUID fstab entry, checkout, mode-600 env, compose up. |
-| `deploy/verify-host.sh` | Read-only host verifier: OS, deploy account, sshd policy, ext4 mount, 150 GB storage, Docker data root, daemon config, mount dependency and prune timer, keepalive timer and script, backup directory, timer, freshness and integrity, env, checkout, listener allowlist, stack health, `tls-certificate`, `http-redirect`, `hsts`, `compression`, `caddy-issuance`, and the 200/401 HTTPS API. |
+| `deploy/verify-host.sh` | Read-only host verifier: OS, deploy account, sshd policy, ext4 mount, 150 GB storage, Docker data root, daemon config, mount dependency and prune timer, keepalive timer and script, backup directory, timer, freshness and integrity, env, checkout, listener allowlist, stack health, `tls-certificate`, `http-redirect`, `hsts`, `compression`, `caddy-issuance`, the 200/401 HTTPS API, and the webhook signature check (unsigned `401`, signed unknown-key `200`). |
 | `deploy/webhook.sh` | Creates or updates the GitHub `pull_request` webhook for the deployed host (default `https://$CURVED_DOMAIN/webhooks/github`), always PATCHing an existing same-URL hook so the secret is reapplied; `--repo`, `--url`, `--env-file`, `--dry-run`. |
 | `.github/workflows/verify.yml` | CI gate: push to main plus manual dispatch, Postgres 18 service, typecheck, architecture check, tests, web build; the main-only `deploy` job (`needs: verify`) SSHes with the `DEPLOY_*` secrets and runs `deploy/release.sh`. |
 | `.github/workflows/rotate-ui-token.yml` | Manual `workflow_dispatch` token recovery: validates the `DEPLOY_*` and `CURVED_UI_TOKEN` secrets, pipes the token over stdin to `deploy@$DEPLOY_HOST`, atomically rewrites the mode-600 env line with backup and release re-run on failure, runs `deploy/release.sh`, and proves a 200 from `POST /api/session`. Concurrency group `rotate-ui-token`. |
@@ -849,9 +853,10 @@ carries the same rules as a project-agnostic template.
 | `scripts/container-smoke.sh` | Container contract gate: starts the local DB, builds `curved:container-smoke`, and asserts the SPA shell, `401`/`200` on `/api/projects`, `already up to date` from the in-image migrate, a non-root uid, and the absent paths. `--platform`, `--build-only`, `--keep`. |
 | `scripts/compose-smoke.sh` | Production compose gate: throwaway project and env, HTTPS through Caddy's internal CA, the HTTP 308 redirect, the HSTS toggle (absent by default, `max-age=31536000` after enabling), gzip on the JS asset, SPA/API/ready/detail assertions, SSE `ready` and `issues_changed` within 5s, unsigned webhook 401, the bind/port checks, and a real nightly backup restored into a throwaway database plus a Caddy volume restore. |
 | `scripts/backup-smoke.sh` | Backup and restore gate (`npm run smoke:backup`): stub Docker over the real scripts; set layout, manifest keys, checksums, retention, failure isolation, pre-deploy Caddy skip, `--yes` refusal, checksum tamper, drill versus production restore, and Caddy restore ordering. |
-| `scripts/provision-smoke.sh` | Provisioning gate: runs the bootstrap and verifier in a disposable Ubuntu 24.04 container with PATH stubs; fresh and idempotent bootstrap, Docker data-root migration, daemon config, mount dependency, prune timer, keepalive unit/script/idempotent reinstall, backup directory and units, one initial nightly set, container recreation, verifier positive, the `--acme-email` public mode (certificate, redirect, HSTS, compression, ACME issuance), the public negatives (unverified certificate, missing HSTS, HTTP 200 instead of a redirect, missing ACME marker, internal HSTS), wrong-root, disabled prune and keepalive timers, missing/stale/corrupt backup, and inactive backup-timer negatives, and public-5432 and password-auth negatives. |
+| `scripts/provision-smoke.sh` | Provisioning gate: runs the bootstrap and verifier in a disposable Ubuntu 24.04 container with PATH stubs; fresh and idempotent bootstrap, Docker data-root migration, daemon config, mount dependency, prune timer, keepalive unit/script/idempotent reinstall, backup directory and units, one initial nightly set, container recreation, verifier positive, the `--acme-email` public mode (certificate, redirect, HSTS, compression, ACME issuance), the public negatives (unverified certificate, missing HSTS, HTTP 200 instead of a redirect, missing ACME marker, internal HSTS, unsigned webhook answering 200), wrong-root, disabled prune and keepalive timers, missing/stale/corrupt backup, and inactive backup-timer negatives, and public-5432 and password-auth negatives. |
 | `scripts/release-smoke.sh` | Release gate (`npm run smoke:release`): asserts `deploy/release.sh` release order including the pre-deploy backup before build and migration, the pre-deploy backup failure isolation, the first-release probe rule, the probe skip and require flags, the migration-failure exit before any recreate or tag, the public probe's HSTS requirement (matching max-age passes; a missing header or mismatched max-age is fatal and leaves latest and state untouched), and rollback without a backup. |
 | `scripts/webhook-smoke.sh` | Webhook gate (`npm run smoke:webhook`): exercises `deploy/webhook.sh` against a stub `gh`; create and update paths (including a hook response without `config.secret`), the dry run, missing secret, localhost guard, and secret secrecy in output and argv. |
+| `scripts/webhook-live.sh` | Live webhook drill (`npm run smoke:webhook:live`): opens a real pull request on a throwaway base branch in a real repository, lets GitHub deliver the hook to the deployed app and Postgres, asserts the issue timeline and status transitions, merges, then closes the pull request, deletes the branches and worktree, and archives the drill project; needs `gh` auth, the Curved tunnel, and network, and is not part of CI. |
 | `.codegraph/` | Local index, gitignored. Refresh with `codegraph sync`. |
 
 ## Working rules
@@ -860,8 +865,12 @@ carries the same rules as a project-agnostic template.
 - Prefer boring, explicit code over abstraction. Type the boundaries.
 - Do not silently relax a verification rule mid-implementation.
 - Record durable state in `MEMORY.md`, not in chat.
-- Push every completed work item to `origin/main` before reporting success. An
-  unpushed commit is not finished work.
+- Work on an issue branch, never `main`: `curved git-branch <KEY>` prints it,
+  the branch contains the key, and the PR title starts with `<KEY>`. Push the
+  branch and open a PR with `gh pr create --base main`; CI (`verify`) runs on
+  the PR. Do not push to `main` directly. A work item is complete only once its
+  PR is merged to `main` (which deploys); that merge moves the issue to Done
+  through the webhook.
 
 ## Definition of done
 
@@ -878,5 +887,5 @@ carries the same rules as a project-agnostic template.
 1. Update `MEMORY.md`: `- **Last updated:** <today>` plus the session entry.
 2. Note unresolved risk or blockers explicitly.
 3. Run `./scripts/clean-state.sh`.
-4. Commit the work and push `main` to `origin`; report success only once
-   `git ls-remote origin main` matches local `HEAD`.
+4. Commit the work, push the issue branch, and open or update its PR; merge it
+   once `verify` is green, then confirm the merge commit is on `origin/main`.

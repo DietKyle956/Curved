@@ -3,6 +3,8 @@ name: Verify
 on:
   push:
     branches: [main]
+  pull_request:
+    branches: [main]
   workflow_dispatch:
     inputs:
       skip_public_probe:
@@ -74,6 +76,7 @@ jobs:
   # Runs only on main and only after `verify` passes, so a red typecheck, test,
   # or build stops before anything reaches the host. There is no checkout: the
   # runner holds no repository code and only drives the server over SSH.
+  # A pull_request run skips this job: it is not a push to main.
   deploy:
     name: Deploy
     needs: verify
