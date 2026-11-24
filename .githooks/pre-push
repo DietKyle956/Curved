@@ -1,0 +1,82 @@
+#!/bin/sh
+# Refuse a push that updates a protected branch (main or master).
+#
+# Installed in two forms from one file:
+#   - workstation: copied into each repository's .git/hooks and into the
+#     global Git init template
+#   - repository: committed at .githooks/pre-push, activated by scripts/init.sh
+#
+# Git calls pre-push with "<remote> <url>" and one line per ref on stdin:
+#   <local ref> <local sha> <remote ref> <remote sha>
+# An all-zero remote sha means the branch does not exist yet, which is the
+# repository bootstrap push and is allowed.
+#
+# A hook at <git-common-dir>/hooks/pre-push, when executable and different, still
+# runs. That keeps a repository's own hook alive when core.hooksPath moves the
+# directory, and skips a duplicate when the init template seeded the same file.
+#
+# Bypass for a deliberate administrative push: git push --no-verify.
+# CI still checks the result (scripts/check-main-merge.sh).
+
+set -eu
+
+remote_name="${1:-origin}"
+refs_file="$(mktemp "${TMPDIR:-/tmp}/pre-push.XXXXXX")" || exit 1
+trap 'rm -f "$refs_file"' EXIT INT TERM
+
+cat > "$refs_file"
+
+status=0
+blocked=0
+
+while IFS=' ' read -r local_ref local_sha remote_ref remote_sha; do
+  [ -n "${remote_ref:-}" ] || continue
+  case "$remote_ref" in
+    refs/heads/main|refs/heads/master) ;;
+    *) continue ;;
+  esac
+  if [ "$remote_sha" = "0000000000000000000000000000000000000000" ]; then
+    continue
+  fi
+  if [ "$blocked" -eq 0 ]; then
+    printf 'pre-push: refusing to update a protected branch on %s:\n' "$remote_name" >&2
+    blocked=1
+  fi
+  printf '  %s\n' "$remote_ref" >&2
+done < "$refs_file"
+
+if [ "$blocked" -eq 1 ]; then
+  status=1
+  cat >&2 <<'MSG'
+
+Work on an issue branch, push it, and merge through a pull request. The pull
+request runs verification; a direct update to the default branch skips that
+gate and sends an unreviewed commit to the deploy path.
+
+A deliberate administrative push may use --no-verify; CI still checks main.
+MSG
+fi
+
+hook_dir="$(cd -- "$(dirname -- "$0")" && pwd -P)"
+common_dir="$(git rev-parse --git-common-dir 2>/dev/null || printf '%s' .git)"
+case "$common_dir" in
+  /*) ;;
+  *) common_dir="$PWD/$common_dir" ;;
+esac
+local_dir="$(cd -- "$common_dir/hooks" 2>/dev/null && pwd -P || true)"
+local_hook=""
+if [ -n "$local_dir" ] && [ "$local_dir" != "$hook_dir" ] && [ -x "$local_dir/pre-push" ]; then
+  local_hook="$local_dir/pre-push"
+  if cmp -s "$local_hook" "$0"; then
+    local_hook=""
+  fi
+fi
+if [ -n "$local_hook" ]; then
+  local_rc=0
+  "$local_hook" "$@" < "$refs_file" || local_rc=$?
+  if [ "$local_rc" -ne 0 ] && [ "$status" -eq 0 ]; then
+    status="$local_rc"
+  fi
+fi
+
+exit "$status"

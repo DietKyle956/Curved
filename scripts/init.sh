@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Baseline runner for curved: install, database, check, build.
+# Baseline runner for curved: main guard setup, install, database, check, build.
 # scripts/clean-state.sh runs this with --no-install; the database step still runs.
 
 set -euo pipefail
@@ -36,7 +36,8 @@ Usage:
                                           database, run checks, then build.
   RUN_START_COMMAND=1 ./scripts/init.sh   Launch the start command after a green baseline.
 
-Steps run in order: install, database, check, build. The database step runs even with
+Before the steps, it points core.hooksPath at .githooks. Steps run in order:
+install, database, check, build. The database step runs even with
 --no-install, since only dependency installation is skipped.
 
 Options:
@@ -75,6 +76,25 @@ run_step() {
     exit 1
   fi
 }
+
+if command -v git >/dev/null 2>&1 && git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+  if [ -f .githooks/pre-push ]; then
+    if [ ! -x .githooks/pre-push ]; then
+      chmod +x .githooks/pre-push
+    fi
+    hooks_path="$(git config --get core.hooksPath || true)"
+    if [ -z "$hooks_path" ]; then
+      git config core.hooksPath .githooks
+      say "==> git hooks: core.hooksPath=.githooks"
+    elif [ "$hooks_path" = ".githooks" ]; then
+      say "==> git hooks: core.hooksPath=.githooks (already set)"
+    else
+      warn "core.hooksPath is '$hooks_path', not .githooks; the main guard is inactive."
+    fi
+  else
+    warn ".githooks/pre-push is missing; direct pushes to the default branch are unguarded."
+  fi
+fi
 
 say "Project: $PROJECT_NAME"
 say "Working directory: $PWD"

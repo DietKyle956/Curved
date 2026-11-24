@@ -908,9 +908,14 @@ carries the same rules as a project-agnostic template.
 - Work on an issue branch, never `main`: `curved git-branch <KEY>` prints it,
   the branch contains the key, and the PR title starts with `<KEY>`. Push the
   branch and open a PR with `gh pr create --base main`; CI (`verify`) runs on
-  the PR. Do not push to `main` directly. A work item is complete only once its
-  PR is merged to `main` (which deploys); that merge moves the issue to Done
-  through the webhook.
+  the PR. Do not push to `main` directly: `.githooks/pre-push` refuses it
+  (`scripts/init.sh` sets `core.hooksPath`), and `verify` fails a non-merge
+  commit on `main` through `scripts/check-main-merge.sh`. A deliberate
+  administrative push may use `git push --no-verify`; CI still checks the
+  result. A work item is complete only once its PR is merged to `main` (which
+  deploys); that merge moves the issue to Done through the webhook.
+- `MEMORY.md` notes ride the work item's PR. If a note is missed before the
+  merge, open a follow-up PR; never push it to `main`.
 
 ## Definition of done
 
