@@ -135,8 +135,3 @@ The same loop is available over MCP over stdio and over the HTTP API:
 | [ARCH.md](ARCH.md) | Architecture contract and the dependency rule |
 | [AGENTS.md](AGENTS.md) | Agent working agreement |
 | [initial_idea.md](initial_idea.md) | Product intent |
-
-## Status
-
-Curved is live at <https://curv3d.duckdns.org> and runs this repository's own
-issues. Current verified state and the next step are in [MEMORY.md](MEMORY.md).
