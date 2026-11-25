@@ -8,7 +8,7 @@
 - `npm run build` - typecheck, then build the SPA into `web/dist`.
 - `npm start` - run the HTTP server and SPA on `PORT` (default 4747); requires
   `CURVED_UI_TOKEN`. Run `npm run build` first for the SPA.
-- `./scripts/init.sh` - install, database, check, build.
+- `./scripts/init.sh` - print the last ten commits, install, database, check, build.
 - `./scripts/clean-state.sh` - end-of-session gate.
 - `npm run smoke:container` - container contract gate: local Postgres, image
   build, and runtime assertions.
@@ -105,7 +105,9 @@ The gate builds on the other two entry points rather than replacing them:
 `./scripts/clean-state.sh` is still the end-of-session gate. This is the only one
 that runs the CLI, MCP server, HTTP server, webhook, and SPA together.
 
-Current gate counts and session evidence are recorded in `MEMORY.md`.
+`./scripts/init.sh` prints the last ten commits from `gh` (falling back to
+`git log`) and the current gate result; session evidence lives in git and PR
+history.
 
 Public product acceptance is an operator run against the deployed stack rather
 than a repository test: `deploy/provisioning.md` section 20 covers the empty
