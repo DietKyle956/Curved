@@ -44,6 +44,10 @@ Options:
   --no-install   Skip dependency installation (used by scripts/clean-state.sh).
   -h, --help     Show this help.
 
+Both modes print the last ten non-merge commits. A full run reads them from
+gh (GitHub API); --no-install uses git log so the end-of-session gate stays
+offline.
+
 Project: $PROJECT_NAME
 EOF
 }
@@ -77,6 +81,29 @@ run_step() {
   fi
 }
 
+print_recent_work() {
+  local recent
+  if [ "$NO_INSTALL" -eq 0 ] && command -v gh >/dev/null 2>&1 && command -v timeout >/dev/null 2>&1; then
+    recent="$(timeout 20 gh api "repos/:owner/:repo/commits?per_page=20" \
+      --jq '[.[] | select((.parents | length) < 2)][0:10][] | "\(.sha[0:7]) \(.commit.message | split("\n")[0])"' 2>/dev/null || true)"
+    if [ -n "$recent" ]; then
+      printf '%s\n' "$recent"
+      return 0
+    fi
+  fi
+
+  if command -v git >/dev/null 2>&1 && git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+    if git rev-parse --verify HEAD >/dev/null 2>&1; then
+      git log --oneline --no-merges -10
+    else
+      printf '%s\n' '(no commits yet)'
+    fi
+    return 0
+  fi
+
+  printf '%s\n' '(not a git repository and gh is unavailable)'
+}
+
 if command -v git >/dev/null 2>&1 && git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
   if [ -f .githooks/pre-push ]; then
     if [ ! -x .githooks/pre-push ]; then
@@ -98,6 +125,9 @@ fi
 
 say "Project: $PROJECT_NAME"
 say "Working directory: $PWD"
+say ""
+say "==> recent commits"
+print_recent_work
 say ""
 
 if [ "$NO_INSTALL" -eq 0 ]; then

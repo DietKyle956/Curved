@@ -1,7 +1,7 @@
 # AGENTS.md
 
 `curved`: a lightweight, agent-first issue tracker (a Linear the agents can drive).
-Read this file, `MEMORY.md`, and `initial_idea.md` before writing code.
+Read this file and `initial_idea.md` before writing code.
 
 ## Product constraints (hard)
 
@@ -23,8 +23,8 @@ in prompts:
 ## Startup workflow
 
 1. `pwd` to confirm the repo root.
-2. Read `MEMORY.md` for verified state and the next step.
-3. `./scripts/init.sh` to prove the baseline.
+2. `./scripts/init.sh` to see the last ten commits and prove the baseline.
+3. `curved ready` to choose the next work item.
 4. If the baseline is red, fix that before adding features.
 
 ## Current state
@@ -34,8 +34,8 @@ in prompts:
 - Model: the domain layer enforces the status machine and actor matrix, one active issue per agent (partial unique index), an append-only `issue_events` timeline, per-project sequential keys, labels, and blocking relations; projects are human-managed with archive as the terminal action; agents act only through the tool interface; blocked issues are absent from ready and unclaimable.
 - Auth: humans use the UI bearer or an opaque `curved_session` cookie, including passkey login; agents present `crv_` bearer tokens. `POST /webhooks/github` verifies `x-hub-signature-256`, then moves pull requests to In Review and merged pull requests to Done as the `git` actor; `git-branch` prints the issue branch.
 - Architecture: `ARCH.md` holds `src/domain` -> `src/application` -> `src/adapters` -> `src/composition` under a one-way dependency rule enforced by `scripts/check-architecture.mjs`; the web tree mirrors it as `domain`, `application`, `adapters`, and `ui` with a single `main.tsx` root.
-- Gates: baselines live in `MEMORY.md` under `## Current verified state`; this file carries no numbers.
-- Next work: `curved ready` plus `MEMORY.md` under `## Next best step`.
+- Gates: `./scripts/init.sh` runs the baseline and prints the last ten commits; this file carries no numbers.
+- Next work: `curved ready`.
 
 ## Directory page
 
@@ -46,7 +46,6 @@ in prompts:
 | `initial_idea.md` | Product intent and the design sketch. Source of truth for scope. |
 | `ARCH.md` | Architecture contract: layer map, one-way dependency rule, rule ownership, ports and transactions, error translation, testing policy, review checklist. |
 | `AGENTS.md` | This file: constraints and startup path. |
-| `MEMORY.md` | Verified state, decisions, session log. Update it every session. |
 | `Dockerfile` | Multi-stage `node:26-slim` production image: build (`npm ci`, `build:web`, prune dev), then a runtime stage as `USER node`. |
 | `.dockerignore` | Build-context exclusions for the image build. |
 | `deploy/` | Production compose stack (`docker-compose.yml`), the Caddy TLS config (internal CA locally, ACME with optional HSTS, gzip/zstd except SSE, `/api/events` flushed), the environment template, and `release.sh` (pre-deploy backup, build, migrate, recreate app then caddy, authenticated probe with the HSTS rule under ACME, latest tag, atomic state, rollback); app and Caddy are compose-network only, Postgres binds loopback. |
@@ -72,7 +71,7 @@ in prompts:
 | `web/src/main.tsx` | Composition root: creates the API client and passkey adapter, calls the history and realtime adapters, injects all four ports into `useWorkspace`, renders `AppView`. |
 | `web/` | Vite + React SPA around `web/src/`. `npm run build` writes `web/dist`; `npm start` serves it; `npm run dev` proxies `/api` to 4747. |
 | `skills/` | Three public installer-facing agent skills (`curved-agent`, `curved-cli`, `curved-api`) for using Curved over MCP, the CLI, and HTTP; installed with `npx skills add DietKyle956/Curved`. |
-| `scripts/init.sh` | Baseline runner: install, check, build. `--no-install` skips install. |
+| `scripts/init.sh` | Baseline runner: prints the last ten commits, then install, database, check, build. `--no-install` skips install and the gh lookup. |
 | `scripts/check-architecture.mjs` | Import-direction check over `src/**/*.ts` and `web/src/**/*.ts(x)`; exits 1 on any violation. |
 | `scripts/agent-smoke.sh` | Agent gate (`npm run smoke:agent`): stub `ssh` and a throwaway git fixture over the two deploy helpers, covering the 55432 refusal, strict SSH options, local/deployed parity, and the tunnel probe with no Docker, database, or network. |
 | `scripts/clean-state.sh` | End-of-session gate. Idempotent, writes nothing. |
@@ -93,7 +92,7 @@ in prompts:
 - One work item at a time; keep the tree restartable from `./scripts/init.sh`.
 - Prefer boring, explicit code over abstraction. Type the boundaries.
 - Do not silently relax a verification rule mid-implementation.
-- Record durable state in `MEMORY.md`, not in chat.
+- Record durable state on the issue or in the owning doc (`ARCH.md`, `docs/`), not in chat.
 - Work on an issue branch, never `main`: `curved git-branch <KEY>` prints it,
   the branch contains the key, and the PR title starts with `<KEY>`. Push the
   branch and open a PR with `gh pr create --base main`; CI (`verify`) runs on
@@ -103,8 +102,6 @@ in prompts:
   administrative push may use `git push --no-verify`; CI still checks the
   result. A work item is complete only once its PR is merged to `main` (which
   deploys); that merge moves the issue to Done through the webhook.
-- `MEMORY.md` notes ride the work item's PR. If a note is missed before the
-  merge, open a follow-up PR; never push it to `main`.
 
 ## Definition of done
 
@@ -114,12 +111,11 @@ in prompts:
   that would fail without the change.
 - `./scripts/init.sh` green, `./scripts/clean-state.sh` green.
 - `npm run acceptance` green before the item is reported done.
-- `MEMORY.md` dated today with what changed and the next step.
+- Any durable decision, risk, or follow-up is recorded on the issue or in the owning doc.
 
 ## End of session
 
-1. Update `MEMORY.md`: `- **Last updated:** <today>` plus the session entry.
-2. Note unresolved risk or blockers explicitly.
-3. Run `./scripts/clean-state.sh`.
-4. Commit the work, push the issue branch, and open or update its PR; merge it
+1. Note unresolved risk or blockers explicitly on the issue.
+2. Run `./scripts/clean-state.sh`.
+3. Commit the work, push the issue branch, and open or update its PR; merge it
    once `verify` is green, then confirm the merge commit is on `origin/main`.

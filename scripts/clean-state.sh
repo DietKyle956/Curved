@@ -16,7 +16,6 @@ cd "$REPO_ROOT" || {
 }
 
 PROJECT_NAME="curved"
-TODAY="$(date +%Y-%m-%d)"
 
 SOURCE_DIRS_RAW="."
 SRC_DIRS=()
@@ -84,7 +83,7 @@ scan_src() {
   find "${SCAN_DIRS[@]}" "${PRUNE_EXPR[@]}" -o -type f -exec grep -nH -I -E -e "$1" {} + 2>/dev/null || true
 }
 
-section "Check 1/7: Baseline ($PROJECT_NAME scripts/init.sh --no-install)"
+section "Check 1/6: Baseline ($PROJECT_NAME scripts/init.sh --no-install)"
 if [ ! -f ./scripts/init.sh ]; then
   record_fail "Baseline: ./scripts/init.sh is missing"
 else
@@ -98,7 +97,7 @@ else
   fi
 fi
 
-section "Check 2/7: Temporary artifacts"
+section "Check 2/6: Temporary artifacts"
 artifact_out="$(find . "${PRUNE_EXPR[@]}" -o -type f \( -name '*.tmp' -o -name '*.bak' -o -name '*.orig' -o -name '*.rej' -o -name '*.swp' -o -name '*~' \) -print 2>/dev/null || true)"
 if [ -n "$artifact_out" ]; then
   printf '%s\n' "$artifact_out"
@@ -107,7 +106,7 @@ else
   pass "no temporary artifacts"
 fi
 
-section "Check 3/7: Merge-conflict markers"
+section "Check 3/6: Merge-conflict markers"
 conflict_out="$(scan_src "$CONFLICT_RE")"
 if [ -n "$conflict_out" ]; then
   printf '%s\n' "$conflict_out"
@@ -116,7 +115,7 @@ else
   pass "no merge-conflict markers"
 fi
 
-section "Check 4/7: Debug leftovers"
+section "Check 4/6: Debug leftovers"
 debug_fail_out="$(scan_src "$DEBUG_FAIL_RE")"
 debug_warn_out="$(scan_src "$DEBUG_WARN_RE")"
 if [ -n "$debug_fail_out" ]; then
@@ -132,24 +131,7 @@ else
   pass "no skipped-test markers"
 fi
 
-section "Check 5/7: MEMORY.md freshness"
-memory_expected="- **Last updated:** $TODAY"
-if [ ! -f MEMORY.md ]; then
-  record_fail "MEMORY.md: file is missing"
-elif grep -qxF -e "$memory_expected" MEMORY.md 2>/dev/null; then
-  pass "MEMORY.md is dated $TODAY"
-else
-  memory_found="$(grep -m 1 -E '^- \*\*Last updated:\*\* ' MEMORY.md 2>/dev/null || true)"
-  if [ -n "$memory_found" ]; then
-    printf '  found: %s\n' "$memory_found"
-  else
-    printf '  found: no last-updated line\n'
-  fi
-  printf '  want:  %s\n' "$memory_expected"
-  record_fail "MEMORY.md: last-updated date is not $TODAY"
-fi
-
-section "Check 6/7: Codegraph freshness"
+section "Check 5/6: Codegraph freshness"
 if [ ! -d .codegraph ]; then
   pass "no .codegraph directory"
 elif ! command -v codegraph >/dev/null 2>&1; then
@@ -177,7 +159,7 @@ else
   fi
 fi
 
-section "Check 7/7: Working tree"
+section "Check 6/6: Working tree"
 if ! git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
   record_warn "Working tree: not a git repository"
 else
