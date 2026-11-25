@@ -1,6 +1,6 @@
 # MEMORY.md
 
-- **Last updated:** 2026-11-24
+- **Last updated:** 2026-11-25
 - **Project:** curved
 - **Phase:** product and infrastructure implemented through `LAS-190` (first-run
   seed and public product acceptance, on top of the `LAS-189` agent tunnel and
@@ -43,9 +43,10 @@
 
 ## Current verified state
 
-`AGENTS.md` carries the long current-state narrative and `ARCH.md` the layer
-contract; this section is the durable summary. Session-by-session evidence is in
-git history and the Linear comments.
+`AGENTS.md` is the short working agreement and defers durable state and gate
+baselines to this file; `ARCH.md` is the layer contract. This section is the
+single source for the current gate baselines; session evidence lives in git and
+PR history and the session log.
 
 - Repository root `/home/dietkyle/projects/curved`, branch `main`, remote
   `origin` (`https://github.com/DietKyle956/Curved.git`), public. `.codegraph/`
@@ -751,7 +752,8 @@ One line per session: earlier verification evidence and the full acceptance
 matrices live in git history and the Linear comments. Sessions 001 to 013 ran on
 2026-11-10, 014 to 018 on 2026-11-16, 019 to 030 on 2026-11-17, 031 to 036
 on 2026-11-18, and 037 to 039 on 2026-11-19. Sessions 040 to 048 ran on
-2026-11-23. Sessions 049 to 053 ran on 2026-11-24.
+2026-11-23. Sessions 049 to 053 ran on 2026-11-24, and session 054 ran on
+2026-11-25.
 
 | Session | Work item | Outcome |
 |---|---|---|
@@ -808,3 +810,4 @@ on 2026-11-18, and 037 to 039 on 2026-11-19. Sessions 040 to 048 ran on
 | 051 | CRV-7 public agent skills | Three public installer-facing skills under `skills/`: `curved-agent` (MCP work loop, shared invariants, eight tool contracts, PR and webhook flow, human escalation), `curved-cli` (setup, project/issue/agent commands, output formats, branch naming, error fixes), and `curved-api` (auth lanes, HTTP work loop, route table, payloads, error mapping, SSE). Each is standalone and repeats the rules block; content is generic with no hosts, tokens, or local paths. `npx skills add ./skills --list` discovers all three. `test/skills.test.ts` validates the bundle (frontmatter, name/dir agreement, description limits, forbidden identifiers, link integrity, exact set), and the MCP stdio suite asserts every registered tool is named in `curved-agent`. Corrected the `mark_blocked` tool description and the README MCP table. Gates: `npm run check` 245 tests, `architecture: ok (86 files)`, `init.sh` and `clean-state.sh` green, acceptance 232 checks. |
 | 052 | CRV-1 README overview | README rewritten as a project overview; the runbooks and reference moved into docs/workflow.md, docs/cli.md, docs/api.md, docs/clients.md, docs/operations.md, and docs/development.md; docs/ is indexed in AGENTS.md; stale `src/config.ts` reference and LAS ids removed from .env.example. |
 | 053 | WFI-1 main guard | Added `.githooks/pre-push`, which refuses a push to `main` and `master` (the first push to a new remote branch is allowed); `scripts/init.sh` points `core.hooksPath` at it; `verify` runs `scripts/check-main-merge.sh` on a push to `main` and fails a non-merge commit; `AGENTS.md` records the guard and the MEMORY-in-PR rule. |
+| 054 | WFI-3 AGENTS summary | Replaced the build-by-build `## Current state` changelog in `AGENTS.md` with a short present-tense snapshot of the runtime surfaces, deployment and operations, the enforced model, auth and GitHub automation, the architecture contract, and pointers to `## Current verified state` for baselines and `curved ready` plus `## Next best step` for next work; removed the milestone identifiers, retired paths, and competing test/check counts from the working agreement and the directory page; the working agreement now defers durable state to `MEMORY.md`; no product code changed, and the PR's `verify` job is the build proof. |
