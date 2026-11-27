@@ -3,10 +3,28 @@
 The CLI is the shell entry point `node src/composition/cli.ts`, also available as
 `npm run cli`. Commands run as the human actor unless noted; agent commands read
 `CURVED_AGENT_TOKEN` and never fall back to the human actor. Errors print
-`<code>: <message>` and exit 1.
+`<code>: <message>` and exit 1; usage errors exit 2 and print the top-level
+usage.
+
+## Help
+
+Every command and subcommand accepts `--help` (or `-h`): `curved claim --help`
+prints claim's synopsis, positional arguments, and flags, then exits 0. The
+deepest recognised command wins, so `curved issue move --help` and
+`curved help issue move` both describe `issue move`; positionals before the flag
+are ignored. Unknown option names still fail with the top-level usage and exit
+2, and unknown command names still fail. Bare `curved help`, `curved --help`,
+and `curved -h` print the top-level usage.
+
+## Global options
+
+- `--json` - print machine-readable JSON on stdout where a command supports it.
+- `-h`, `--help` - print help for the resolved command and exit 0.
 
 ## Commands
 
+- `node src/composition/cli.ts migrate` - apply pending migrations and print the
+  applied names.
 - `node src/composition/cli.ts project add <KEY> <name...> [--summary <text>]
   [--description <text>] [--status <status>] [--priority <1-4>] [--start <date>]
   [--target <date>]` - create a project; status defaults to `planned`.
@@ -24,8 +42,9 @@ The CLI is the shell entry point `node src/composition/cli.ts`, also available a
   stays readable and its issues stay writable. There is no delete.
 - `node src/composition/cli.ts project restore <KEY>` - restore an archived
   project.
-- `node src/composition/cli.ts issue add <PROJECT> <title...>` - create an issue;
-  keys are assigned atomically.
+- `node src/composition/cli.ts issue add <PROJECT> <title...>
+  [--description <text>] [--priority <1-4>] [--status <status>] [--parent <KEY>]`
+  - create an issue; keys are assigned atomically.
 - `node src/composition/cli.ts issue list [PROJECT]` - list issues, optionally
   scoped to one project; the fifth column is the blocked reason or `-`.
 - `node src/composition/cli.ts issue show <KEY>` - print the issue and its
@@ -53,6 +72,11 @@ The CLI is the shell entry point `node src/composition/cli.ts`, also available a
   issue for review; requires `CURVED_AGENT_TOKEN`.
 - `node src/composition/cli.ts release <KEY>` - return a claimed issue to
   `todo`; requires `CURVED_AGENT_TOKEN`.
-- `node src/composition/cli.ts git-branch <KEY> [--json]` - print the branch
-  name for an issue, the canonical key plus a slug of its title; `--json` prints
+- `node src/composition/cli.ts git-branch <KEY>` - print the branch name for an
+  issue, the canonical key plus a slug of its title; `--json` prints
   `{ "key": ..., "branch": ... }`.
+- `node src/composition/cli.ts help [<command>...]` - print the top-level usage,
+  or help for one command path such as `help issue move`.
+
+`--actor` accepts `agent`, `human`, `git`, or `system`; actor defaults and the
+legal status edges are enforced by the application layer.
