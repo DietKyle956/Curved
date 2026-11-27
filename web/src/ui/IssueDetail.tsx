@@ -1,3 +1,9 @@
+// Section index - test/section-index.test.ts fails if an entry goes stale.
+// Format: label | declared symbols | L<start>-<end>
+// timeline + skeleton | EventIcon, TimelineEvent, DetailSkeleton | L54-154
+// detail panel | IssueDetailProps, IssueDetail | L156-730
+// relation rows | RelationRow, IssueChildrenRow | L732-814
+
 import {
   ArrowUUpLeft,
   ChatCircle,
