@@ -1,6 +1,8 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { resolve } from "node:path";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join, resolve } from "node:path";
 import { after, before, beforeEach, test } from "node:test";
 import { openTestDatabase, type TestDatabase } from "./helpers/db.ts";
 import { createIssue } from "../src/application/issues.ts";
@@ -370,6 +372,30 @@ test("per-command --help exits 0 and prints the command's flags", async () => {
   ]) {
     assert.ok(add.stdout.includes(flag), `missing ${flag} in:\n${add.stdout}`);
   }
+});
+
+test("issue comment --help documents --body-file and --as-agent", async () => {
+  const direct = await runCli(["issue", "comment", "--help"]);
+  assert.equal(direct.code, 0, direct.stderr);
+  assert.match(
+    direct.stdout,
+    /^Usage: curved issue comment <KEY> \( <body\.\.\.> \| --body-file <path> \)/,
+  );
+  for (const flag of [
+    "--body-file <path>",
+    "--as-agent",
+    "--actor",
+    "--agent <name>",
+  ]) {
+    assert.ok(direct.stdout.includes(flag), `missing ${flag} in:\n${direct.stdout}`);
+  }
+  assert.match(direct.stdout, /excludes --actor and --agent/);
+  assert.match(direct.stdout, /CURVED_AGENT_TOKEN/);
+  assert.equal(direct.stderr, "");
+
+  const viaHelp = await runCli(["help", "issue", "comment"]);
+  assert.equal(viaHelp.code, 0, viaHelp.stderr);
+  assert.equal(viaHelp.stdout, direct.stdout);
 });
 
 test("help resolves the deepest nested command", async () => {
@@ -867,6 +893,187 @@ test("issue comment with an invalid --actor exits 1", async () => {
   assert.equal(result.code, 1);
   assert.match(result.stderr, /^validation: /);
   assert.equal(result.stdout, "");
+});
+
+test("issue comment --body-file appends a multi-line body", async () => {
+  const project = await runCli(["project", "add", "TAC", "Tac", "--json"]);
+  assert.equal(project.code, 0, project.stderr);
+  const created = await runCli(["issue", "add", "TAC", "Comment target", "--json"]);
+  assert.equal(created.code, 0, created.stderr);
+
+  const directory = mkdtempSync(join(tmpdir(), "curved-cli-"));
+  try {
+    const file = join(directory, "plan.md");
+    writeFileSync(file, "## Plan\n\nline one\n\tindented\n", "utf8");
+
+    const result = await runCli(["issue", "comment", "TAC-1", "--body-file", file]);
+    assert.equal(result.code, 0, result.stderr);
+    assert.equal(result.stderr, "");
+    assert.equal(result.stdout, "commented on TAC-1 as human\n");
+
+    const json = await runCli(["issue", "show", "TAC-1", "--json"]);
+    assert.equal(json.code, 0, json.stderr);
+    const payload = JSON.parse(json.stdout) as ShowPayload;
+    assert.deepEqual(
+      payload.events.map((event) => event.kind),
+      ["created", "comment"],
+    );
+    const comment = payload.events[1];
+    assert.ok(comment, "expected a comment event in the timeline");
+    assert.equal(comment.actorType, "human");
+    assert.equal(comment.body, "## Plan\n\nline one\n\tindented");
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test("issue comment rejects a body and --body-file together", async () => {
+  const project = await runCli(["project", "add", "TAC", "Tac", "--json"]);
+  assert.equal(project.code, 0, project.stderr);
+  const created = await runCli(["issue", "add", "TAC", "Comment target", "--json"]);
+  assert.equal(created.code, 0, created.stderr);
+
+  const directory = mkdtempSync(join(tmpdir(), "curved-cli-"));
+  try {
+    const file = join(directory, "plan.md");
+    writeFileSync(file, "plan\n", "utf8");
+
+    const result = await runCli([
+      "issue",
+      "comment",
+      "TAC-1",
+      "inline",
+      "--body-file",
+      file,
+    ]);
+
+    assert.equal(result.code, 2, result.stderr);
+    assert.ok(
+      result.stderr.startsWith(
+        "issue comment accepts a body or --body-file, not both",
+      ),
+      result.stderr,
+    );
+    assert.equal(result.stdout, "");
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test("issue comment rejects --as-agent with --actor", async () => {
+  const project = await runCli(["project", "add", "TAC", "Tac", "--json"]);
+  assert.equal(project.code, 0, project.stderr);
+  const created = await runCli(["issue", "add", "TAC", "Comment target", "--json"]);
+  assert.equal(created.code, 0, created.stderr);
+
+  const result = await runCli([
+    "issue",
+    "comment",
+    "TAC-1",
+    "body",
+    "--as-agent",
+    "--actor",
+    "human",
+  ]);
+
+  assert.equal(result.code, 2, result.stderr);
+  assert.ok(
+    result.stderr.startsWith(
+      "--as-agent cannot be combined with --actor or --agent",
+    ),
+    result.stderr,
+  );
+  assert.equal(result.stdout, "");
+});
+
+test("issue comment rejects an unreadable --body-file", async () => {
+  const project = await runCli(["project", "add", "TAC", "Tac", "--json"]);
+  assert.equal(project.code, 0, project.stderr);
+
+  const directory = mkdtempSync(join(tmpdir(), "curved-cli-"));
+  try {
+    const missing = join(directory, "absent.md");
+
+    const result = await runCli([
+      "issue",
+      "comment",
+      "TAC-1",
+      "--body-file",
+      missing,
+    ]);
+
+    assert.equal(result.code, 2, result.stderr);
+    assert.match(result.stderr, /^cannot read --body-file .*: .*/);
+    assert.equal(result.stdout, "");
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test("issue comment --as-agent attributes the comment to the token identity", async () => {
+  const project = await runCli(["project", "add", "TAC", "Tac", "--json"]);
+  assert.equal(project.code, 0, project.stderr);
+  const created = await runCli([
+    "issue",
+    "add",
+    "TAC",
+    "Plan target",
+    "--status",
+    "todo",
+    "--json",
+  ]);
+  assert.equal(created.code, 0, created.stderr);
+
+  const registered = await runCli(["agent", "add", "e2e-agent", "--json"]);
+  assert.equal(registered.code, 0, registered.stderr);
+  const { token } = JSON.parse(registered.stdout) as { token: string };
+
+  const claimed = await runCli(["claim", "TAC"], { CURVED_AGENT_TOKEN: token });
+  assert.equal(claimed.code, 0, claimed.stderr);
+
+  const directory = mkdtempSync(join(tmpdir(), "curved-cli-"));
+  try {
+    const file = join(directory, "plan.md");
+    writeFileSync(file, "## Implementation plan\n\nbody\n", "utf8");
+
+    const result = await runCli(
+      ["issue", "comment", "TAC-1", "--body-file", file, "--as-agent", "--json"],
+      { CURVED_AGENT_TOKEN: token },
+    );
+    assert.equal(result.code, 0, result.stderr);
+    const event = JSON.parse(result.stdout) as TimelineEvent;
+    assert.equal(event.actorType, "agent");
+    assert.equal(event.body, "## Implementation plan\n\nbody");
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test("issue comment --as-agent without a token fails", async () => {
+  const project = await runCli(["project", "add", "TAC", "Tac", "--json"]);
+  assert.equal(project.code, 0, project.stderr);
+  const created = await runCli(["issue", "add", "TAC", "Plan target", "--json"]);
+  assert.equal(created.code, 0, created.stderr);
+
+  const directory = mkdtempSync(join(tmpdir(), "curved-cli-"));
+  try {
+    const file = join(directory, "plan.md");
+    writeFileSync(file, "## Implementation plan\n", "utf8");
+
+    const result = await runCli(
+      ["issue", "comment", "TAC-1", "--body-file", file, "--as-agent"],
+      { CURVED_AGENT_TOKEN: "" },
+    );
+
+    assert.equal(result.code, 1, result.stderr);
+    assert.ok(
+      result.stderr.startsWith("not_authenticated: no agent token"),
+      result.stderr,
+    );
+    assert.equal(result.stdout, "");
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
 });
 
 test("issue move updates status and reports allowed transitions", async () => {

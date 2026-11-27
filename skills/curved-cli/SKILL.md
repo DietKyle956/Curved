@@ -92,9 +92,13 @@ directly, not over HTTP. It never runs SQL itself.
   `labels`, `blocks`, `blocked_by`, `blocked_reason`, `claimed_by`,
   `created_at`, `updated_at`, then `timeline:` and one row per event as
   `id kind actor_type created_at body` with `-` for a null body.
-- `issue comment <KEY> <body...> [--actor <agent|human|git|system>]
-  [--agent <name>]` appends a comment event. The default actor is `human`; the
-  body is trimmed and must not be empty.
+- `issue comment <KEY> ( <body...> | --body-file <path> ) [--as-agent | --actor
+  <agent|human|git|system> [--agent <name>]]` appends a comment event. The
+  default actor is `human`; the body is trimmed and must not be empty.
+  `--body-file` reads the body from a file, for multi-line bodies and plans
+  that do not fit safely in argv. `--as-agent` attributes the comment to the
+  agent behind `CURVED_AGENT_TOKEN` and cannot be combined with
+  `--actor`/`--agent`.
 - `issue move <KEY> <status> [--body <text>] [--actor <agent|human|git|system>]
   [--agent <name>]` takes only a legal edge and only an edge the actor may
   take. The default actor is `human`; an agent actor may take only the three

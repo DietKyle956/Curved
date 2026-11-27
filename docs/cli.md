@@ -12,9 +12,10 @@ Every command and subcommand accepts `--help` (or `-h`): `curved claim --help`
 prints claim's synopsis, positional arguments, and flags, then exits 0. The
 deepest recognised command wins, so `curved issue move --help` and
 `curved help issue move` both describe `issue move`; positionals before the flag
-are ignored. Unknown option names still fail with the top-level usage and exit
-2, and unknown command names still fail. Bare `curved help`, `curved --help`,
-and `curved -h` print the top-level usage.
+are ignored. Both forms print the same listing, so `curved issue comment --help`
+documents its `--body-file` and `--as-agent` flags. Unknown option names still
+fail with the top-level usage and exit 2, and unknown command names still fail.
+Bare `curved help`, `curved --help`, and `curved -h` print the top-level usage.
 
 ## Global options
 
@@ -50,8 +51,13 @@ and `curved -h` print the top-level usage.
 - `node src/composition/cli.ts issue show <KEY>` - print the issue and its
   timeline in ascending event order, plus its `labels`, `blocks`, and
   `blocked_by`.
-- `node src/composition/cli.ts issue comment <KEY> <body...> [--actor <type>]
-  [--agent <name>]` - append a comment event to the timeline.
+- `node src/composition/cli.ts issue comment <KEY> ( <body...> |
+  --body-file <path> ) [--as-agent | --actor <type> [--agent <name>]]` - append
+  a comment event to the timeline. `--body-file` reads the body from a file,
+  for multi-line bodies and plans that do not fit safely in argv; the body is
+  trimmed and must not be empty. `--as-agent` attributes the comment to the
+  agent behind `CURVED_AGENT_TOKEN` and cannot be combined with
+  `--actor`/`--agent`.
 - `node src/composition/cli.ts issue move <KEY> <status> [--body <text>]
   [--actor <type>] [--agent <name>]` - move an issue along a legal edge for the
   given actor.
