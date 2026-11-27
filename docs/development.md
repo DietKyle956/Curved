@@ -1,5 +1,15 @@
 # Development
 
+## Workstation prerequisites
+
+- Node 26 with npm, and Docker with the Compose plugin for the local Postgres.
+- Chromium for the browser acceptance leg; see [Acceptance gate](#acceptance-gate).
+- `dig` for DNS diagnosis of the deployed host. It ships in the `bind` package;
+  on Arch run `sudo pacman -S bind`. Reach for it instead of `getent hosts` when
+  a probe needs a specific record type or an authoritative answer:
+  `dig +short curv3d.duckdns.org` is expected to print the reference host's
+  reserved IPv4, `129.213.209.162`.
+
 ## Local commands
 
 - `npm run db` - start Postgres and apply migrations.
