@@ -73,6 +73,9 @@ jobs:
       - name: Architecture gate
         run: npm run check:arch
 
+      - name: Docs check
+        run: npm run check:docs
+
       - name: Tests
         run: npm test
 
