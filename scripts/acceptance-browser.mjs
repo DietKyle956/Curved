@@ -1,4 +1,20 @@
 #!/usr/bin/env node
+//
+// Section index - test/section-index.test.ts fails if an entry goes stale.
+// Format: label | declared symbols or anchors | L<start>-<end>
+// config + selectors | METRICS, RUN_ID, CHROMIUM_CANDIDATES, STATUSES, SIGNIN_TOKEN, ENTER_KEY | L45-187
+// state + utilities | state, sleep, out, withTimeout, assert, readEnv, isMissingHelperError | L189-284
+// CDP client | Cdp | L286-472
+// page helpers | HELPER_SOURCE | L474-597
+// tabs + pages | Tab, openTab, enableVirtualAuthenticator | L599-808
+// chromium | launchChromium, findOnPath, resolveChromium, waitForDevTools, cleanup | L810-971
+// reporting | fail, success | L973-1053
+// polling assertions | waitForBodyMatch, assertStatusTabs, waitForStableBox, readPaletteOptions, runPaletteAction, goToBoardFor | L1055-1418
+// sign-in only | signinOnlyFlow | L1420-1475
+// main: setup + projects | main, phase:"validate environment"@1478, phase:"sign in"@1526, phase:"check mobile board"@1532, phase:"create project"@1637, phase:"edit project status"@1673 | L1477-1764
+// main: palette + issue | phase:"palette key search"@1773, phase:"create issue"@1902, phase:"add block through relations dialog"@1988, phase:"remove blocker through relations dialog"@2038 | L1765-2078
+// main: realtime + passkeys | phase:"comment propagation"@2109, phase:"open parent from hierarchy"@2132, phase:"register passkey"@2152, phase:"passkey sign-in"@2212 | L2080-2252
+// entry point | line:"hard timeout after"@2259, line:"main().catch"@2262 | L2254-2264
 // Browser leg of the LAS-155 acceptance gate.
 //
 // A dependency-free Chromium driver over the DevTools Protocol. It signs in,

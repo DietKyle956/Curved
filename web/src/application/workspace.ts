@@ -2,6 +2,22 @@
 // ready-queue, and timeline loading, refresh and tick handling, and action
 // execution with error mapping. The hook below is implemented in this module;
 // the interface is the contract the ui layer consumes.
+//
+// Section index - test/section-index.test.ts fails if an entry goes stale.
+// Format: label | declared symbols | L<start>-<end>
+// contract | AuthState, WorkspaceDeps, Workspace | L57-155
+// hook + state | useWorkspace, navigate, auth, projects, timeline | L157-208
+// toasts + session | notify, onUnauthorized, checkSession | L210-242
+// boot + projects | project, projectKeyFromRoute | L244-361
+// board + ready | refresh, load, onFocus | L362-423
+// detail + realtime | issueKey, onEventsChange | L425-485
+// navigation + create | run, openIssue, openNewIssue, createIssue | L487-616
+// project dialogs | upsertProject, saveProject, archiveProject, restoreProject | L618-731
+// search + keyboard | selectProject, setQuery, setLabelFilter | L733-776
+// auth + passkeys | signIn, signInWithPasskey, loadPasskeys, addPasskey, removePasskey | L778-887
+// retries + palette | retrySession, retryProjects, retryDetail, togglePalette | L889-919
+// issue mutations | move, unblock, comment, updateIssue, setRelations | L921-1005
+// exports | dismissToast, allLabels | L1007-1096
 
 import { useCallback, useEffect, useRef, useState } from "react";
 

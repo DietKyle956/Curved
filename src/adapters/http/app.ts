@@ -1,3 +1,13 @@
+// Section index - test/section-index.test.ts fails if an entry goes stale.
+// Format: label | declared symbols or anchors | L<start>-<end>
+// constants + types | JSON_BODY_LIMIT_BYTES, DEFAULT_WEBAUTHN, CreateAppOptions, App | L64-89
+// request helpers | json, stringField, optionalStringField, objectField, stringArrayField, queryParam | L91-221
+// auth + body | issueContext, requireHuman, requireAgent, readJsonBody | L223-293
+// createApp setup | createApp | L295-327
+// api routes: identity | line:"if (resource === "events")"@329, line:"if (resource === "session")"@344, line:"if (resource === "passkeys")"@416, line:"if (resource === "me")"@462 | L328-467
+// api routes: work | line:"if (resource === "projects")"@470, line:"if (resource === "issues")"@533, line:"if (resource === "ready")"@683, line:"if (resource === "claims")"@696 | L468-709
+// webhook + spa + errors | handle | L710-743
+
 import { resolve } from "node:path";
 import { ServiceError } from "../../domain/errors.ts";
 import { errorBody, httpStatusFor } from "./errors.ts";
