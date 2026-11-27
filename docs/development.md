@@ -43,8 +43,8 @@
   `deploy/restore.sh` against stub binaries, with no Docker, database, or
   network. See [Backups and restore](operations.md#backups-and-restore).
 - `npm test` - tests run against the isolated `curved_test` database.
-- `npm run check` - typecheck, the import-direction architecture check, then the
-  tests.
+- `npm run check` - typecheck, the import-direction architecture check, the
+  documentation link/anchor/path check, then the tests.
 
 ## Acceptance gate
 
