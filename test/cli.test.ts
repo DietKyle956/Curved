@@ -340,6 +340,87 @@ test("project usage errors exit 2 with the usage block", async () => {
   assert.equal(missingKey.stdout, "");
 });
 
+test("per-command --help exits 0 and prints the command's flags", async () => {
+  const claim = await runCli(["claim", "--help"]);
+  assert.equal(claim.code, 0, claim.stderr);
+  assert.match(claim.stdout, /^Usage: curved claim \[PROJECT\]/);
+  assert.match(claim.stdout, /\[PROJECT\]\s+optional/);
+  assert.ok(claim.stdout.includes("--json"), claim.stdout);
+  assert.ok(claim.stdout.includes("-h, --help"), claim.stdout);
+  assert.ok(claim.stdout.includes("Documentation: docs/cli.md"), claim.stdout);
+  assert.equal(claim.stderr, "");
+
+  const move = await runCli(["issue", "move", "--help"]);
+  assert.equal(move.code, 0, move.stderr);
+  assert.match(move.stdout, /^Usage: curved issue move <KEY> <status>/);
+  assert.match(move.stdout, /<KEY>\s+required/);
+  assert.match(move.stdout, /<status>\s+required/);
+  for (const flag of ["--body <text>", "--actor", "--agent <name>"]) {
+    assert.ok(move.stdout.includes(flag), `missing ${flag} in:\n${move.stdout}`);
+  }
+
+  const add = await runCli(["issue", "add", "--help"]);
+  assert.equal(add.code, 0, add.stderr);
+  assert.match(add.stdout, /^Usage: curved issue add <PROJECT> <title\.\.\.>/);
+  for (const flag of [
+    "--description <text>",
+    "--priority <1-4>",
+    "--status <status>",
+    "--parent <KEY>",
+  ]) {
+    assert.ok(add.stdout.includes(flag), `missing ${flag} in:\n${add.stdout}`);
+  }
+});
+
+test("help resolves the deepest nested command", async () => {
+  const nested = await runCli(["project", "edit", "--help"]);
+  assert.equal(nested.code, 0, nested.stderr);
+  assert.match(nested.stdout, /^Usage: curved project edit <KEY>/);
+  assert.ok(nested.stdout.includes("--name <name>"), nested.stdout);
+
+  const viaHelp = await runCli(["help", "project", "edit"]);
+  assert.equal(viaHelp.code, 0, viaHelp.stderr);
+  assert.equal(viaHelp.stdout, nested.stdout);
+
+  const positional = await runCli(["issue", "move", "TAC-1", "todo", "--help"]);
+  assert.equal(positional.code, 0, positional.stderr);
+  assert.match(positional.stdout, /^Usage: curved issue move <KEY> <status>/);
+
+  const flagPrecedence = await runCli([
+    "issue",
+    "add",
+    "TAC",
+    "Title",
+    "--nope",
+    "--help",
+  ]);
+  assert.equal(flagPrecedence.code, 0, flagPrecedence.stderr);
+  assert.match(flagPrecedence.stdout, /^Usage: curved issue add <PROJECT> <title\.\.\.>/);
+
+  const group = await runCli(["issue", "-h"]);
+  assert.equal(group.code, 0, group.stderr);
+  assert.match(group.stdout, /^Usage: curved issue <subcommand>/);
+  assert.ok(group.stdout.includes("issue move <KEY> <status>"), group.stdout);
+});
+
+test("unknown options and commands still fail with usage", async () => {
+  const unknownFlag = await runCli(["claim", "--bogus"]);
+  assert.equal(unknownFlag.code, 2);
+  assert.match(unknownFlag.stderr, /unknown option "--bogus"/);
+  assert.match(unknownFlag.stderr, /Usage: curved <command> \[options\]/);
+  assert.equal(unknownFlag.stdout, "");
+
+  const unknownCommand = await runCli(["bogus", "--help"]);
+  assert.equal(unknownCommand.code, 2);
+  assert.match(unknownCommand.stderr, /unknown command "bogus"/);
+  assert.equal(unknownCommand.stdout, "");
+
+  const unknownSubcommand = await runCli(["issue", "bogus", "--help"]);
+  assert.equal(unknownSubcommand.code, 2);
+  assert.match(unknownSubcommand.stderr, /unknown command "issue bogus"/);
+  assert.equal(unknownSubcommand.stdout, "");
+});
+
 test("a duplicate project add exits 1 with a duplicate error on stderr", async () => {
   const first = await runCli(["project", "add", "TAC", "Tac", "--json"]);
   assert.equal(first.code, 0, first.stderr);

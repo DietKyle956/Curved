@@ -24,45 +24,14 @@ import {
   releaseClaim,
   submitForReview,
 } from "../../application/queue.ts";
+import {
+  findCommand,
+  hasSubcommands,
+  renderCommandHelp,
+  renderUsage,
+} from "./help.ts";
 
-const USAGE = `Usage: curved <command> [options]
-
-Commands:
-  migrate                     Apply pending database migrations
-  project add <KEY> <name...> [--summary <text>] [--description <text>] [--status <status>] [--priority <1-4>] [--start <date>] [--target <date>]
-                              Create a project
-  project list [--all]        List active projects (or all with --all), ordered by key
-  project show <KEY>          Show project properties and progress
-  project edit <KEY> [--name <name>] [--summary <text>] [--description <text>] [--status <status>] [--priority <1-4|none>] [--start <date|none>] [--target <date|none>]
-                              Edit a project
-  project archive <KEY>       Archive a project
-  project restore <KEY>       Restore an archived project
-  issue add <PROJECT> <title...> [--description <text>] [--priority <1-4>] [--status <status>] [--parent <KEY>]
-                              Create an issue
-  issue list [PROJECT]        List issues ordered by project and number
-  issue comment <KEY> <body...> [--actor <agent|human|git|system>] [--agent <name>]
-                              Append a comment event to an issue
-  issue block <KEY> <reason...>
-                              Block a claimed issue with a reason
-  issue unblock <KEY> [--actor <agent|human|git|system>] [--agent <name>]
-                              Clear a blocked issue's reason
-  issue show <KEY>            Show one issue with its event timeline
-  issue move <KEY> <status> [--body <text>] [--actor <agent|human|git|system>] [--agent <name>]
-                              Move an issue to a new status
-  agent add <name>            Create an agent and print its token once
-  ready [PROJECT] [--human]   List ready issues, plus the agent's busy issue
-  claim [PROJECT]             Claim the next ready issue for the agent
-  review <KEY> <summary...>   Submit a claimed issue for review
-  release <KEY>               Return a claimed issue to the ready backlog
-  git-branch <KEY>            Print the git branch name for an issue
-  help                        Show this help
-
-Agent commands (ready, claim, review, release, issue block) read the agent
-token from CURVED_AGENT_TOKEN.
-
-Options:
-  --json    Print machine-readable JSON on stdout
-`;
+const USAGE = renderUsage();
 
 /** The process-level dependencies a CLI invocation needs. */
 export interface CliDeps {
@@ -928,17 +897,54 @@ async function runGitBranchCommand(
   }
 }
 
+/** The longest registered command path that prefixes `tokens`. */
+function longestCommandPath(tokens: readonly string[]): string[] {
+  let path: string[] = [];
+  for (const token of tokens) {
+    const candidate = [...path, token];
+    if (findCommand(candidate) === undefined) {
+      break;
+    }
+    path = candidate;
+  }
+  return path;
+}
+
+/** Prints help for the deepest command in `tokens`; unknown commands still fail. */
+function printRequestedHelp(tokens: readonly string[]): void {
+  if (tokens.length === 0) {
+    process.stdout.write(USAGE);
+    return;
+  }
+  const path = longestCommandPath(tokens);
+  const command = path.length === 0 ? undefined : findCommand(path);
+  if (command === undefined) {
+    throw new UsageError(`unknown command "${tokens[0] ?? ""}"`);
+  }
+  const [next] = tokens.slice(path.length);
+  if (next !== undefined && hasSubcommands(path)) {
+    throw new UsageError(`unknown command "${[...path, next].join(" ")}"`);
+  }
+  process.stdout.write(renderCommandHelp(command));
+}
+
 async function main(argv: readonly string[], deps: CliDeps): Promise<void> {
   const json = argv.includes("--json");
   const args = argv.filter((arg) => arg !== "--json");
+
+  if (args.includes("--help") || args.includes("-h")) {
+    printRequestedHelp(args.filter((arg) => arg !== "--help" && arg !== "-h"));
+    return;
+  }
+
   const [command, subcommand, ...rest] = args;
 
   if (command === undefined) {
     throw new UsageError("missing command");
   }
 
-  if (command === "help" || command === "-h" || command === "--help") {
-    process.stdout.write(USAGE);
+  if (command === "help") {
+    printRequestedHelp(args.slice(1));
     return;
   }
 
