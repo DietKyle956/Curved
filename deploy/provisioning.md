@@ -25,7 +25,8 @@ earlier reference deployment used `DOMAIN=158.101.127.247.sslip.io` and
 DNS choice and section 18.2 the correction.
 
 Before you start you need an OCI tenancy in its home region, an Ed25519 key
-pair, and `ssh`, `scp`, `curl`, `dig`, and `nc` on the operator workstation. A
+pair, and `ssh`, `scp`, `curl`, `dig`, and `nc` on the operator workstation
+(`dig` ships in `bind`: `sudo pacman -S bind` on Arch). A
 public hostname is required for the Let's Encrypt certificate: either a
 DNS-only domain as described in section 6, or a free dynamic-DNS name such as
 DuckDNS; the reference deployment uses DuckDNS.
