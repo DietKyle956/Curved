@@ -1,3 +1,5 @@
+import { readFileSync } from "node:fs";
+
 import { ServiceError } from "../../domain/errors.ts";
 import { branchNameForIssue } from "../../domain/keys.ts";
 import type { ProjectWithProgress } from "../../domain/types.ts";
@@ -64,6 +66,18 @@ async function withAgent<T>(
 ): Promise<T> {
   const agent = await authenticateAgent(ports, requireAgentToken(deps.agentToken));
   return fn(agent.name);
+}
+
+/** Read a comment body from a file; `--body-file` exists because plans and
+ * multi-line bodies exceed safe argv sizes. There is deliberately no stdin
+ * form: the CLI test harness closes stdin and a TTY read would hang. */
+function readCommentBodyFile(path: string): string {
+  try {
+    return readFileSync(path, "utf8");
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    throw new UsageError(`cannot read --body-file ${path}: ${message}`);
+  }
 }
 
 interface ProjectFlags {
@@ -392,26 +406,39 @@ function parseIssueCommentArgs(rest: readonly string[]): {
   positionals: string[];
   actor: string | undefined;
   agent: string | undefined;
+  bodyFile: string | undefined;
+  asAgent: boolean;
 } {
   const positionals: string[] = [];
   let actor: string | undefined;
   let agent: string | undefined;
+  let bodyFile: string | undefined;
+  let asAgent = false;
 
   for (let index = 0; index < rest.length; index += 1) {
     const arg = rest[index];
     if (arg === undefined) {
       continue;
     }
-    if (arg === "--actor" || arg === "--agent") {
+    if (arg === "--as-agent") {
+      asAgent = true;
+      continue;
+    }
+    if (arg === "--actor" || arg === "--agent" || arg === "--body-file") {
       const value = rest[index + 1];
       if (value === undefined) {
+        if (arg === "--body-file") {
+          throw new UsageError("--body-file requires a path");
+        }
         throw new UsageError(`${arg} requires a value`);
       }
       index += 1;
       if (arg === "--actor") {
         actor = value;
-      } else {
+      } else if (arg === "--agent") {
         agent = value;
+      } else {
+        bodyFile = value;
       }
       continue;
     }
@@ -421,7 +448,13 @@ function parseIssueCommentArgs(rest: readonly string[]): {
     positionals.push(arg);
   }
 
-  return { positionals, actor, agent };
+  if (asAgent && (actor !== undefined || agent !== undefined)) {
+    throw new UsageError(
+      "--as-agent cannot be combined with --actor or --agent",
+    );
+  }
+
+  return { positionals, actor, agent, bodyFile, asAgent };
 }
 
 function parseIssueMoveArgs(rest: readonly string[]): {
@@ -569,17 +602,39 @@ async function runIssueCommand(
   }
 
   if (subcommand === "comment") {
-    const { positionals, actor, agent } = parseIssueCommentArgs(rest);
+    const { positionals, actor, agent, bodyFile, asAgent } =
+      parseIssueCommentArgs(rest);
     const [key, ...words] = positionals;
     if (key === undefined) {
-      throw new UsageError("issue comment requires <KEY> <body...>");
+      throw new UsageError(
+        "issue comment requires <KEY> <body...> or <KEY> --body-file <path>",
+      );
     }
-    if (words.length === 0) {
-      throw new UsageError("issue comment requires a body");
+    let body: string;
+    if (bodyFile !== undefined) {
+      if (words.length > 0) {
+        throw new UsageError(
+          "issue comment accepts a body or --body-file, not both",
+        );
+      }
+      body = readCommentBodyFile(bodyFile);
+    } else {
+      if (words.length === 0) {
+        throw new UsageError("issue comment requires a body");
+      }
+      body = words.join(" ");
     }
-    const body = words.join(" ");
     const event = await deps.withPorts((ports) =>
-      commentOnIssue(ports, { key, body, actor, agent }),
+      asAgent
+        ? withAgent(ports, deps, (agentName) =>
+            commentOnIssue(ports, {
+              key,
+              body,
+              actor: "agent",
+              agent: agentName,
+            }),
+          )
+        : commentOnIssue(ports, { key, body, actor, agent }),
     );
     if (json) {
       printJson(event);

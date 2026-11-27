@@ -195,17 +195,29 @@ export const COMMANDS: readonly CommandHelp[] = [
     path: ["issue", "comment"],
     summary: "Append a comment event to an issue",
     synopsis:
-      "issue comment <KEY> <body...> [--actor <agent|human|git|system>] [--agent <name>]",
-    description: "Appends a comment event to the issue's timeline.",
+      "issue comment <KEY> ( <body...> | --body-file <path> ) [--as-agent | --actor <agent|human|git|system> [--agent <name>]]",
+    description:
+      "Appends a comment event to the issue's timeline. `--body-file` reads the body from a file, for multi-line bodies and plans that do not fit safely in argv; the body is trimmed and must not be empty. `--as-agent` attributes the comment to the agent behind `CURVED_AGENT_TOKEN` and cannot be combined with `--actor`/`--agent`.",
     arguments: [
       { name: "KEY", required: true, summary: "Issue key" },
       {
         name: "body...",
-        required: true,
-        summary: "Comment body; the remaining words are joined with spaces",
+        required: false,
+        summary:
+          "Comment body; the remaining words are joined with spaces, or pass --body-file",
       },
     ],
     options: [
+      {
+        flag: "--body-file",
+        value: "<path>",
+        summary: "Read the body from a file instead of argv",
+      },
+      {
+        flag: "--as-agent",
+        summary:
+          "Attribute the comment to the agent behind CURVED_AGENT_TOKEN; excludes --actor and --agent",
+      },
       {
         flag: "--actor",
         value: "<agent|human|git|system>",
